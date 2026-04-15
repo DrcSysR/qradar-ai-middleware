@@ -1,0 +1,13 @@
+SELECT 
+    QIDNAME(qid) AS Event_Name,
+    username AS Admin_Account, 
+    sourceip AS Source_IP, 
+    "Logon Type" AS Logon_Type,
+    UNIQUECOUNT(destinationip) AS Unique_Targets_Count,
+    COUNT(*) AS Total_Events
+FROM events 
+WHERE 
+    INOFFENSE({offense_id})
+GROUP BY Event_Name, Admin_Account, Source_IP, Logon_Type
+ORDER BY Unique_Targets_Count DESC, Total_Events DESC
+LIMIT {limit} {time_depth}
