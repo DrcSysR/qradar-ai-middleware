@@ -1,0 +1,8 @@
+SELECT DATEFORMAT(starttime, 'MM-dd HH:mm:ss') AS Time, 
+       QIDNAME(qid) AS EventName, 
+       username, sourceip, destinationip, 
+       "Logon Type", "Action"
+FROM events 
+WHERE INOFFENSE({offense_id}) 
+ORDER BY starttime DESC LIMIT {limit} {time_depth}
+

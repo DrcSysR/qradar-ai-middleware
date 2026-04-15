@@ -1,0 +1,16 @@
+{
+    "_COMMENT": "СТРУКТУРА НАЛАШТУВАНЬ: 'Частина назви правила': [ 'Файл промпту', 'Override типу (застаріло)', 'Відповідальний', 'Файл AQL' ]",
+    "_DOCS": {
+        "Index 0 (Prompt File)": "Назва .md файлу в папці /prompts з інструкціями для ШІ.",
+        "Index 1 (Assignee)": "Логін аналітика в QRadar (наприклад, 'admin'). Якщо вказано, офенс автоматично призначиться на нього. Якщо не треба - залишайте \"\"",
+        "Index 2 (AQL Query)": "Назва .aql файлу в папці /queries. Якщо порожньо \"\" або не вказано, система візьме default.aql."
+    },
+    "UC-ME-Admins-List authentication outside IT VLAN": [ "67500565.md", "sergii.legerko", "auth_events.aql" ],
+    "UC-ME Service Admin List authentication" : [ "67500565.md", "sergii.legerko", "auth_events.aql" ],
+    "UC-06-1 Потенційна атака на ресурси" : [ "67500653.md", "sergii.legerko", "67500653.aql" ],
+    "UC-01-1 Перебір паролю до облікового запис" : [ "67500646.md", "", "auth_events.aql" ],
+    "Suspicious Outbound C2 Beaconing Detected" : ["67503542.md", "sergii.legerko", "67503542.aql"],
+    "UC-ME-PA Threat categories monitoring L2R" : [ "67501443.md", "sergii.legerko", "67501443.aql" ],
+    "UC-ME Rogue software detected" : [ "67503539.md", "sergii.legerko", "67503539.aql"],
+    "Default": [ "default.md", "", "default.aql" ]
+}

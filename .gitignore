@@ -1,0 +1,19 @@
+# Віртуальне середовище Python та кеш
+venv/
+__pycache__/
+*.pyc
+
+# Логи та файли стану (Runtime)
+*.log
+*.lock
+processed_offenses.txt
+last_run_time.txt
+
+# Секретні ключі та конфігурації з токенами
+*.json
+!prompts.json
+# (Ми ігноруємо всі JSON, щоб випадково не залити vertex-ключ або config.json із QRadar токеном, 
+# але дозволяємо prompts.json, бо там лише текст промптів)
+
+# Системні файли ОС
+.DS_Store
