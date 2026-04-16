@@ -2,16 +2,18 @@ SELECT
     destinationip AS Target_IP, 
     destinationport AS Port, 
     "Application" AS App, 
-    "URLCategory" AS Category, 
+    "Web Category" AS Category, 
     COUNT(*) AS Beacon_Count,
-    SUM("srcBytes") AS Total_Bytes_Sent,
-    SUM("dstBytes") AS Total_Bytes_Received
+    SUM("Bytes Sent") AS Total_Bytes_Sent,
+    SUM("Bytes Received") AS Total_Bytes_Received
 FROM events 
 WHERE 
     qid = 53512404 
-    AND sourceip = '{source_ip}' 
-    AND NOT INCIDR('172.17.0.0/16', destinationip)
+    AND sourceip = ''{source_ip}' 
+    AND NOT ( INCIDR('172.17.0.0/12', destinationip) 
+        OR INCIDR('192.168.0.0/16', destinationip) 
+        OR INCIDR('10.0.0.0/8', destinationip))
     AND NOT REFERENCESETCONTAINS('UC-ME Safe Application List', "Application")
-GROUP BY destinationip, destinationport, "Application", "URLCategory"
+GROUP BY destinationip, destinationport, "Application", "Web Category"
 ORDER BY Beacon_Count DESC
 LIMIT {limit} {time_depth}

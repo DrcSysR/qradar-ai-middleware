@@ -9,7 +9,7 @@ FROM events
 WHERE 
     INOFFENSE({offense_id})
     /* Можна додати виключення довірених Jump-серверів адмінів, якщо вони є у Reference Set */
-    /* AND NOT REFERENCESETCONTAINS('UC-ME Trusted Admin Hosts', sourceip) */
+    AND NOT REFERENCESETCONTAINS('Windows Servers', destinationip) */
 GROUP BY Event_Name, Service_Account, Source_IP, Target_IP, Logon_Type
 ORDER BY Authentication_Attempts DESC
 LIMIT {limit} {time_depth}
