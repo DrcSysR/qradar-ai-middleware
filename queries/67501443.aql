@@ -8,8 +8,8 @@ SELECT
 FROM events 
 WHERE 
     INOFFENSE({offense_id})
-    AND NOT ( REFERENCESETCONTAINS('UC05-DNS Servers', sourceip)
-            OR REFERENCESETCONTAINS('UC-ME Trusted Destination IPs', destinationip))
+    AND NOT REFERENCESETCONTAINS('UC05-DNS Servers', sourceip)
+    AND NOT REFERENCESETCONTAINS('UC-ME Trusted Destination IPs', destinationip)
     AND NOT REFERENCESETCONTAINS('UC-ME Safe Application List', "Application")
 GROUP BY "Threat_Name", App, Target_IP, Port, PA_Action
 ORDER BY Event_Count DESC
