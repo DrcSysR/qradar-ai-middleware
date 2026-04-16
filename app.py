@@ -223,6 +223,9 @@ async def close_qradar_offense(client: httpx.AsyncClient, offense_id: int, score
         response = await client.post(url, headers=HEADERS, params=params)
         if response.status_code == 200:
             logging.info(f"OFFENSE {offense_id} CLOSED AUTOMATICALLY. Score ({score}) is below threshold.")
+        elif response.status_code == 409:
+            # Обробка нашого конфлікту станів
+            logging.info(f"ℹ️ Offense {offense_id} is already closed in QRadar. Skipping auto-close.")
         else:
             logging.error(f"Failed to close offense {offense_id}: {response.text}")
     except Exception as e:
