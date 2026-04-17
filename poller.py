@@ -89,7 +89,7 @@ processed_local_cache = get_processed_offenses()
 
 logging.info(f"Шукаємо офенси з: {time.strftime('%Y-%m-%d %H:%M:%S', time.localtime(search_start_time/1000))}")
 
-url = f"{QRADAR_API}/siem/offenses?filter=status%3D%22OPEN%22%20and%20start_time%3E{search_start_time}"
+url = f"{QRADAR_API}/siem/offenses?filter=status%3D%22OPEN%22"
 
 try:
     response = requests.get(url, headers=HEADERS, verify=False, timeout=10)
