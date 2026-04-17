@@ -1,0 +1,15 @@
+SELECT 
+    sourceip AS Source_IP,
+    "Application" AS App, 
+    destinationip AS Target_IP, 
+    destinationport AS Port, 
+    "Action" AS PA_Action,
+    SUM("Bytes Sent") AS Total_Bytes_Sent,
+    SUM("Bytes Received") AS Total_Bytes_Received,
+    COUNT(*) AS Event_Count
+FROM events 
+WHERE 
+    INOFFENSE({offense_id})
+GROUP BY Source_IP, App, Target_IP, Port, PA_Action
+ORDER BY Event_Count DESC
+LIMIT {limit} {time_depth}
