@@ -9,7 +9,7 @@ import sys
 
 # --- НАЛАШТУВАННЯ ---
 LOOKBACK_TIME_MS = 60 * 60 * 1000  # Шукаємо за останню 1 годину від минулого запуску
-MAX_OFFENSES_PER_RUN = 5
+MAX_OFFENSES_PER_RUN = 15
 LOG_FILE = "/opt/qradar-middleware/poller.log"
 LOCK_FILE = "/opt/qradar-middleware/poller.lock"
 PROCESSED_FILE = "/opt/qradar-middleware/processed_offenses.txt" # Файл пам'яті пулера
