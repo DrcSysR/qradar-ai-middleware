@@ -4,11 +4,12 @@ SELECT
     sourceip AS Source_IP, 
     destinationip AS Target_IP, 
     "Logon Type" AS Logon_Type,
-    COUNT(*) AS Event_Count
+    "Process Name" AS Process,
+    COUNT(*) AS Event_Count,
+    UNIQUECOUNT(destinationip) AS Unique_Targets
 FROM events 
 WHERE 
     INOFFENSE({offense_id})
-    /* Правило вже відфільтрувало IT VLAN, але для чистоти даних можна додати і сюди, якщо потрібно */
-GROUP BY Event_Name, Admin_User, Source_IP, Target_IP, Logon_Type
+GROUP BY Event_Name, Admin_User, Source_IP, Target_IP, Logon_Type, Process
 ORDER BY Event_Count DESC
 LIMIT {limit} {time_depth}
