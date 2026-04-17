@@ -10,7 +10,7 @@ import sqlite3
 
 # --- НАЛАШТУВАННЯ ---
 LOOKBACK_TIME_MS = 12 * 60 * 60 * 1000  # Фіксована тривалість: 12 годин у мілісекундах
-MAX_OFFENSES_PER_RUN = 15
+MAX_OFFENSES_PER_RUN = 50
 LOG_FILE = "/opt/qradar-middleware/poller.log"
 LOCK_FILE = "/opt/qradar-middleware/poller.lock"
 DB_PATH = "/opt/qradar-middleware/ai_state.db"
