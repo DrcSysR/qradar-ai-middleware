@@ -495,7 +495,14 @@ async def universal_analysis(payload: UniversalTrigger):
                 score, verdict, explanation = await ask_ollama(client, active_model, prompt)
         except Exception as e:
             logging.error(f"AI Provider ({provider}) error: {e}")
-            raise HTTPException(status_code=503, detail=f"{provider.capitalize()} API error or bad JSON")
+            
+            # Якщо ШІ впав (наприклад, через квоти Google), ми НЕ йдемо далі.
+            # Записуємо статус помилки в БД, щоб пулер спробував пізніше або пропустив.
+            with sqlite3.connect(DB_PATH) as conn:
+                conn.execute("UPDATE offenses SET status = 'AI_ERROR', last_updated = CURRENT_TIMESTAMP WHERE offense_id = ?", (payload.offense_id,))
+                
+            # Коректно перериваємо виконання!
+            return {"status": "error", "message": f"AI analysis failed: {str(e)}"}
 
         # 7. Додаємо нотатку в QRadar
         note_text = f"AI Analysis ({provider.upper()}) | Verdict: {verdict} | Score: {score} | Reason: {explanation}"
