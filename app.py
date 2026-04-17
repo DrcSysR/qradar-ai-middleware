@@ -405,7 +405,19 @@ async def universal_analysis(payload: UniversalTrigger):
         # 4. Дістаємо події через динамічний AQL
         raw_events = await fetch_data_from_qradar(client, payload.offense_id, time_depth, aql_filename)        
         if not raw_events:
-            raise HTTPException(status_code=404, detail=f"No linked events found for Offense {payload.offense_id}")
+            logging.warning(f"⚠️ Для офенсу {payload.offense_id} не знайдено подій (можливо, відфільтровано AQL або ще не проіндексовано).")
+            
+            # Додаємо нотатку в QRadar, щоб аналітик знав, чому немає ШІ-аналізу
+            note_text = "AI Analysis (SKIPPED) | No events found by AQL. Events might be filtered out, aged out, or based on flows."
+            note_url = f"{QRADAR_API_URL}/siem/offenses/{payload.offense_id}/notes?note_text={urllib.parse.quote(note_text)}"
+            await client.post(note_url, headers=HEADERS)
+
+            # Записуємо в нашу БД статус 'NO_EVENTS', щоб пулер більше його не чіпав
+            with sqlite3.connect(DB_PATH) as conn:
+                conn.execute("UPDATE offenses SET status = 'NO_EVENTS', last_updated = CURRENT_TIMESTAMP WHERE offense_id = ?", (payload.offense_id,))
+            
+            # Повертаємо 200 OK (а не 404), щоб пулер вважав це успішною "відмовою"
+            return {"status": "skipped", "message": "No events found"}
 
         # 5. Формуємо єдиний промпт для будь-якої моделі
         # Динамічно обрізаємо логи під контекстне вікно Ollama (Vertex з'їсть і так)
