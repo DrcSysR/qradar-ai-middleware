@@ -72,8 +72,6 @@ HEADERS = {
     "Accept": "application/json"
 }
 
-DB_PATH = "/opt/qradar-middleware/ai_state.db"
-
 def init_db():
     with sqlite3.connect(DB_PATH) as conn:
         conn.execute("""
@@ -89,45 +87,12 @@ init_db()
 
 app = FastAPI(title="QRadar AI Middleware")
 
-# --- ЗАВАНТАЖЕННЯ КОНФІГУРАЦІЇ ---
-def load_config():
-    if os.path.exists(CONFIG_FILE):
-        try:
-            with open(CONFIG_FILE, "r", encoding="utf-8") as f:
-                return json.load(f)
-        except Exception as e:
-            logging.error(f"Failed to load config.json: {e}")
-    
-    # Резервні значення на випадок відсутності файлу
-    return {
-        "qradar_url": "https://127.0.0.1",
-        "qradar_token": "",
-        "ollama_url": "http://127.0.0.1:11434",
-        "fast_model": "qwen2.5-coder:7b",
-        "deep_model": "qwen2.5-coder:32b",
-        "timeout_seconds": 600,
-        "aql_limit": 1500
-    }
-
-# Динамічні глобальні змінні
-QRADAR_API_URL = f"{APP_CONFIG['qradar_url']}/api"
-OLLAMA_API_URL = f"{APP_CONFIG['ollama_url']}/api/generate"
-HEADERS = {
-    "SEC": APP_CONFIG['qradar_token'],
-    "Content-Type": "application/json",
-    "Accept": "application/json"
-}
-# ---------------------------------
-
 # Нова проста модель - приймаємо ТІЛЬКИ номер інциденту
 class UniversalTrigger(BaseModel):
     offense_id: int
-    is_manual: bool = False  # False = автоматика (Custom Action/Poller), True = кнопка (Web UI)
+    is_manual: bool = False
 
 DEFAULT_PROMPT = "Analyze the following logs for malicious activity. Identify any anomalies or security threats."
-
-# --- ДОДАЙ ЦЮ КОНСТАНТУ НА ПОЧАТКУ ФАЙЛУ (біля CONFIG_FILE) ---
-PROMPTS_DIR = "/opt/qradar-middleware/prompts"
 
 def get_dynamic_prompt(rule_name):
     """Шукає мапінг у JSON: [ 'Промпт', 'Відповідальний', 'AQL' ]"""
@@ -142,7 +107,7 @@ def get_dynamic_prompt(rule_name):
             prompt_mapping = json.load(f)
             
         for key, config in prompt_mapping.items():
-            if key.lower() in rule_name.lower():
+            if key != "Default" and key.lower() in rule_name.lower():
                 filename = ""
                 assignee = None
                 aql_file = default_aql
@@ -150,11 +115,11 @@ def get_dynamic_prompt(rule_name):
                 if isinstance(config, str):
                     filename = config
                 elif isinstance(config, list) and len(config) > 0:
-                    filename = config[0] # Index 0: Prompt
+                    filename = config[0]
                     if len(config) > 1 and config[1].strip():
-                        assignee = config[1].strip() # Index 1: Assignee
+                        assignee = config[1].strip()
                     if len(config) > 2 and config[2].strip():
-                        aql_file = config[2].strip() # Index 2: AQL file
+                        aql_file = config[2].strip()
                         
                 filepath = os.path.join(PROMPTS_DIR, filename)
                 if os.path.exists(filepath):
@@ -162,16 +127,19 @@ def get_dynamic_prompt(rule_name):
                         return pf.read(), assignee, aql_file
                 return default_text, None, default_aql
 
-        # Default блок
+        # Правильний Default блок
         if "Default" in prompt_mapping:
             cfg = prompt_mapping["Default"]
-            f_name = cfg[0] if isinstance(cfg, list) else cfg
-            a_file = cfg[2] if isinstance(cfg, list) and len(cfg) > 2 else default_aql
-            # ... завантаження файлу ...
-            return prompt_text, None, a_file
+            filename = cfg[0] if isinstance(cfg, list) else cfg
+            aql_file = cfg[2] if isinstance(cfg, list) and len(cfg) > 2 else default_aql
+            filepath = os.path.join(PROMPTS_DIR, filename)
+            if os.path.exists(filepath):
+                with open(filepath, "r", encoding="utf-8") as pf:
+                    return pf.read(), None, aql_file
 
     except Exception as e:
-        logging.error(f"Error: {e}")
+        logging.error(f"Error reading prompts mapping: {e}")
+        
     return default_text, None, default_aql
     
 async def get_offense_details(client: httpx.AsyncClient, offense_id: int):
@@ -187,7 +155,6 @@ async def get_offense_details(client: httpx.AsyncClient, offense_id: int):
     offense_type_id = data.get("offense_type", 0)
     offense_name = data.get("description", "Default")
     
-    # Витягуємо ID першого правила, яке створило цей офенс
     rules = data.get("rules", [])
     rule_id = rules[0].get("id") if rules else None
     
@@ -204,12 +171,8 @@ async def get_offense_details(client: httpx.AsyncClient, offense_id: int):
     }
 
 async def fetch_data_from_qradar(client: httpx.AsyncClient, offense_id: int, time_depth: str, aql_filename: str):
-    """
-    Зчитує шаблон AQL з файлу та виконує точний пошук INOFFENSE.
-    """
     filepath = os.path.join(QUERIES_DIR, aql_filename)
     
-    # Резервний запит також тепер використовує {limit}
     fallback_aql = (
         "SELECT DATEFORMAT(starttime, 'MM-dd HH:mm:ss') AS Time, "
         "QIDNAME(qid) AS EventName, username, sourceip, destinationip, destinationport, "
@@ -224,13 +187,9 @@ async def fetch_data_from_qradar(client: httpx.AsyncClient, offense_id: int, tim
         with open(filepath, "r", encoding="utf-8") as f:
             aql_template = f.read()
 
-    # Отримуємо глобальний ліміт з конфігурації
     global_limit = APP_CONFIG.get("aql_limit", 1500)
-
-    # Підставляємо динамічні змінні у шаблон, включаючи ліміт
     aql = aql_template.format(offense_id=offense_id, time_depth=time_depth, limit=global_limit)
 
-    # Було: logging.info(f"Executing Custom AQL...")
     logging.debug(f"Executing Custom AQL ({aql_filename}): {aql}")
     
     try:
@@ -259,16 +218,7 @@ async def fetch_data_from_qradar(client: httpx.AsyncClient, offense_id: int, tim
         logging.error(f"Error fetching exact offense events: {e}")
         return []
 
-async def update_qradar_offense(client: httpx.AsyncClient, offense_id: int, note_text: str):
-    """Додає фінальну нотатку в QRadar"""
-    encoded_note = urllib.parse.quote(note_text)
-    note_url = f"{QRADAR_API_URL}/siem/offenses/{offense_id}/notes?note_text={encoded_note}"
-    response = await client.post(note_url, headers=HEADERS)
-    if response.status_code in (200, 201):
-        logging.info(f"Offense {offense_id} successfully updated with note.")
-
 async def close_qradar_offense(client: httpx.AsyncClient, offense_id: int, score: float):
-    """Закриває офенс у QRadar як False Positive, якщо score <= 0.6"""
     url = f"{QRADAR_API_URL}/siem/offenses/{offense_id}"
     params = {
         "status": "CLOSED",
@@ -278,17 +228,15 @@ async def close_qradar_offense(client: httpx.AsyncClient, offense_id: int, score
     try:
         response = await client.post(url, headers=HEADERS, params=params)
         if response.status_code == 200:
-            logging.info(f"OFFENSE {offense_id} CLOSED AUTOMATICALLY. Score ({score}) is below threshold.")
+            logging.debug(f"OFFENSE {offense_id} CLOSED AUTOMATICALLY. Score ({score}) is below threshold.")
         elif response.status_code == 409:
-            # Обробка нашого конфлікту станів
-            logging.info(f"ℹ️ Offense {offense_id} is already closed in QRadar. Skipping auto-close.")
+            logging.debug(f"ℹ️ Offense {offense_id} is already closed in QRadar. Skipping auto-close.")
         else:
             logging.error(f"Failed to close offense {offense_id}: {response.text}")
     except Exception as e:
         logging.error(f"Error during closing offense: {e}")
 
 async def ask_ollama(client: httpx.AsyncClient, model: str, prompt: str) -> tuple[float, str, str]:
-    """Відправляє запит до локальної Ollama та повертає (score, verdict, explanation)"""
     num_ctx = MODELS_MAX_CTX.get(model, 32768)
     use_json_format = model in MODELS_WITH_JSON_FORMAT
     prompt_prefix = "" if use_json_format else "/no_think\n"
@@ -309,7 +257,6 @@ async def ask_ollama(client: httpx.AsyncClient, model: str, prompt: str) -> tupl
     if not llm_text.strip():
         raise ValueError("Empty response from Ollama")
 
-    # Надійний парсинг
     json_match = re.search(r'\{[^{}]*"score"[^{}]*\}', llm_text)
     parsed_json = json.loads(json_match.group()) if json_match else json.loads(llm_text.strip())
 
@@ -320,12 +267,9 @@ async def ask_ollama(client: httpx.AsyncClient, model: str, prompt: str) -> tupl
     )
 
 async def ask_vertex(client: httpx.AsyncClient, model: str, prompt: str) -> tuple[float, str, str]:
-    """Відправляє запит до Google Cloud Vertex AI (Gemini)"""
-    
     project_id = APP_CONFIG.get("vertex_project", "your-gcp-project-id")
     location = APP_CONFIG.get("vertex_location", "global")
     
-    # 1. Автоматична генерація токена з JSON-ключа (ВІДНОВЛЕНО)
     try:
         credentials = service_account.Credentials.from_service_account_file(
             VERTEX_KEY_PATH,
@@ -335,10 +279,9 @@ async def ask_vertex(client: httpx.AsyncClient, model: str, prompt: str) -> tupl
         credentials.refresh(auth_req)
         token = credentials.token
     except Exception as e:
-        logging.error(f"Помилка авторизації Vertex AI (перевірте JSON-ключ): {e}")
+        logging.error(f"Помилка авторизації Vertex AI: {e}")
         raise ValueError("Vertex AI Auth failed")
 
-    # 2. Формування REST API Endpoint
     if location == "global":
         host = "aiplatform.googleapis.com"
     else:
@@ -351,14 +294,8 @@ async def ask_vertex(client: httpx.AsyncClient, model: str, prompt: str) -> tupl
         "Content-Type": "application/json"
     }
     
-    # 3. Payload
     payload = {
-        "contents": [
-            {
-                "role": "user",
-                "parts": [{"text": prompt}]
-            }
-        ],
+        "contents": [{"role": "user", "parts": [{"text": prompt}]}],
         "generationConfig": {
             "responseMimeType": "application/json",
             "temperature": 0.1,
@@ -368,12 +305,10 @@ async def ask_vertex(client: httpx.AsyncClient, model: str, prompt: str) -> tupl
         }
     }
 
-    # 4. Відправка та обробка
     raw_response_text = "No response"
     try:
         response = await client.post(endpoint, headers=headers, json=payload, timeout=600.0)
         raw_response_text = response.text
-        
         response.raise_for_status()
         
         data = response.json()
@@ -389,37 +324,26 @@ async def ask_vertex(client: httpx.AsyncClient, model: str, prompt: str) -> tupl
             parsed_json.get("explanation", "No explanation provided.")
         )
         
-    except httpx.HTTPStatusError as e:
-        logging.error(f"Vertex AI API Error {e.response.status_code}: {raw_response_text}")
-        raise ValueError(f"Vertex API Error: {e.response.status_code}")
-    except httpx.RequestError as e:
-        logging.error(f"Мережева помилка (таймаут або недоступність): {e}")
-        raise ValueError("Vertex Network Error")
     except Exception as e:
-        logging.error(f"Помилка парсингу відповіді Vertex AI: {e} | Сирий текст: {raw_response_text[:200]}")
+        logging.error(f"Помилка парсингу відповіді Vertex AI: {e}")
         raise ValueError("Failed to parse Vertex AI response")
         
 @app.post("/universal-analysis")
 async def universal_analysis(payload: UniversalTrigger):
     
-    # --- ПЕРЕВІРКА ПО БАЗІ ДАНИХ ---
     with sqlite3.connect(DB_PATH) as conn:
         cursor = conn.cursor()
         cursor.execute("SELECT status FROM offenses WHERE offense_id = ?", (payload.offense_id,))
         row = cursor.fetchone()
         
-        # Якщо це автоматичний пулер, а офенс вже оброблено - пропускаємо!
         if not payload.is_manual and row and row[0] == 'PROCESSED':
-            logging.info(f"⏭️ Офенс {payload.offense_id} вже оброблено раніше. Пропуск.")
+            logging.debug(f"⏭️ Офенс {payload.offense_id} вже оброблено раніше. Пропуск.")
             return {"status": "skipped", "message": "Already processed in DB"}
             
-        # Записуємо статус, що ми почали обробку
         cursor.execute("INSERT OR REPLACE INTO offenses (offense_id, status, last_updated) VALUES (?, ?, CURRENT_TIMESTAMP)", 
                        (payload.offense_id, 'PROCESSING'))
         conn.commit()
-    # -------------------------------
 
-    # 1. Читаємо глобальний перемикач та визначаємо модель
     provider = APP_CONFIG.get("ai_provider", "ollama")
     time_depth = "LAST 7 DAYS" if payload.is_manual else "LAST 24 HOURS"
 
@@ -428,40 +352,28 @@ async def universal_analysis(payload: UniversalTrigger):
     else:
         active_model = APP_CONFIG.get("deep_model", "qwen3.5:27b") if payload.is_manual else APP_CONFIG.get("fast_model", "qwen2.5-coder:7b")
 
-    # Було: logging.info(f"Запуск: Offense {payload.offense_id}...")
     logging.debug(f"Запуск: Offense {payload.offense_id} | Режим: {'Ручний' if payload.is_manual else 'Авто'} | Провайдер: {provider} | Модель: {active_model}")
-    logging.debug(f"Score {score} is low. Triggering auto-close for Offense {payload.offense_id}")
-    logging.debug(f"Offense {payload.offense_id} successfully updated with note.")
 
     async with httpx.AsyncClient(verify=False, timeout=APP_CONFIG.get("timeout_seconds", 600.0)) as client:
         
-        # 2. Збираємо контекст
         details = await get_offense_details(client, payload.offense_id)
         if not details:
             raise HTTPException(status_code=404, detail="Offense not found or API error")
             
-        # 3. Визначаємо промпт (строго 3 змінні)
         instruction, assignee, aql_filename = get_dynamic_prompt(details['offense_name'])
 
-        # 4. Дістаємо події через динамічний AQL
         raw_events = await fetch_data_from_qradar(client, payload.offense_id, time_depth, aql_filename)        
         if not raw_events:
-            logging.warning(f"⚠️ Для офенсу {payload.offense_id} не знайдено подій (можливо, відфільтровано AQL або ще не проіндексовано).")
-            
-            # Додаємо нотатку в QRadar, щоб аналітик знав, чому немає ШІ-аналізу
+            logging.warning(f"⚠️ Для офенсу {payload.offense_id} не знайдено подій.")
             note_text = "AI Analysis (SKIPPED) | No events found by AQL. Events might be filtered out, aged out, or based on flows."
             note_url = f"{QRADAR_API_URL}/siem/offenses/{payload.offense_id}/notes?note_text={urllib.parse.quote(note_text)}"
             await client.post(note_url, headers=HEADERS)
 
-            # Записуємо в нашу БД статус 'NO_EVENTS', щоб пулер більше його не чіпав
             with sqlite3.connect(DB_PATH) as conn:
                 conn.execute("UPDATE offenses SET status = 'NO_EVENTS', last_updated = CURRENT_TIMESTAMP WHERE offense_id = ?", (payload.offense_id,))
             
-            # Повертаємо 200 OK (а не 404), щоб пулер вважав це успішною "відмовою"
             return {"status": "skipped", "message": "No events found"}
 
-        # 5. Формуємо єдиний промпт для будь-якої моделі
-        # Динамічно обрізаємо логи під контекстне вікно Ollama (Vertex з'їсть і так)
         max_chars = int((MODELS_MAX_CTX.get(active_model, 32768) - 4096) * 3.5) if provider == "ollama" else 2000000
         logs_text = str(raw_events)[:max_chars]
 
@@ -487,7 +399,6 @@ async def universal_analysis(payload: UniversalTrigger):
             "Output ONLY the JSON object."
         )
 
-        # 6. Аналіз через обраного провайдера
         try:
             if provider == "vertex":
                 score, verdict, explanation = await ask_vertex(client, active_model, prompt)
@@ -495,24 +406,17 @@ async def universal_analysis(payload: UniversalTrigger):
                 score, verdict, explanation = await ask_ollama(client, active_model, prompt)
         except Exception as e:
             logging.error(f"AI Provider ({provider}) error: {e}")
-            
-            # Якщо ШІ впав (наприклад, через квоти Google), ми НЕ йдемо далі.
-            # Записуємо статус помилки в БД, щоб пулер спробував пізніше або пропустив.
             with sqlite3.connect(DB_PATH) as conn:
                 conn.execute("UPDATE offenses SET status = 'AI_ERROR', last_updated = CURRENT_TIMESTAMP WHERE offense_id = ?", (payload.offense_id,))
-                
-            # Коректно перериваємо виконання!
             return {"status": "error", "message": f"AI analysis failed: {str(e)}"}
 
-        # 7. Додаємо нотатку в QRadar
         note_text = f"AI Analysis ({provider.upper()}) | Verdict: {verdict} | Score: {score} | Reason: {explanation}"
         note_url = f"{QRADAR_API_URL}/siem/offenses/{payload.offense_id}/notes?note_text={urllib.parse.quote(note_text)}"
         note_resp = await client.post(note_url, headers=HEADERS)
         
         if note_resp.status_code in (200, 201):
-            logging.info(f"Offense {payload.offense_id} successfully updated with note.")
+            logging.debug(f"Offense {payload.offense_id} successfully updated with note.")
             
-        # 8. Призначення на користувача
         if assignee:
             assign_url = f"{QRADAR_API_URL}/siem/offenses/{payload.offense_id}?assigned_to={assignee}"
             assign_resp = await client.post(assign_url, headers=HEADERS)
@@ -521,25 +425,22 @@ async def universal_analysis(payload: UniversalTrigger):
             else:
                 logging.error(f"⚠️ Не вдалося призначити офенс {payload.offense_id} на {assignee}: {assign_resp.text}")
 
-        # 9. Автоматичне закриття
         if score <= 0.6:
-            logging.info(f"Score {score} is low. Triggering auto-close for Offense {payload.offense_id}")
+            logging.debug(f"Score {score} is low. Triggering auto-close for Offense {payload.offense_id}")
             await close_qradar_offense(client, payload.offense_id, score)
 
-        # --- ЗБЕРЕЖЕННЯ РЕЗУЛЬТАТІВ У БАЗУ ДАНИХ ---
         with sqlite3.connect(DB_PATH) as conn:
             conn.execute("""
                 UPDATE offenses 
                 SET status = 'PROCESSED', score = ?, verdict = ?, last_updated = CURRENT_TIMESTAMP
                 WHERE offense_id = ?
             """, (score, verdict, payload.offense_id))
-        # -------------------------------------------
+
     logging.info(f"✅ Офенс {payload.offense_id} оброблено | Режим: {'Ручний' if payload.is_manual else 'Авто'} | Вердикт: {verdict} | Score: {score}")
     return {"status": "success", "offense_id": payload.offense_id, "verdict": verdict, "score": score, "explanation": explanation}
 
 @app.get("/", response_class=HTMLResponse)
 async def get_web_ui():
-    """Спрощений і набагато зручніший Web UI"""
     html_content = """
     <!DOCTYPE html>
     <html>
@@ -577,7 +478,7 @@ async def get_web_ui():
 <script>
 async function runAnalysis() {
     const input = document.getElementById('offense_id').value;
-    const offenseId = input.replace(/\D/g, ''); 
+    const offenseId = input.replace(/\\D/g, ''); 
     const resultDiv = document.getElementById('result');
     
     if (!offenseId) {
@@ -590,7 +491,6 @@ async function runAnalysis() {
         is_manual: true
     };
 
-    // Відображаємо статус завантаження
     resultDiv.style.display = 'block';
     resultDiv.className = 'loading';
     resultDiv.innerText = "⏳ Аналізую логи (це може зайняти хвилину)...";
@@ -605,7 +505,6 @@ async function runAnalysis() {
         });
 
         if (response.ok) {
-            // Читаємо JSON відповідь від бекенду
             const data = await response.json();
             resultDiv.className = 'success';
             resultDiv.innerText = `✅ Аналіз завершено!\\nВердикт: ${data.verdict}\\nОцінка (Score): ${data.score}`;
