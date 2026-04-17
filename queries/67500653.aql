@@ -1,0 +1,16 @@
+SELECT 
+    QIDNAME(qid) AS Event_Name, 
+    CATEGORYNAME(category) AS Event_Category, 
+    "Action" AS Security_Action, 
+    sourceip AS Source_IP, 
+    destinationip AS Target_IP, 
+    username AS User,
+    COUNT(*) AS Event_Count
+FROM events 
+WHERE 
+    INOFFENSE({offense_id})
+    AND NOT REFERENCESETCONTAINS('UC05-DNS Servers', sourceip)
+    AND NOT REFERENCESETCONTAINS('UC-ME Trusted Destination IPs', destinationip)
+GROUP BY Event_Name, Event_Category, Security_Action, Source_IP, Target_IP, User
+ORDER BY Event_Count DESC
+LIMIT {limit} {time_depth}
