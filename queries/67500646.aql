@@ -1,0 +1,14 @@
+SELECT 
+    QIDNAME(qid) AS Event_Name, 
+    username AS Target_User, 
+    sourceip AS Source_IP, 
+    destinationip AS Target_Server, 
+    "Logon Type" AS Logon_Type,
+    COUNT(*) AS Failed_Attempts,
+    UNIQUECOUNT(sourceip) AS Unique_Source_IPs
+FROM events 
+WHERE 
+    INOFFENSE({offense_id})
+GROUP BY Event_Name, Target_User, Source_IP, Target_Server, Logon_Type
+ORDER BY Failed_Attempts DESC
+LIMIT {limit} {time_depth}
