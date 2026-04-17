@@ -45,8 +45,18 @@ MODELS_MAX_CTX = {
 # Моделі qwen2.5-coder підтримують format:"json" надійно
 MODELS_WITH_JSON_FORMAT = {"qwen2.5-coder:7b", "qwen2.5-coder:14b", "qwen2.5-coder:32b"}
 
-# Configure logging
-logging.basicConfig(level=logging.INFO, format="%(asctime)s - %(levelname)s - %(message)s")
+DEBUG_MODE = APP_CONFIG.get("debug_mode", False)
+LOG_LEVEL = logging.DEBUG if DEBUG_MODE else logging.INFO
+
+logging.basicConfig(level=LOG_LEVEL, format="%(asctime)s - %(levelname)s - %(message)s")
+
+# Приглушуємо спам від HTTP-бібліотек у нормальному режимі
+if not DEBUG_MODE:
+    logging.getLogger("httpx").setLevel(logging.WARNING)
+    logging.getLogger("httpcore").setLevel(logging.WARNING)
+    logging.getLogger("uvicorn.access").setLevel(logging.WARNING)
+    logging.getLogger("uvicorn.error").setLevel(logging.WARNING)
+# -----------------------------------------------
 
 app = FastAPI(title="QRadar AI Middleware")
 
@@ -193,7 +203,8 @@ async def fetch_data_from_qradar(client: httpx.AsyncClient, offense_id: int, tim
     # Підставляємо динамічні змінні у шаблон, включаючи ліміт
     aql = aql_template.format(offense_id=offense_id, time_depth=time_depth, limit=global_limit)
 
-    logging.info(f"Executing Custom AQL ({aql_filename}): {aql}")
+    # Було: logging.info(f"Executing Custom AQL...")
+    logging.debug(f"Executing Custom AQL ({aql_filename}): {aql}")
     
     try:
         search_url = f"{QRADAR_API_URL}/ariel/searches?query_expression={urllib.parse.quote(aql)}"
@@ -390,7 +401,10 @@ async def universal_analysis(payload: UniversalTrigger):
     else:
         active_model = APP_CONFIG.get("deep_model", "qwen3.5:27b") if payload.is_manual else APP_CONFIG.get("fast_model", "qwen2.5-coder:7b")
 
-    logging.info(f"Запуск: Offense {payload.offense_id} | Режим: {'Ручний' if payload.is_manual else 'Авто'} | Провайдер: {provider} | Модель: {active_model}")
+    # Було: logging.info(f"Запуск: Offense {payload.offense_id}...")
+    logging.debug(f"Запуск: Offense {payload.offense_id} | Режим: {'Ручний' if payload.is_manual else 'Авто'} | Провайдер: {provider} | Модель: {active_model}")
+    logging.debug(f"Score {score} is low. Triggering auto-close for Offense {payload.offense_id}")
+    logging.debug(f"Offense {payload.offense_id} successfully updated with note.")
 
     async with httpx.AsyncClient(verify=False, timeout=APP_CONFIG.get("timeout_seconds", 600.0)) as client:
         
@@ -486,7 +500,7 @@ async def universal_analysis(payload: UniversalTrigger):
                 WHERE offense_id = ?
             """, (score, verdict, payload.offense_id))
         # -------------------------------------------
-
+    logging.info(f"✅ Офенс {payload.offense_id} оброблено | Режим: {'Ручний' if payload.is_manual else 'Авто'} | Вердикт: {verdict} | Score: {score}")
     return {"status": "success", "offense_id": payload.offense_id, "verdict": verdict, "score": score, "explanation": explanation}
 
 @app.get("/", response_class=HTMLResponse)
