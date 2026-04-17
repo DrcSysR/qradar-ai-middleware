@@ -11,17 +11,14 @@ import json
 import re
 import os
 import sqlite3
-import datetime
-
-APP_CONFIG = load_config()
 
 VERTEX_KEY_PATH = "/opt/qradar-middleware/me-vertex-ai-studio-666353d9e1df.json"
 CONFIG_FILE = "/opt/qradar-middleware/config.json"
 PROMPTS_FILE = "/opt/qradar-middleware/prompts.json"
 PROMPTS_DIR = "/opt/qradar-middleware/prompts"
 QUERIES_DIR = "/opt/qradar-middleware/queries"
+DB_PATH = "/opt/qradar-middleware/ai_state.db"
 
-# qwen2.5-coder: max 32K (надійний JSON), qwen3.5: до 256K (JSON баг з format:json)
 MODELS_MAX_CTX = {
     "qwen2.5-coder:7b": 32768,
     "qwen2.5-coder:14b": 32768,
@@ -29,21 +26,51 @@ MODELS_MAX_CTX = {
     "qwen3.5:9b": 65536,
     "qwen3.5:27b": 65536,
 }
-# Моделі qwen2.5-coder підтримують format:"json" надійно
 MODELS_WITH_JSON_FORMAT = {"qwen2.5-coder:7b", "qwen2.5-coder:14b", "qwen2.5-coder:32b"}
 
+# --- ЗАВАНТАЖЕННЯ КОНФІГУРАЦІЇ ---
+def load_config():
+    if os.path.exists(CONFIG_FILE):
+        try:
+            with open(CONFIG_FILE, "r", encoding="utf-8") as f:
+                return json.load(f)
+        except Exception as e:
+            print(f"Failed to load config.json: {e}")
+    
+    return {
+        "qradar_url": "https://127.0.0.1",
+        "qradar_token": "",
+        "ollama_url": "http://127.0.0.1:11434",
+        "fast_model": "qwen2.5-coder:7b",
+        "deep_model": "qwen2.5-coder:32b",
+        "timeout_seconds": 600,
+        "aql_limit": 1500,
+        "debug_mode": False
+    }
+
+APP_CONFIG = load_config()
+
+# --- НАЛАШТУВАННЯ ЛОГУВАННЯ (DEBUG / NORMAL) ---
 DEBUG_MODE = APP_CONFIG.get("debug_mode", False)
 LOG_LEVEL = logging.DEBUG if DEBUG_MODE else logging.INFO
 
 logging.basicConfig(level=LOG_LEVEL, format="%(asctime)s - %(levelname)s - %(message)s")
 
-# Приглушуємо спам від HTTP-бібліотек у нормальному режимі
 if not DEBUG_MODE:
     logging.getLogger("httpx").setLevel(logging.WARNING)
     logging.getLogger("httpcore").setLevel(logging.WARNING)
     logging.getLogger("uvicorn.access").setLevel(logging.WARNING)
     logging.getLogger("uvicorn.error").setLevel(logging.WARNING)
 # -----------------------------------------------
+
+# Динамічні глобальні змінні
+QRADAR_API_URL = f"{APP_CONFIG['qradar_url']}/api"
+OLLAMA_API_URL = f"{APP_CONFIG['ollama_url']}/api/generate"
+HEADERS = {
+    "SEC": APP_CONFIG['qradar_token'],
+    "Content-Type": "application/json",
+    "Accept": "application/json"
+}
 
 DB_PATH = "/opt/qradar-middleware/ai_state.db"
 
