@@ -5,7 +5,7 @@
         "Index 1 (Assignee)": "Логін аналітика в QRadar (наприклад, 'admin'). Якщо вказано, офенс автоматично призначиться на нього. Якщо не треба - залишайте \"\"",
         "Index 2 (AQL Query)": "Назва .aql файлу в папці /queries. Якщо порожньо \"\" або не вказано, система візьме default.aql."
     },
-    "UC-ME-Admins-List authentication outside IT VLAN": [ "67500565.md", "sergii.legerko", "auth_events.aql" ],
+    "UC-ME-Admins-List authentication outside IT VLAN": [ "67500565.md", "sergii.legerko", "67500565.aql" ],
     "UC-ME Service Admin List authentication" : [ "67503541.md", "sergii.legerko", "67503541.aql" ],
     "UC-06-1 Потенційна атака на ресурси" : [ "67500653.md", "sergii.legerko", "67500653.aql" ],
     "UC-01-1 Перебір паролю до облікового запис" : [ "67500646.md", "", "auth_events.aql" ],
