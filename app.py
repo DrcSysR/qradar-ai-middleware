@@ -48,6 +48,8 @@ MODELS_WITH_JSON_FORMAT = {"qwen2.5-coder:7b", "qwen2.5-coder:14b", "qwen2.5-cod
 DEBUG_MODE = APP_CONFIG.get("debug_mode", False)
 LOG_LEVEL = logging.DEBUG if DEBUG_MODE else logging.INFO
 
+APP_CONFIG = load_config()
+
 logging.basicConfig(level=LOG_LEVEL, format="%(asctime)s - %(levelname)s - %(message)s")
 
 # Приглушуємо спам від HTTP-бібліотек у нормальному режимі
@@ -79,8 +81,6 @@ def load_config():
         "timeout_seconds": 600,
         "aql_limit": 1500
     }
-
-APP_CONFIG = load_config()
 
 # Динамічні глобальні змінні
 QRADAR_API_URL = f"{APP_CONFIG['qradar_url']}/api"
