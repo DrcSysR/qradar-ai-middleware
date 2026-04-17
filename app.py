@@ -13,26 +13,13 @@ import os
 import sqlite3
 import datetime
 
+APP_CONFIG = load_config()
+
 VERTEX_KEY_PATH = "/opt/qradar-middleware/me-vertex-ai-studio-666353d9e1df.json"
 CONFIG_FILE = "/opt/qradar-middleware/config.json"
 PROMPTS_FILE = "/opt/qradar-middleware/prompts.json"
 PROMPTS_DIR = "/opt/qradar-middleware/prompts"
 QUERIES_DIR = "/opt/qradar-middleware/queries"
-
-DB_PATH = "/opt/qradar-middleware/ai_state.db"
-
-def init_db():
-    with sqlite3.connect(DB_PATH) as conn:
-        conn.execute("""
-            CREATE TABLE IF NOT EXISTS offenses (
-                offense_id INTEGER PRIMARY KEY,
-                status TEXT,
-                score REAL,
-                verdict TEXT,
-                last_updated DATETIME DEFAULT CURRENT_TIMESTAMP
-            )
-        """)
-init_db()
 
 # qwen2.5-coder: max 32K (надійний JSON), qwen3.5: до 256K (JSON баг з format:json)
 MODELS_MAX_CTX = {
@@ -48,8 +35,6 @@ MODELS_WITH_JSON_FORMAT = {"qwen2.5-coder:7b", "qwen2.5-coder:14b", "qwen2.5-cod
 DEBUG_MODE = APP_CONFIG.get("debug_mode", False)
 LOG_LEVEL = logging.DEBUG if DEBUG_MODE else logging.INFO
 
-APP_CONFIG = load_config()
-
 logging.basicConfig(level=LOG_LEVEL, format="%(asctime)s - %(levelname)s - %(message)s")
 
 # Приглушуємо спам від HTTP-бібліотек у нормальному режимі
@@ -59,6 +44,21 @@ if not DEBUG_MODE:
     logging.getLogger("uvicorn.access").setLevel(logging.WARNING)
     logging.getLogger("uvicorn.error").setLevel(logging.WARNING)
 # -----------------------------------------------
+
+DB_PATH = "/opt/qradar-middleware/ai_state.db"
+
+def init_db():
+    with sqlite3.connect(DB_PATH) as conn:
+        conn.execute("""
+            CREATE TABLE IF NOT EXISTS offenses (
+                offense_id INTEGER PRIMARY KEY,
+                status TEXT,
+                score REAL,
+                verdict TEXT,
+                last_updated DATETIME DEFAULT CURRENT_TIMESTAMP
+            )
+        """)
+init_db()
 
 app = FastAPI(title="QRadar AI Middleware")
 
