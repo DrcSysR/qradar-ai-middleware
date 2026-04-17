@@ -10,12 +10,30 @@ import logging
 import json
 import re
 import os
+import sqlite3
+import datetime
 
 VERTEX_KEY_PATH = "/opt/qradar-middleware/me-vertex-ai-studio-666353d9e1df.json"
 CONFIG_FILE = "/opt/qradar-middleware/config.json"
 PROMPTS_FILE = "/opt/qradar-middleware/prompts.json"
 PROMPTS_DIR = "/opt/qradar-middleware/prompts"
 QUERIES_DIR = "/opt/qradar-middleware/queries"
+
+DB_PATH = "/opt/qradar-middleware/ai_state.db"
+
+def init_db():
+    with sqlite3.connect(DB_PATH) as conn:
+        conn.execute("""
+            CREATE TABLE IF NOT EXISTS offenses (
+                offense_id INTEGER PRIMARY KEY,
+                status TEXT,
+                score REAL,
+                verdict TEXT,
+                last_updated DATETIME DEFAULT CURRENT_TIMESTAMP
+            )
+        """)
+init_db()
+
 # qwen2.5-coder: max 32K (надійний JSON), qwen3.5: до 256K (JSON баг з format:json)
 MODELS_MAX_CTX = {
     "qwen2.5-coder:7b": 32768,
@@ -346,6 +364,23 @@ async def ask_vertex(client: httpx.AsyncClient, model: str, prompt: str) -> tupl
 @app.post("/universal-analysis")
 async def universal_analysis(payload: UniversalTrigger):
     
+    # --- ПЕРЕВІРКА ПО БАЗІ ДАНИХ ---
+    with sqlite3.connect(DB_PATH) as conn:
+        cursor = conn.cursor()
+        cursor.execute("SELECT status FROM offenses WHERE offense_id = ?", (payload.offense_id,))
+        row = cursor.fetchone()
+        
+        # Якщо це автоматичний пулер, а офенс вже оброблено - пропускаємо!
+        if not payload.is_manual and row and row[0] == 'PROCESSED':
+            logging.info(f"⏭️ Офенс {payload.offense_id} вже оброблено раніше. Пропуск.")
+            return {"status": "skipped", "message": "Already processed in DB"}
+            
+        # Записуємо статус, що ми почали обробку
+        cursor.execute("INSERT OR REPLACE INTO offenses (offense_id, status, last_updated) VALUES (?, ?, CURRENT_TIMESTAMP)", 
+                       (payload.offense_id, 'PROCESSING'))
+        conn.commit()
+    # -------------------------------
+
     # 1. Читаємо глобальний перемикач та визначаємо модель
     provider = APP_CONFIG.get("ai_provider", "ollama")
     time_depth = "LAST 7 DAYS" if payload.is_manual else "LAST 24 HOURS"
@@ -430,6 +465,15 @@ async def universal_analysis(payload: UniversalTrigger):
         if score <= 0.6:
             logging.info(f"Score {score} is low. Triggering auto-close for Offense {payload.offense_id}")
             await close_qradar_offense(client, payload.offense_id, score)
+
+        # --- ЗБЕРЕЖЕННЯ РЕЗУЛЬТАТІВ У БАЗУ ДАНИХ ---
+        with sqlite3.connect(DB_PATH) as conn:
+            conn.execute("""
+                UPDATE offenses 
+                SET status = 'PROCESSED', score = ?, verdict = ?, last_updated = CURRENT_TIMESTAMP
+                WHERE offense_id = ?
+            """, (score, verdict, payload.offense_id))
+        # -------------------------------------------
 
     return {"status": "success", "offense_id": payload.offense_id, "verdict": verdict, "score": score, "explanation": explanation}
 
