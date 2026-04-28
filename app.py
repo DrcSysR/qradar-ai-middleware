@@ -478,7 +478,7 @@ async def get_web_ui():
 <script>
 async function runAnalysis() {
     const input = document.getElementById('offense_id').value;
-    const offenseId = input.replace(/\\D/g, ''); 
+    const offenseId = input.replace(/\D/g, ''); 
     const resultDiv = document.getElementById('result');
     
     if (!offenseId) {
@@ -506,8 +506,19 @@ async function runAnalysis() {
 
         if (response.ok) {
             const data = await response.json();
-            resultDiv.className = 'success';
-            resultDiv.innerText = `✅ Аналіз завершено!\\nВердикт: ${data.verdict}\\nОцінка (Score): ${data.score}`;
+            
+            // ПЕРЕВІРЯЄМО СТАТУС ВІДПОВІДІ
+            if (data.status === "success") {
+                resultDiv.className = 'success';
+                resultDiv.innerText = `✅ Аналіз завершено!\nВердикт: ${data.verdict}\nОцінка (Score): ${data.score}`;
+            } else if (data.status === "skipped") {
+                resultDiv.className = 'error'; // Можна зробити жовтий стиль для skipped, але поки буде як error
+                resultDiv.innerText = `⚠️ Пропущено: ${data.message}`;
+            } else {
+                resultDiv.className = 'error';
+                resultDiv.innerText = `❌ Помилка: ${data.message}`;
+            }
+            
         } else {
             resultDiv.className = 'error';
             resultDiv.innerText = "❌ Помилка сервера: " + response.status;
