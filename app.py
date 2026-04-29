@@ -509,7 +509,8 @@ async def universal_analysis(payload: UniversalTrigger):
             assign_url = f"{QRADAR_API_URL}/siem/offenses/{payload.offense_id}?assigned_to={assignee}"
             assign_resp = await client.post(assign_url, headers=HEADERS)
             if assign_resp.status_code in (200, 201):
-                logging.info(f"👤 Офенс {payload.offense_id} призначено на {assignee} (score {score} > 0.6)")
+                reason = "ручний режим" if payload.is_manual and score <= 0.6 else f"score {score} > 0.6"
+                logging.info(f"👤 Офенс {payload.offense_id} призначено на {assignee} ({reason})")
             else:
                 logging.error(f"⚠️ Не вдалося призначити офенс {payload.offense_id} на {assignee}: {assign_resp.text}")
 
