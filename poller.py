@@ -8,8 +8,10 @@ import fcntl
 import sys
 import sqlite3
 
+from prompts_loader import get_rule_keys
+
 # --- НАЛАШТУВАННЯ ---
-LOOKBACK_TIME_MS = 14 * 24 * 60 * 60 * 1000  # Фіксована тривалість: 12 годин у мілісекундах
+LOOKBACK_TIME_MS = 14 * 24 * 60 * 60 * 1000  # 14 днів у мілісекундах
 MAX_OFFENSES_PER_RUN = 50
 LOG_FILE = "/opt/qradar-middleware/poller.log"
 LOCK_FILE = "/opt/qradar-middleware/poller.lock"
@@ -33,8 +35,7 @@ with open(CONFIG_FILE, "r", encoding="utf-8") as f:
 QRADAR_API = f"{config['qradar_url']}/api"
 HEADERS = {"SEC": config["qradar_token"], "Accept": "application/json"}
 
-with open(PROMPTS_FILE, "r", encoding="utf-8") as f:
-    target_rules = [key for key in json.load(f).keys() if key != "Default"]
+target_rules = get_rule_keys(PROMPTS_FILE)
 
 # --- ФУНКЦІЇ БАЗИ ДАНИХ ТА API ---
 def is_processed_in_db(offense_id):
@@ -70,12 +71,11 @@ except IOError:
 # --- ВИКОНАННЯ ---
 logging.info("--- Запуск Poller (Smart DB Mode) ---")
 
-# Відступаємо від поточного моменту рівно 12 годин назад
-search_start_time = int(time.time() * 1000) - LOOKBACK_TIME_MS 
+search_start_time = int(time.time() * 1000) - LOOKBACK_TIME_MS
 
-logging.info(f"Шукаємо офенси за останні 12 годин (з {time.strftime('%Y-%m-%d %H:%M:%S', time.localtime(search_start_time/1000))})")
+logging.info(f"Шукаємо офенси за останні 14 днів (з {time.strftime('%Y-%m-%d %H:%M:%S', time.localtime(search_start_time/1000))})")
 
-# Запитуємо тільки відкриті інциденти, створені за останні 12 годин
+# Запитуємо тільки відкриті інциденти, створені після search_start_time
 url = f"{QRADAR_API}/siem/offenses?filter=status%3D%22OPEN%22%20and%20start_time%3E{search_start_time}"
 
 try:

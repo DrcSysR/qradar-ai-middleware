@@ -8,8 +8,8 @@ SELECT
     SUM("Bytes Received") AS Total_Bytes_Received
 FROM events 
 WHERE 
-    qid = 53512404 
-    INOFFENSE({offense_id}) 
+    qid = 53512404
+    AND INOFFENSE({offense_id})
     AND NOT INCIDR('172.16.0.0/12', destinationip) 
     AND NOT INCIDR('192.168.0.0/16', destinationip) 
     AND NOT INCIDR('10.0.0.0/8', destinationip)

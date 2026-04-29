@@ -12,6 +12,8 @@ import re
 import os
 import sqlite3
 
+from prompts_loader import get_dynamic_prompt as _get_dynamic_prompt
+
 VERTEX_KEY_PATH = "/opt/qradar-middleware/me-vertex-ai-studio-666353d9e1df.json"
 CONFIG_FILE = "/opt/qradar-middleware/config.json"
 PROMPTS_FILE = "/opt/qradar-middleware/prompts.json"
@@ -74,6 +76,9 @@ HEADERS = {
 
 def init_db():
     with sqlite3.connect(DB_PATH) as conn:
+        # WAL дозволяє паралельні читання + одне запис без "database is locked"
+        conn.execute("PRAGMA journal_mode=WAL")
+        conn.execute("PRAGMA synchronous=NORMAL")
         conn.execute("""
             CREATE TABLE IF NOT EXISTS offenses (
                 offense_id INTEGER PRIMARY KEY,
@@ -92,56 +97,11 @@ class UniversalTrigger(BaseModel):
     offense_id: int
     is_manual: bool = False
 
-DEFAULT_PROMPT = "Analyze the following logs for malicious activity. Identify any anomalies or security threats."
-
 def get_dynamic_prompt(rule_name):
-    """Шукає мапінг у JSON: [ 'Промпт', 'Відповідальний', 'AQL' ]"""
-    default_text = "Analyze logs for malicious activity."
-    default_aql = "default.aql"
-    
-    if not os.path.exists(PROMPTS_FILE):
-        return default_text, None, default_aql
-        
-    try:
-        with open(PROMPTS_FILE, "r", encoding="utf-8") as f:
-            prompt_mapping = json.load(f)
-            
-        for key, config in prompt_mapping.items():
-            if key != "Default" and key.lower() in rule_name.lower():
-                filename = ""
-                assignee = None
-                aql_file = default_aql
-                
-                if isinstance(config, str):
-                    filename = config
-                elif isinstance(config, list) and len(config) > 0:
-                    filename = config[0]
-                    if len(config) > 1 and config[1].strip():
-                        assignee = config[1].strip()
-                    if len(config) > 2 and config[2].strip():
-                        aql_file = config[2].strip()
-                        
-                filepath = os.path.join(PROMPTS_DIR, filename)
-                if os.path.exists(filepath):
-                    with open(filepath, "r", encoding="utf-8") as pf:
-                        return pf.read(), assignee, aql_file
-                return default_text, None, default_aql
+    return _get_dynamic_prompt(rule_name, PROMPTS_FILE, PROMPTS_DIR)
 
-        # Правильний Default блок
-        if "Default" in prompt_mapping:
-            cfg = prompt_mapping["Default"]
-            filename = cfg[0] if isinstance(cfg, list) else cfg
-            aql_file = cfg[2] if isinstance(cfg, list) and len(cfg) > 2 else default_aql
-            filepath = os.path.join(PROMPTS_DIR, filename)
-            if os.path.exists(filepath):
-                with open(filepath, "r", encoding="utf-8") as pf:
-                    return pf.read(), None, aql_file
 
-    except Exception as e:
-        logging.error(f"Error reading prompts mapping: {e}")
-        
-    return default_text, None, default_aql
-    
+
 async def get_offense_details(client: httpx.AsyncClient, offense_id: int):
     url = f"{QRADAR_API_URL}/siem/offenses/{offense_id}"
     response = await client.get(url, headers=HEADERS)
@@ -154,10 +114,7 @@ async def get_offense_details(client: httpx.AsyncClient, offense_id: int):
     entity_value = data.get("offense_source", "Unknown")
     offense_type_id = data.get("offense_type", 0)
     offense_name = data.get("description", "Default")
-    
-    rules = data.get("rules", [])
-    rule_id = rules[0].get("id") if rules else None
-    
+
     if offense_type_id == 0: entity_type = "SourceIP"
     elif offense_type_id == 1: entity_type = "DestinationIP"
     elif offense_type_id == 3: entity_type = "User"
@@ -167,12 +124,11 @@ async def get_offense_details(client: httpx.AsyncClient, offense_id: int):
         "entity_value": entity_value,
         "entity_type": entity_type,
         "offense_name": offense_name,
-        "rule_id": rule_id
     }
 
-async def fetch_data_from_qradar(client: httpx.AsyncClient, offense_id: int, time_depth: str, aql_filename: str):
+async def fetch_data_from_qradar(client: httpx.AsyncClient, offense_id: int, time_depth: str, aql_filename: str, entity_value: str = "", entity_type: str = ""):
     filepath = os.path.join(QUERIES_DIR, aql_filename)
-    
+
     fallback_aql = (
         "SELECT DATEFORMAT(starttime, 'MM-dd HH:mm:ss') AS Time, "
         "QIDNAME(qid) AS EventName, username, sourceip, destinationip, destinationport, "
@@ -188,7 +144,15 @@ async def fetch_data_from_qradar(client: httpx.AsyncClient, offense_id: int, tim
             aql_template = f.read()
 
     global_limit = APP_CONFIG.get("aql_limit", 1500)
-    aql = aql_template.format(offense_id=offense_id, time_depth=time_depth, limit=global_limit)
+    source_ip = entity_value if entity_type in ("SourceIP", "DestinationIP") else ""
+    username = entity_value if entity_type == "User" else ""
+    aql = aql_template.format(
+        offense_id=offense_id,
+        time_depth=time_depth,
+        limit=global_limit,
+        source_ip=source_ip,
+        username=username,
+    )
 
     logging.debug(f"Executing Custom AQL ({aql_filename}): {aql}")
     
@@ -328,19 +292,32 @@ async def ask_vertex(client: httpx.AsyncClient, model: str, prompt: str) -> tupl
         logging.error(f"Помилка парсингу відповіді Vertex AI: {e}")
         raise ValueError("Failed to parse Vertex AI response")
         
+PROCESSING_STALE_MINUTES = 60  # PROCESSING старший за стільки хвилин — вважається крашнутим, можна перезапускати
+
 @app.post("/universal-analysis")
 async def universal_analysis(payload: UniversalTrigger):
-    
+
     with sqlite3.connect(DB_PATH) as conn:
         cursor = conn.cursor()
-        cursor.execute("SELECT status FROM offenses WHERE offense_id = ?", (payload.offense_id,))
+        cursor.execute(
+            "SELECT status, (julianday('now') - julianday(last_updated)) * 24 * 60 AS age_min "
+            "FROM offenses WHERE offense_id = ?",
+            (payload.offense_id,),
+        )
         row = cursor.fetchone()
-        
-        if not payload.is_manual and row and row[0] == 'PROCESSED':
-            logging.debug(f"⏭️ Офенс {payload.offense_id} вже оброблено раніше. Пропуск.")
-            return {"status": "skipped", "message": "Already processed in DB"}
-            
-        cursor.execute("INSERT OR REPLACE INTO offenses (offense_id, status, last_updated) VALUES (?, ?, CURRENT_TIMESTAMP)", 
+
+        if row and not payload.is_manual:
+            status, age_min = row[0], row[1] or 0
+            if status == 'PROCESSED':
+                logging.debug(f"⏭️ Офенс {payload.offense_id} вже оброблено раніше. Пропуск.")
+                return {"status": "skipped", "message": "Already processed in DB"}
+            if status == 'PROCESSING' and age_min < PROCESSING_STALE_MINUTES:
+                logging.info(f"⏳ Офенс {payload.offense_id} зараз обробляється іншим процесом ({int(age_min)} хв тому). Пропуск.")
+                return {"status": "skipped", "message": "Currently processing"}
+            if status == 'PROCESSING':
+                logging.warning(f"♻️ Офенс {payload.offense_id} застряг у PROCESSING на {int(age_min)} хв. Перезапуск.")
+
+        cursor.execute("INSERT OR REPLACE INTO offenses (offense_id, status, last_updated) VALUES (?, ?, CURRENT_TIMESTAMP)",
                        (payload.offense_id, 'PROCESSING'))
         conn.commit()
 
@@ -354,15 +331,23 @@ async def universal_analysis(payload: UniversalTrigger):
 
     logging.debug(f"Запуск: Offense {payload.offense_id} | Режим: {'Ручний' if payload.is_manual else 'Авто'} | Провайдер: {provider} | Модель: {active_model}")
 
-    async with httpx.AsyncClient(verify=False, timeout=APP_CONFIG.get("timeout_seconds", 600.0)) as client:
-        
+    timeout_seconds = APP_CONFIG.get("timeout_seconds", 600.0)
+    # qradar_client: verify=False — QRadar використовує self-signed серти.
+    # ai_client: verify=True — Vertex AI / Google ходить по валідних сертах, MitM захист обовʼязковий.
+    async with httpx.AsyncClient(verify=False, timeout=timeout_seconds) as client, \
+               httpx.AsyncClient(verify=True, timeout=timeout_seconds) as ai_client:
+
         details = await get_offense_details(client, payload.offense_id)
         if not details:
             raise HTTPException(status_code=404, detail="Offense not found or API error")
             
         instruction, assignee, aql_filename = get_dynamic_prompt(details['offense_name'])
 
-        raw_events = await fetch_data_from_qradar(client, payload.offense_id, time_depth, aql_filename)        
+        raw_events = await fetch_data_from_qradar(
+            client, payload.offense_id, time_depth, aql_filename,
+            entity_value=str(details.get("entity_value", "")),
+            entity_type=details.get("entity_type", ""),
+        )
         if not raw_events:
             logging.warning(f"⚠️ Для офенсу {payload.offense_id} не знайдено подій.")
             note_text = "AI Analysis (SKIPPED) | No events found by AQL. Events might be filtered out, aged out, or based on flows."
@@ -401,8 +386,9 @@ async def universal_analysis(payload: UniversalTrigger):
 
         try:
             if provider == "vertex":
-                score, verdict, explanation = await ask_vertex(client, active_model, prompt)
+                score, verdict, explanation = await ask_vertex(ai_client, active_model, prompt)
             else:
+                # Ollama локальний (127.0.0.1, HTTP) — TLS не задіяний, можна будь-яким клієнтом
                 score, verdict, explanation = await ask_ollama(client, active_model, prompt)
         except Exception as e:
             logging.error(f"AI Provider ({provider}) error: {e}")
