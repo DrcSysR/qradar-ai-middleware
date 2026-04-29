@@ -200,11 +200,11 @@ async def close_qradar_offense(client: httpx.AsyncClient, offense_id: int, score
     except Exception as e:
         logging.error(f"Error during closing offense: {e}")
 
-async def ask_ollama(client: httpx.AsyncClient, model: str, prompt: str) -> tuple[float, str, str]:
+async def ask_ollama(client: httpx.AsyncClient, model: str, prompt: str, timeout: float = 600.0) -> tuple[float, str, str]:
     num_ctx = MODELS_MAX_CTX.get(model, 32768)
     use_json_format = model in MODELS_WITH_JSON_FORMAT
     prompt_prefix = "" if use_json_format else "/no_think\n"
-    
+
     payload = {
         "model": model,
         "prompt": f"{prompt_prefix}{prompt}",
@@ -214,7 +214,7 @@ async def ask_ollama(client: httpx.AsyncClient, model: str, prompt: str) -> tupl
     if use_json_format:
         payload["format"] = "json"
 
-    response = await client.post(OLLAMA_API_URL, json=payload, timeout=600.0)
+    response = await client.post(OLLAMA_API_URL, json=payload, timeout=timeout)
     response.raise_for_status()
     llm_text = response.json().get("response", "")
 
@@ -322,14 +322,18 @@ async def universal_analysis(payload: UniversalTrigger):
         conn.commit()
 
     provider = APP_CONFIG.get("ai_provider", "ollama")
+    fallback_provider = APP_CONFIG.get("ai_fallback", "")
     time_depth = "LAST 7 DAYS" if payload.is_manual else "LAST 24 HOURS"
 
-    if provider == "vertex":
-        active_model = APP_CONFIG.get("vertex_deep", "gemini-1.5-pro") if payload.is_manual else APP_CONFIG.get("vertex_fast", "gemini-1.5-flash")
-    else:
-        active_model = APP_CONFIG.get("deep_model", "qwen3.5:27b") if payload.is_manual else APP_CONFIG.get("fast_model", "qwen2.5-coder:7b")
+    def model_for(p: str) -> str:
+        if p == "vertex":
+            return APP_CONFIG.get("vertex_deep", "gemini-1.5-pro") if payload.is_manual else APP_CONFIG.get("vertex_fast", "gemini-1.5-flash")
+        return APP_CONFIG.get("deep_model", "qwen3.5:27b") if payload.is_manual else APP_CONFIG.get("fast_model", "qwen2.5-coder:7b")
 
-    logging.debug(f"Запуск: Offense {payload.offense_id} | Режим: {'Ручний' if payload.is_manual else 'Авто'} | Провайдер: {provider} | Модель: {active_model}")
+    active_model = model_for(provider)
+    fallback_active = bool(fallback_provider) and fallback_provider != provider
+
+    logging.debug(f"Запуск: Offense {payload.offense_id} | Режим: {'Ручний' if payload.is_manual else 'Авто'} | Провайдер: {provider} | Модель: {active_model} | Fallback: {fallback_provider or '—'}")
 
     timeout_seconds = APP_CONFIG.get("timeout_seconds", 600.0)
     # qradar_client: verify=False — QRadar використовує self-signed серти.
@@ -384,19 +388,39 @@ async def universal_analysis(payload: UniversalTrigger):
             "Output ONLY the JSON object."
         )
 
-        try:
-            if provider == "vertex":
-                score, verdict, explanation = await ask_vertex(ai_client, active_model, prompt)
-            else:
-                # Ollama локальний (127.0.0.1, HTTP) — TLS не задіяний, можна будь-яким клієнтом
-                score, verdict, explanation = await ask_ollama(client, active_model, prompt)
-        except Exception as e:
-            logging.error(f"AI Provider ({provider}) error: {e}")
-            with sqlite3.connect(DB_PATH) as conn:
-                conn.execute("UPDATE offenses SET status = 'AI_ERROR', last_updated = CURRENT_TIMESTAMP WHERE offense_id = ?", (payload.offense_id,))
-            return {"status": "error", "message": f"AI analysis failed: {str(e)}"}
+        async def call_provider(p: str, model: str):
+            if p == "vertex":
+                return await ask_vertex(ai_client, model, prompt)
+            # Ollama локальний (127.0.0.1, HTTP) — TLS не задіяний, можна будь-яким клієнтом.
+            # Окремий короткий таймаут потрібен, щоб черга в Олламі не блокувала fallback на 10 хв.
+            ollama_timeout = float(APP_CONFIG.get("ollama_timeout_seconds", APP_CONFIG.get("timeout_seconds", 600)))
+            return await ask_ollama(client, model, prompt, timeout=ollama_timeout)
 
-        note_text = f"AI Analysis ({provider.upper()}) | Verdict: {verdict} | Score: {score} | Reason: {explanation}"
+        used_provider = provider
+        used_fallback = False
+        try:
+            score, verdict, explanation = await call_provider(provider, active_model)
+        except Exception as primary_err:
+            if fallback_active:
+                fb_model = model_for(fallback_provider)
+                logging.warning(f"⚠️ Provider {provider} ({active_model}) failed for offense {payload.offense_id}: {primary_err}. Fallback → {fallback_provider} ({fb_model}).")
+                try:
+                    score, verdict, explanation = await call_provider(fallback_provider, fb_model)
+                    used_provider = fallback_provider
+                    used_fallback = True
+                except Exception as fb_err:
+                    logging.error(f"AI fallback ({fallback_provider}) also failed: {fb_err}")
+                    with sqlite3.connect(DB_PATH) as conn:
+                        conn.execute("UPDATE offenses SET status = 'AI_ERROR', last_updated = CURRENT_TIMESTAMP WHERE offense_id = ?", (payload.offense_id,))
+                    return {"status": "error", "message": f"AI failed: primary={provider}:{primary_err}; fallback={fallback_provider}:{fb_err}"}
+            else:
+                logging.error(f"AI Provider ({provider}) error: {primary_err}")
+                with sqlite3.connect(DB_PATH) as conn:
+                    conn.execute("UPDATE offenses SET status = 'AI_ERROR', last_updated = CURRENT_TIMESTAMP WHERE offense_id = ?", (payload.offense_id,))
+                return {"status": "error", "message": f"AI analysis failed: {str(primary_err)}"}
+
+        provider_label = f"{used_provider.upper()} [fallback]" if used_fallback else used_provider.upper()
+        note_text = f"AI Analysis ({provider_label}) | Verdict: {verdict} | Score: {score} | Reason: {explanation}"
         note_url = f"{QRADAR_API_URL}/siem/offenses/{payload.offense_id}/notes?note_text={urllib.parse.quote(note_text)}"
         note_resp = await client.post(note_url, headers=HEADERS)
         
@@ -423,8 +447,8 @@ async def universal_analysis(payload: UniversalTrigger):
                 WHERE offense_id = ?
             """, (score, verdict, payload.offense_id))
 
-    logging.info(f"✅ Офенс {payload.offense_id} оброблено | Режим: {'Ручний' if payload.is_manual else 'Авто'} | Вердикт: {verdict} | Score: {score}")
-    return {"status": "success", "offense_id": payload.offense_id, "verdict": verdict, "score": score, "explanation": explanation}
+    logging.info(f"✅ Офенс {payload.offense_id} оброблено | Режим: {'Ручний' if payload.is_manual else 'Авто'} | Провайдер: {provider_label} | Вердикт: {verdict} | Score: {score}")
+    return {"status": "success", "offense_id": payload.offense_id, "verdict": verdict, "score": score, "explanation": explanation, "provider": used_provider, "fallback": used_fallback}
 
 @app.get("/", response_class=HTMLResponse)
 async def get_web_ui():
