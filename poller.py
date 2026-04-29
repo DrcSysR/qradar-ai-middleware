@@ -86,7 +86,9 @@ try:
         
         processed_count = 0
         hit_limit = False
-        
+        consecutive_conn_errors = 0
+        MAX_CONSECUTIVE_CONN_ERRORS = 3  # Якщо middleware не відповідає N разів поспіль — припиняємо цикл, наступний фаєр спробує знову
+
         for off in offenses:
             if processed_count >= MAX_OFFENSES_PER_RUN:
                 logging.info(f"⚠️ Досягнуто ліміт ({MAX_OFFENSES_PER_RUN}).")
@@ -95,14 +97,14 @@ try:
 
             off_id = int(off["id"])
             desc = off.get("description", "")
-            
+
             # 1. Швидка перевірка по базі даних
             if is_processed_in_db(off_id):
                 continue
-            
+
             # 2. Перевірка назви правила
             if any(rule.lower() in desc.lower() for rule in target_rules):
-                
+
                 # 3. Надійна перевірка через API (якщо в QRadar вже є нотатка, але БД була видалена)
                 if not has_ai_note(off_id):
                     logging.info(f"[+] Новий офенс: {off_id}. Відправка на AI...")
@@ -112,17 +114,26 @@ try:
                             logging.info(f"✅ Офенс {off_id} успішно оброблено. Middleware зберіг статус у БД.")
                         else:
                             logging.error(f"❌ Помилка Middleware: {ai_resp.status_code}")
-                        
+
                         processed_count += 1
+                        consecutive_conn_errors = 0
                     except requests.exceptions.Timeout:
                         logging.error(f"⏳ Таймаут для {off_id}.")
                         processed_count += 1
+                        consecutive_conn_errors = 0
+                    except requests.exceptions.ConnectionError as e:
+                        consecutive_conn_errors += 1
+                        logging.error(f"❌ Connection refused для {off_id} (поспіль {consecutive_conn_errors}/{MAX_CONSECUTIVE_CONN_ERRORS}): {e}")
+                        if consecutive_conn_errors >= MAX_CONSECUTIVE_CONN_ERRORS:
+                            logging.error(f"🛑 Middleware недоступний {consecutive_conn_errors} разів поспіль. Припиняю цикл, наступний фаєр поллера спробує знову.")
+                            break
                     except Exception as e:
                         logging.error(f"❌ Помилка з'єднання: {e}")
+                        consecutive_conn_errors = 0
                 else:
                     logging.info(f"ℹ️ Офенс {off_id} вже має нотатку від AI. Пропускаємо.")
-        
-        if not hit_limit:
+
+        if not hit_limit and consecutive_conn_errors < MAX_CONSECUTIVE_CONN_ERRORS:
             logging.info("Черга порожня або повністю оброблена.")
             
     else:
