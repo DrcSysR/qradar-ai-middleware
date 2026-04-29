@@ -11,7 +11,7 @@ import sqlite3
 from prompts_loader import get_rule_keys
 
 # --- НАЛАШТУВАННЯ ---
-LOOKBACK_TIME_MS = 14 * 24 * 60 * 60 * 1000  # 14 днів у мілісекундах
+LOOKBACK_TIME_MS = 24 * 60 * 60 * 1000  # 24 години у мілісекундах (deep/manual режим бере 7 днів через AQL time_depth)
 MAX_OFFENSES_PER_RUN = 50
 LOG_FILE = "/opt/qradar-middleware/poller.log"
 LOCK_FILE = "/opt/qradar-middleware/poller.lock"
@@ -73,7 +73,7 @@ logging.info("--- Запуск Poller (Smart DB Mode) ---")
 
 search_start_time = int(time.time() * 1000) - LOOKBACK_TIME_MS
 
-logging.info(f"Шукаємо офенси за останні 14 днів (з {time.strftime('%Y-%m-%d %H:%M:%S', time.localtime(search_start_time/1000))})")
+logging.info(f"Шукаємо офенси за останні 24 години (з {time.strftime('%Y-%m-%d %H:%M:%S', time.localtime(search_start_time/1000))})")
 
 # Запитуємо тільки відкриті інциденти, створені після search_start_time
 url = f"{QRADAR_API}/siem/offenses?filter=status%3D%22OPEN%22%20and%20start_time%3E{search_start_time}"
