@@ -499,8 +499,9 @@ async def universal_analysis(payload: UniversalTrigger):
         if note_resp.status_code in (200, 201):
             logging.debug(f"Offense {payload.offense_id} successfully updated with note.")
             
-        if score <= 0.6:
-            # Низький скор → автозакриття. Не призначаємо нікого, бо офенс закриється.
+        if score <= 0.6 and not payload.is_manual:
+            # Низький скор + авто-режим → автозакриття. Не призначаємо нікого, бо офенс закриється.
+            # У ручному режимі офенс не закриваємо — аналітик сам натиснув "аналізувати" і хоче побачити результат.
             logging.debug(f"Score {score} is low. Triggering auto-close for Offense {payload.offense_id}")
             await close_qradar_offense(client, payload.offense_id, score)
         elif assignee:
