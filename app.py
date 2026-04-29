@@ -403,17 +403,18 @@ async def universal_analysis(payload: UniversalTrigger):
         if note_resp.status_code in (200, 201):
             logging.debug(f"Offense {payload.offense_id} successfully updated with note.")
             
-        if assignee:
+        if score <= 0.6:
+            # Низький скор → автозакриття. Не призначаємо нікого, бо офенс закриється.
+            logging.debug(f"Score {score} is low. Triggering auto-close for Offense {payload.offense_id}")
+            await close_qradar_offense(client, payload.offense_id, score)
+        elif assignee:
+            # Високий скор → офенс лишається відкритим, передаємо аналітику з prompts.json
             assign_url = f"{QRADAR_API_URL}/siem/offenses/{payload.offense_id}?assigned_to={assignee}"
             assign_resp = await client.post(assign_url, headers=HEADERS)
             if assign_resp.status_code in (200, 201):
-                logging.info(f"👤 Офенс {payload.offense_id} успішно призначено на користувача: {assignee}")
+                logging.info(f"👤 Офенс {payload.offense_id} призначено на {assignee} (score {score} > 0.6)")
             else:
                 logging.error(f"⚠️ Не вдалося призначити офенс {payload.offense_id} на {assignee}: {assign_resp.text}")
-
-        if score <= 0.6:
-            logging.debug(f"Score {score} is low. Triggering auto-close for Offense {payload.offense_id}")
-            await close_qradar_offense(client, payload.offense_id, score)
 
         with sqlite3.connect(DB_PATH) as conn:
             conn.execute("""
