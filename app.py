@@ -11,6 +11,7 @@ import json
 import re
 import os
 import sqlite3
+import time
 
 from prompts_loader import get_dynamic_prompt as _get_dynamic_prompt
 
@@ -29,6 +30,10 @@ MODELS_MAX_CTX = {
     "qwen3.5:27b": 65536,
 }
 MODELS_WITH_JSON_FORMAT = {"qwen2.5-coder:7b", "qwen2.5-coder:14b", "qwen2.5-coder:32b"}
+
+# Кеш inverse-індексу reference sets (ip -> [setnames]). Скидається тільки рестартом сервісу.
+REFSET_CACHE = {"index": None, "ts": 0.0}
+IPV4_RE = re.compile(r'\b(?:\d{1,3}\.){3}\d{1,3}\b')
 
 # --- ЗАВАНТАЖЕННЯ КОНФІГУРАЦІЇ ---
 def load_config():
@@ -200,6 +205,66 @@ async def close_qradar_offense(client: httpx.AsyncClient, offense_id: int, score
     except Exception as e:
         logging.error(f"Error during closing offense: {e}")
 
+async def fetch_refset_index(client: httpx.AsyncClient) -> dict:
+    refset_names = APP_CONFIG.get("reference_sets", [])
+    if not refset_names:
+        return {}
+
+    index: dict = {}
+    for name in refset_names:
+        url = f"{QRADAR_API_URL}/reference_data/sets/{urllib.parse.quote(name)}?fields=data"
+        try:
+            resp = await client.get(url, headers=HEADERS)
+            if resp.status_code != 200:
+                logging.warning(f"Reference set '{name}' fetch failed: HTTP {resp.status_code}")
+                continue
+            for item in resp.json().get("data", []):
+                value = item.get("value")
+                if value:
+                    index.setdefault(value, []).append(name)
+        except Exception as e:
+            logging.warning(f"Reference set '{name}' fetch error: {e}")
+    return index
+
+async def get_refset_index(client: httpx.AsyncClient) -> dict:
+    ttl = float(APP_CONFIG.get("refset_cache_ttl_seconds", 3600))
+    now = time.time()
+    if REFSET_CACHE["index"] is None or (now - REFSET_CACHE["ts"]) > ttl:
+        logging.info("Reference set cache stale — refreshing from QRadar.")
+        REFSET_CACHE["index"] = await fetch_refset_index(client)
+        REFSET_CACHE["ts"] = now
+        logging.info(f"Reference set cache loaded: {len(REFSET_CACHE['index'])} unique values across {len(APP_CONFIG.get('reference_sets', []))} sets.")
+    return REFSET_CACHE["index"]
+
+def build_asset_context_block(events: list, refset_index: dict) -> str:
+    if not events or not refset_index:
+        return ""
+
+    seen_ips: set = set()
+    for ev in events:
+        if not isinstance(ev, dict):
+            continue
+        for v in ev.values():
+            if isinstance(v, str):
+                seen_ips.update(IPV4_RE.findall(v))
+
+    matched = {}
+    for ip in seen_ips:
+        tags = refset_index.get(ip)
+        if tags:
+            matched[ip] = tags
+    if not matched:
+        return ""
+
+    lines = [f"{ip}: {', '.join(tags)}" for ip, tags in sorted(matched.items())]
+    return (
+        "--- INTERNAL ASSET CONTEXT ---\n"
+        "(IPs below are tagged with their internal infrastructure role. Use this to refine the verdict: "
+        "expected role behavior lowers the score, out-of-role behavior raises it.)\n"
+        + "\n".join(lines)
+        + "\n--- END ASSET CONTEXT ---\n\n"
+    )
+
 async def ask_ollama(client: httpx.AsyncClient, model: str, prompt: str, timeout: float = 600.0) -> tuple[float, str, str]:
     num_ctx = MODELS_MAX_CTX.get(model, 32768)
     use_json_format = model in MODELS_WITH_JSON_FORMAT
@@ -366,12 +431,16 @@ async def universal_analysis(payload: UniversalTrigger):
         max_chars = int((MODELS_MAX_CTX.get(active_model, 32768) - 4096) * 3.5) if provider == "ollama" else 2000000
         logs_text = str(raw_events)[:max_chars]
 
+        refset_index = await get_refset_index(client)
+        asset_block = build_asset_context_block(raw_events, refset_index)
+
         prompt = (
             "You are an expert Tier-2 SOC analyst. "
             f"Context: QRadar triggered an offense named '{details['offense_name']}'. "
             "However, SIEM rules often generate False Positives due to normal administrative tasks, "
             "misconfigurations, or routine network traffic. Your primary job is to act as a filter.\n\n"
             f"Task: {instruction}\n\n"
+            f"{asset_block}"
             f"--- START OF LOGS ---\n{logs_text}\n--- END OF LOGS ---\n\n"
             "Based ONLY on the logs above, return a valid JSON object with exactly THREE keys: "
             "'score', 'verdict', and 'explanation'.\n\n"
@@ -384,6 +453,9 @@ async def universal_analysis(payload: UniversalTrigger):
             "- 0.4 to 0.6: SUSPICIOUS BUT INCONCLUSIVE. Anomalous behavior without clear evidence of intent or impact.\n"
             "- 0.7 to 0.8: HIGHLY SUSPICIOUS. Strong indicators of malicious activity (e.g., failed brute force, scanning).\n"
             "- 0.9 to 1.0: CONFIRMED COMPROMISE. Clear evidence of successful attack, data exfiltration, or unauthorized access.\n\n"
+            "If INTERNAL ASSET CONTEXT is provided above, weigh it: traffic matching an asset's expected role "
+            "(e.g., LDAP traffic to a 'LDAP Servers' IP) lowers the score; out-of-role behavior "
+            "(e.g., a 'Database Servers' IP making outbound web traffic) raises it.\n\n"
             "Do NOT default to a high score just because an offense was triggered. Be highly skeptical. "
             "Output ONLY the JSON object."
         )
