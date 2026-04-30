@@ -20,5 +20,6 @@
     "Block bruteforce logins by syspicious list" : [ "btnt_susp_list.md", "sergii.legerko", "btnt_ip_review.aql", "ME-PA-Suspicious-IP-Addresses" ],
     "UC-ME Deny continiously bruteforce from rogue IP" : [ "btnt_rogue_ip.md", "sergii.legerko", "btnt_user_review.aql" ],
     "UC-ME A large number of failed login attempts were detected under the same username" : [ "btnt_user_spray.md", "sergii.legerko", "btnt_user_review.aql" ],
+    "Excessive Firewall Denies from Single Source" : [ "excessive_fw_denies.md", "sergii.legerko", "excessive_fw_denies.aql" ],
     "Default": [ "default.md", "", "default.aql" ]
 }

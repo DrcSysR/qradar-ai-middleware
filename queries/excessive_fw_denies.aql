@@ -1,0 +1,25 @@
+SELECT
+    QIDNAME(qid) AS Event,
+    LOGSOURCETYPENAME(devicetype) AS Log_Source,
+    sourceip AS Src_IP,
+    destinationip AS Dst_IP,
+    destinationport AS Dst_Port,
+    "Process Name" AS Process,
+    REFERENCESETCONTAINS('Windows Sensitive Processes', "Process Name") AS Sensitive_Process,
+    username AS User,
+    "Application" AS App,
+    "Action" AS FW_Action,
+    COUNT(*) AS Event_Count,
+    UNIQUECOUNT(destinationip) AS Unique_Targets,
+    UNIQUECOUNT(destinationport) AS Unique_Ports,
+    MIN(starttime) AS First_Seen,
+    MAX(starttime) AS Last_Seen
+FROM events
+WHERE
+    INOFFENSE({offense_id})
+    OR (sourceip = '{source_ip}'
+        AND "Process Name" IS NOT NULL
+        AND "Process Name" <> '')
+GROUP BY Event, Log_Source, Src_IP, Dst_IP, Dst_Port, Process, Sensitive_Process, User, App, FW_Action
+ORDER BY Event_Count DESC
+LIMIT {limit} {time_depth}
