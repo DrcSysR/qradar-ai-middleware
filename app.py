@@ -129,6 +129,8 @@ async def get_offense_details(client: httpx.AsyncClient, offense_id: int):
         "entity_value": entity_value,
         "entity_type": entity_type,
         "offense_name": offense_name,
+        "start_time": data.get("start_time"),
+        "last_updated_time": data.get("last_updated_time"),
     }
 
 async def fetch_data_from_qradar(client: httpx.AsyncClient, offense_id: int, time_depth: str, aql_filename: str, entity_value: str = "", entity_type: str = ""):
@@ -408,7 +410,6 @@ async def universal_analysis(payload: UniversalTrigger):
 
     provider = APP_CONFIG.get("ai_provider", "ollama")
     fallback_provider = APP_CONFIG.get("ai_fallback", "")
-    time_depth = "LAST 7 DAYS" if payload.is_manual else "LAST 24 HOURS"
 
     def model_for(p: str) -> str:
         if p == "vertex":
@@ -429,7 +430,19 @@ async def universal_analysis(payload: UniversalTrigger):
         details = await get_offense_details(client, payload.offense_id)
         if not details:
             raise HTTPException(status_code=404, detail="Offense not found or API error")
-            
+
+        # Вікно AQL відраховуємо від часу офенсу, а не від "now": інакше manual-аналіз
+        # старого офенсу (або auto з затримкою) втрапляє у порожній період.
+        window_ms = (7 * 24 * 60 * 60 * 1000) if payload.is_manual else (4 * 60 * 60 * 1000)
+        offense_start = details.get("start_time")
+        offense_end = details.get("last_updated_time") or offense_start
+        if offense_start:
+            start_ms = int(offense_start) - window_ms
+            stop_ms = int(offense_end) + 5 * 60 * 1000  # +5 хв буфер на пізні події
+            time_depth = f"START {start_ms} STOP {stop_ms}"
+        else:
+            time_depth = "LAST 7 DAYS" if payload.is_manual else "LAST 4 HOURS"
+
         instruction, assignee, aql_filename, refset_cleanup = get_dynamic_prompt(details['offense_name'])
 
         raw_events = await fetch_data_from_qradar(
