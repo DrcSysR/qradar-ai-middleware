@@ -1,0 +1,13 @@
+SELECT
+    username AS Username,
+    sourceip AS Source_IP,
+    QIDNAME(qid) AS Event_Name,
+    "Logon Type" AS Logon_Type,
+    "Action" AS Firewall_Action,
+    destinationip AS Target_IP,
+    COUNT(*) AS Event_Count
+FROM events
+WHERE username = '{username}'
+GROUP BY Username, Source_IP, Event_Name, Logon_Type, Firewall_Action, Target_IP
+ORDER BY Event_Count DESC
+LIMIT {limit} {time_depth}

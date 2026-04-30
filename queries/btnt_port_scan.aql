@@ -1,0 +1,14 @@
+SELECT
+    sourceip AS Source_IP,
+    destinationip AS Target_IP,
+    destinationport AS Target_Port,
+    QIDNAME(qid) AS Event_Name,
+    "Action" AS Firewall_Action,
+    COUNT(*) AS Event_Count,
+    UNIQUECOUNT(destinationip) AS Unique_Targets,
+    UNIQUECOUNT(destinationport) AS Unique_Ports
+FROM events
+WHERE sourceip = '{source_ip}'
+GROUP BY Source_IP, Target_IP, Target_Port, Event_Name, Firewall_Action
+ORDER BY Event_Count DESC
+LIMIT {limit} {time_depth}

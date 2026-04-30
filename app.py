@@ -187,6 +187,26 @@ async def fetch_data_from_qradar(client: httpx.AsyncClient, offense_id: int, tim
         logging.error(f"Error fetching exact offense events: {e}")
         return []
 
+async def remove_ip_from_refset(client: httpx.AsyncClient, refset_name: str, ip_value: str) -> tuple[bool, str]:
+    """Видалити IP з QRadar reference set. Повертає (success, message).
+    HTTP 200 — видалено, 404 — вже відсутнє (теж success), інше — помилка.
+    Якщо config.botnet_dry_run=true, реальний DELETE не робиться, лише логування."""
+    if APP_CONFIG.get("botnet_dry_run", False):
+        logging.info(f"[DRY RUN] Would DELETE {ip_value} from reference set {refset_name}")
+        return True, "dry_run"
+
+    url = f"{QRADAR_API_URL}/reference_data/sets/{urllib.parse.quote(refset_name)}/{urllib.parse.quote(ip_value)}"
+    try:
+        resp = await client.delete(url, headers=HEADERS)
+        if resp.status_code == 200:
+            return True, "removed"
+        if resp.status_code == 404:
+            return True, "not_present"
+        return False, f"http_{resp.status_code}: {resp.text[:200]}"
+    except Exception as e:
+        return False, f"exception: {e}"
+
+
 async def close_qradar_offense(client: httpx.AsyncClient, offense_id: int, score: float):
     url = f"{QRADAR_API_URL}/siem/offenses/{offense_id}"
     params = {
@@ -410,7 +430,7 @@ async def universal_analysis(payload: UniversalTrigger):
         if not details:
             raise HTTPException(status_code=404, detail="Offense not found or API error")
             
-        instruction, assignee, aql_filename = get_dynamic_prompt(details['offense_name'])
+        instruction, assignee, aql_filename, refset_cleanup = get_dynamic_prompt(details['offense_name'])
 
         raw_events = await fetch_data_from_qradar(
             client, payload.offense_id, time_depth, aql_filename,
@@ -492,13 +512,34 @@ async def universal_analysis(payload: UniversalTrigger):
                 return {"status": "error", "message": f"AI analysis failed: {str(primary_err)}"}
 
         provider_label = f"{used_provider.upper()} [fallback]" if used_fallback else used_provider.upper()
-        note_text = f"AI Analysis ({provider_label}) | Verdict: {verdict} | Score: {score} | Reason: {explanation}"
+
+        # Refset cleanup: для правил-наповнювачів радар уже додав sourceip у block-list.
+        # Якщо AI визнав FP — знімаємо IP з refset, ефективно скасовуючи блок (PA-тег
+        # сам стече по таймауту). Працює лише якщо в prompts.json вказано refset_cleanup
+        # і entity офенсу — IP-адреса (SourceIP/DestinationIP).
+        refset_action_note = ""
+        if (
+            refset_cleanup
+            and score <= 0.6
+            and details.get("entity_type") in ("SourceIP", "DestinationIP")
+            and IPV4_RE.fullmatch(str(details.get("entity_value", "")).strip())
+        ):
+            ip_to_clean = str(details["entity_value"]).strip()
+            ok, msg = await remove_ip_from_refset(client, refset_cleanup, ip_to_clean)
+            if ok:
+                logging.info(f"🧹 FP cleanup: removed {ip_to_clean} from {refset_cleanup} ({msg}) for offense {payload.offense_id}")
+                refset_action_note = f" | Action: removed {ip_to_clean} from {refset_cleanup} ({msg})"
+            else:
+                logging.error(f"⚠️ FP cleanup failed for {ip_to_clean} from {refset_cleanup}: {msg}")
+                refset_action_note = f" | Action: refset cleanup FAILED ({msg})"
+
+        note_text = f"AI Analysis ({provider_label}) | Verdict: {verdict} | Score: {score} | Reason: {explanation}{refset_action_note}"
         note_url = f"{QRADAR_API_URL}/siem/offenses/{payload.offense_id}/notes?note_text={urllib.parse.quote(note_text)}"
         note_resp = await client.post(note_url, headers=HEADERS)
-        
+
         if note_resp.status_code in (200, 201):
             logging.debug(f"Offense {payload.offense_id} successfully updated with note.")
-            
+
         if score <= 0.6 and not payload.is_manual:
             # Низький скор + авто-режим → автозакриття. Не призначаємо нікого, бо офенс закриється.
             # У ручному режимі офенс не закриваємо — аналітик сам натиснув "аналізувати" і хоче побачити результат.

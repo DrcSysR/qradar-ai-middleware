@@ -29,11 +29,14 @@ def get_rule_keys(prompts_file: str) -> list[str]:
     return [k for k in mapping.keys() if k not in META_KEYS]
 
 
-def _resolve_config(config) -> tuple[str, str | None, str]:
-    """Розпарсити елемент мапінгу: рядок або список [filename, assignee, aql_file]."""
+def _resolve_config(config) -> tuple[str, str | None, str, str | None]:
+    """Розпарсити елемент мапінгу: рядок або список [filename, assignee, aql_file, refset_cleanup].
+    refset_cleanup — назва reference set, з якого треба видалити entity IP при FP-вердикті
+    (порожній рядок або відсутність — ніяких дій з refset)."""
     filename = ""
     assignee = None
     aql_file = DEFAULT_AQL_FILE
+    refset_cleanup = None
 
     if isinstance(config, str):
         filename = config
@@ -43,16 +46,18 @@ def _resolve_config(config) -> tuple[str, str | None, str]:
             assignee = config[1].strip()
         if len(config) > 2 and isinstance(config[2], str) and config[2].strip():
             aql_file = config[2].strip()
+        if len(config) > 3 and isinstance(config[3], str) and config[3].strip():
+            refset_cleanup = config[3].strip()
 
-    return filename, assignee, aql_file
+    return filename, assignee, aql_file, refset_cleanup
 
 
-def get_dynamic_prompt(rule_name: str, prompts_file: str, prompts_dir: str) -> tuple[str, str | None, str]:
+def get_dynamic_prompt(rule_name: str, prompts_file: str, prompts_dir: str) -> tuple[str, str | None, str, str | None]:
     """Знайти у prompts.json першу секцію, ключ якої є substring назви офенсу.
-    Повертає (prompt_text, assignee, aql_filename). Якщо нічого не знайдено — Default; якщо й Default немає — фолбек."""
+    Повертає (prompt_text, assignee, aql_filename, refset_cleanup). Якщо нічого не знайдено — Default; якщо й Default немає — фолбек."""
     mapping = _load_mapping(prompts_file)
     if not mapping:
-        return DEFAULT_PROMPT_TEXT, None, DEFAULT_AQL_FILE
+        return DEFAULT_PROMPT_TEXT, None, DEFAULT_AQL_FILE, None
 
     rule_lower = rule_name.lower()
 
@@ -61,19 +66,19 @@ def get_dynamic_prompt(rule_name: str, prompts_file: str, prompts_dir: str) -> t
         if key in META_KEYS:
             continue
         if key.lower() in rule_lower:
-            filename, assignee, aql_file = _resolve_config(config)
+            filename, assignee, aql_file, refset_cleanup = _resolve_config(config)
             filepath = os.path.join(prompts_dir, filename)
             if os.path.exists(filepath):
                 with open(filepath, "r", encoding="utf-8") as pf:
-                    return pf.read(), assignee, aql_file
-            return DEFAULT_PROMPT_TEXT, None, DEFAULT_AQL_FILE
+                    return pf.read(), assignee, aql_file, refset_cleanup
+            return DEFAULT_PROMPT_TEXT, None, DEFAULT_AQL_FILE, None
 
     # 2. Default
     if "Default" in mapping:
-        filename, _, aql_file = _resolve_config(mapping["Default"])
+        filename, _, aql_file, _ = _resolve_config(mapping["Default"])
         filepath = os.path.join(prompts_dir, filename)
         if os.path.exists(filepath):
             with open(filepath, "r", encoding="utf-8") as pf:
-                return pf.read(), None, aql_file
+                return pf.read(), None, aql_file, None
 
-    return DEFAULT_PROMPT_TEXT, None, DEFAULT_AQL_FILE
+    return DEFAULT_PROMPT_TEXT, None, DEFAULT_AQL_FILE, None
