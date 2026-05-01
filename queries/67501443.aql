@@ -13,11 +13,7 @@ WHERE
     AND NOT REFERENCESETCONTAINS('UC-ME Safe Application List', "Application")
     AND NOT (
         QIDNAME(qid) ILIKE '%Non-RFC Compliant SSL Traffic on Port 443%'
-        AND (
-            INCIDR('91.108.0.0/16', destinationip)
-            OR INCIDR('95.161.64.0/20', destinationip)
-            OR INCIDR('149.154.160.0/20', destinationip)
-        )
+        AND NETWORKNAME(destinationip) ILIKE '%Telegram_Infrastructure%'
     )
 GROUP BY "Threat_Name", App, Target_IP, Port, PA_Action
 ORDER BY Event_Count DESC
