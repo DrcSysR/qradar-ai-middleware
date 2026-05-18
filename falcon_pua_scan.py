@@ -308,13 +308,13 @@ def build_chat_message(items: list, title: str, max_items: int) -> dict:
             if shown >= max_items:
                 break
             fname = it.get("filename") or "?"
-            fpath = (it.get("filepath") or "?").replace("\\\\", "\\")
+            when = it.get("time") or "?"
             sha = it.get("sha256") or ""
             tac = it.get("tactic") or "?"
             tech = it.get("technique") or "?"
             sev = it.get("sev") or "?"
             lines.append(f"  • `{fname}` ({tac}/{tech}, sev={sev})")
-            lines.append(f"    `{fpath}`")
+            lines.append(f"    дата: {when}")
             if sha:
                 lines.append(f"    sha256: `{sha}`")
             falcon_url = it.get("url")
