@@ -21,5 +21,6 @@
     "UC-ME Deny continiously bruteforce from rogue IP" : [ "btnt_rogue_ip.md", "sergii.legerko", "btnt_user_review.aql" ],
     "UC-ME A large number of failed login attempts were detected under the same username" : [ "btnt_user_spray.md", "sergii.legerko", "btnt_user_review.aql" ],
     "Excessive Firewall Denies from Single Source" : [ "excessive_fw_denies.md", "sergii.legerko", "excessive_fw_denies.aql" ],
+    "Excessive Firewall Denies Between Hosts" : [ "excessive_fw_denies_chain.md", "sergii.legerko", "excessive_fw_denies_chain.aql" ],
     "Default": [ "default.md", "", "default.aql" ]
 }
