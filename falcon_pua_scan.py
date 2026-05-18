@@ -45,6 +45,10 @@ DEFAULTS = {
     "falcon_pua_aql_timeout_seconds": 300,
     "falcon_pua_max_aql_rows": 5000,
     "falcon_pua_max_report_items": 50,
+    # Поріг важливості Falcon-події. Беремо тільки sev > цього значення.
+    # Falcon-шкала: 10=Info, 20=Low, 30=Medium, 40=High, 50=Critical.
+    # Default 40 → пропускаємо лише High+ і Critical, відсікаємо ML/PUP шум.
+    "falcon_pua_min_severity": 40,
     # Регекси шляхів, що завжди FP (Falcon ML / EPP помилково тригерить).
     # Регістронечутливо, match по filePath. Подвійні слеши Falcon-style.
     "falcon_pua_fp_path_regex": [
@@ -171,8 +175,14 @@ def run_aql(qradar_api: str, headers: dict, aql: str, timeout_seconds: int) -> l
         return []
 
 
-def is_false_positive(item: dict, fp_path_re: list, fp_filenames: set, fp_sha256: set) -> str | None:
+def is_false_positive(item: dict, fp_path_re: list, fp_filenames: set, fp_sha256: set, min_sev: int) -> str | None:
     """Повертає причину FP або None якщо подія підозріла."""
+    try:
+        sev = int(item.get("sev") or 0)
+    except (TypeError, ValueError):
+        sev = 0
+    if sev <= min_sev:
+        return f"sev_below_threshold:{sev}<={min_sev}"
     sha = (item.get("sha256") or "").lower()
     if sha and sha in fp_sha256:
         return f"sha256_allowlist"
@@ -224,6 +234,7 @@ def filter_and_dedupe(events: list, config: dict, dedup_days: int) -> tuple[list
     fp_path_re = [re.compile(rx, re.IGNORECASE) for rx in cfg(config, "falcon_pua_fp_path_regex")]
     fp_filenames = set(cfg(config, "falcon_pua_fp_filenames"))
     fp_sha256 = set(s.lower() for s in cfg(config, "falcon_pua_fp_sha256"))
+    min_sev = int(cfg(config, "falcon_pua_min_severity"))
 
     stats = {"raw": len(events), "parsed": 0, "fp": 0, "dedup_run": 0, "dedup": 0, "new": 0}
     # Deduplicate WITHIN this run by (sha256, hostname, filepath) — Falcon emits a
@@ -235,7 +246,7 @@ def filter_and_dedupe(events: list, config: dict, dedup_days: int) -> tuple[list
         if not item:
             continue
         stats["parsed"] += 1
-        why = is_false_positive(item, fp_path_re, fp_filenames, fp_sha256)
+        why = is_false_positive(item, fp_path_re, fp_filenames, fp_sha256, min_sev)
         if why:
             item["fp_reason"] = why
             stats["fp"] += 1
