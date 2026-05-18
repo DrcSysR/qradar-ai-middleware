@@ -175,6 +175,46 @@ def run_aql(qradar_api: str, headers: dict, aql: str, timeout_seconds: int) -> l
         return []
 
 
+def recommend_action(item: dict) -> str:
+    """Коротка рекомендована дія українською на основі technique/path/severity."""
+    try:
+        sev = int(item.get("sev") or 0)
+    except (TypeError, ValueError):
+        sev = 0
+    tech = (item.get("technique") or "").lower()
+    fpath = (item.get("filepath") or "").lower()
+    fname = (item.get("filename") or "").lower()
+
+    # KMS-активатори / cracks
+    if "kms" in fname or "\\kms\\" in fpath or "kmsauto" in fname or "kmscleaner" in fname:
+        return "🔧 Видалити з хоста, перевірити ліцензії Windows/Office, попередити користувача"
+    # Remote-access tools (Ammyy, AnyDesk, TeamViewer, Atera, ScreenConnect у не-IT шляхах)
+    if any(x in fname for x in ("ammyy", "anydesk", "teamviewer", "atera", "screenconnect", "remoteutilities")):
+        return "🚨 Перевірити чи юзер уповноважений; якщо ні — видалити і перевірити на захоплення (lateral)"
+    # Pirated/emulator packs
+    if "emul" in fname or "patch.exe" in fname or "crack" in fpath or "keygen" in fname:
+        return "🚨 Піратський пакет: видалити, перевірити хост на додаткові артефакти, повідомити юзера"
+    # Torrent / file sharing
+    if "utorrent" in fname or "bittorrent" in fname or "qbittorrent" in fname:
+        return "⚠️ Заборонений P2P-клієнт: видалити, нагадати про політику використання ПЗ"
+    # Removable drives D:/E:/F:/G:/H: portable apps
+    if any(fpath.startswith(d + ":\\") for d in ("d", "e", "f", "g", "h")) and "portable" in fpath:
+        return "⚠️ Portable Apps на знімному диску: перевірити USB, попросити юзера прибрати"
+    # Downloads
+    if "\\downloads\\" in fpath:
+        return "⚠️ Файл з Downloads: попросити юзера видалити, якщо не використовується"
+    # Severity-based fallback
+    if sev >= 50:
+        return "🛑 Critical: ізолювати хост, проаналізувати в Falcon Console, заблокувати SHA256 globally"
+    if sev >= 40:
+        return "🛑 High: проаналізувати в Falcon Console, видалити файл, перевірити на lateral"
+    if "pup" in tech or "adware" in tech:
+        return "⚠️ PUP/Adware: попросити юзера видалити; якщо корпоративний софт — додати в allowlist"
+    if "ml" in tech.replace("-", " ").lower() or tech == "sensor-based ml":
+        return "🔍 ML-детекція: перевірити в Falcon Console; якщо легітимно — додати SHA256 в allowlist"
+    return "🔍 Перевірити в Falcon Console"
+
+
 def is_false_positive(item: dict, fp_path_re: list, fp_filenames: set, fp_sha256: set, min_sev: int) -> str | None:
     """Повертає причину FP або None якщо подія підозріла."""
     try:
@@ -326,6 +366,7 @@ def build_chat_message(items: list, title: str, max_items: int) -> dict:
             sev = it.get("sev") or "?"
             lines.append(f"  • `{fname}` ({tac}/{tech}, sev={sev})")
             lines.append(f"    дата: {when}")
+            lines.append(f"    дія: {recommend_action(it)}")
             if sha:
                 lines.append(f"    sha256: `{sha}`")
             falcon_url = it.get("url")
