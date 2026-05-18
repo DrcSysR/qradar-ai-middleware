@@ -24,5 +24,7 @@
     "Excessive Firewall Denies Between Hosts" : [ "excessive_fw_denies_chain.md", "sergii.legerko", "excessive_fw_denies_chain.aql" ],
     "Powershell Has Been Launched in a Compromised Host" : [ "compromised_host_cascade.md", "sergii.legerko", "compromised_host_cascade.aql" ],
     "Detected a Successful Login From a Compromised Host" : [ "compromised_host_cascade.md", "sergii.legerko", "compromised_host_cascade.aql" ],
+    "Process Launched from a Shared Folder" : [ "multistage_temp_shared_chain.md", "sergii.legerko", "multistage_temp_shared_chain.aql" ],
+    "Process Launched from a Temp Directory" : [ "multistage_temp_shared_chain.md", "sergii.legerko", "multistage_temp_shared_chain.aql" ],
     "Default": [ "default.md", "", "default.aql" ]
 }
