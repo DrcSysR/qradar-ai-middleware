@@ -16,6 +16,7 @@
     "UC-ME SSH Block bruteforce" : [ "btnt_ssh.md", "sergii.legerko", "btnt_ip_review.aql", "ME-PA-Suspicious-IP-Addresses" ],
     "UC-ME Block login bruteforce" : [ "btnt_winauth.md", "sergii.legerko", "btnt_ip_review.aql", "ME-PA-Suspicious-IP-Addresses" ],
     "Bruteforce login detected to GlobalProtect portal" : [ "btnt_gp_portal.md", "sergii.legerko", "btnt_ip_review.aql", "ME-PA-Suspicious-IP-Addresses" ],
+    "UC-ME GP Portal non-email login" : [ "btnt_gp_plain_user.md", "sergii.legerko", "btnt_ip_review.aql", "ME-PA-Suspicious-IP-Addresses" ],
     "UC-ME-22 SSH Scanning detected" : [ "btnt_port_scan.md", "sergii.legerko", "btnt_port_scan.aql", "ME-PA-Suspicious-IP-Addresses" ],
     "Block bruteforce logins by syspicious list" : [ "btnt_susp_list.md", "sergii.legerko", "btnt_ip_review.aql", "ME-PA-Suspicious-IP-Addresses" ],
     "UC-ME Deny continiously bruteforce from rogue IP" : [ "btnt_rogue_ip.md", "sergii.legerko", "btnt_user_review.aql" ],
