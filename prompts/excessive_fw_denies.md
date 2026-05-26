@@ -18,6 +18,7 @@ PROCESS-BASED VERDICTS:
 CLEAR FALSE POSITIVE (score 0.0-0.3, verdict 'Legit_Process_Stuck_Retry') — auto-close:
 - Sensitive_Process = false AND the process is a well-known managed application repeatedly hitting one denied destination. Typical: chrome.exe / msedge.exe / firefox.exe (blocked CDN, ad/tracker block, bad cert), OneDrive.exe / Dropbox.exe / GoogleDriveFS.exe (decommissioned tenant), svchost.exe / wuauserv (stale Windows Update endpoint), MsMpEng.exe / Sense.exe / mbamservice.exe / ekrn.exe (AV signature host change), Teams.exe / outlook.exe / Slack.exe (retired SaaS endpoint), updater binaries (GoogleUpdate.exe, MicrosoftEdgeUpdate.exe, AdobeARM.exe), RMM/MDM agents.
 - Internal source IP (RFC1918) AND Unique_Ports = 1 AND single-process correlation AND destination on 80/443 — classic stale-config retry storm.
+- If no other security violations, active infections, or credential compromises are detected, and the activity is completely blocked/denied by the firewall, it is considered contained and safe to close (score 0.0-0.3).
 
 SUSPICIOUS BUT INCONCLUSIVE (score 0.4-0.6, verdict 'Unknown_Process_Outbound' or 'No_Process_Correlation') — stays open, assigned:
 - Process correlates but is unfamiliar (random or hash-like name, unsigned binary path under %APPDATA% / %TEMP% / %PUBLIC%) without clear malicious indicator.

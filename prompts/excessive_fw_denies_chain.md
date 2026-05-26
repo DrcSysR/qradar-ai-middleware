@@ -52,6 +52,9 @@ ANCHOR 8 — score ≤ 0.3, verdict 'Recurring_Noisy_Source':
 ANCHOR 9 — if offense.description does NOT contain "preceded by Excessive Firewall Denies Across Multiple Hosts":
 - Treat as plain between-hosts deny burst per the rules in [[excessive_fw_denies_between_only]]. Default FP unless an external/guest scanner shape is visible.
 
+ANCHOR 10 — score ≤ 0.3, verdict 'Blocked_No_Other_Violations' — auto-close:
+- If no other security violations, lateral movement attempts, active infections, or successful bypasses are detected, and the suspicious activity is completely blocked/denied by the firewall, it is considered contained and safe to close (score ≤ 0.3).
+
 FALLBACK: If nothing fits, score 0.5, verdict 'Inconclusive_Local_Burst'.
 
 EXPLANATION FIELD: max 15 words, one sentence. Name the source category, the fan-out shape, and the dominant dst port if obvious. Examples:

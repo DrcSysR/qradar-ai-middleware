@@ -48,6 +48,9 @@ ANCHOR 7 — score 0.4, verdict 'SSH_Bruteforce_Already_Blocked':
 - AND the failed-SSH events also appear in the deny events for the same src
 - Already covered by the SSH bruteforce rule; this composite is duplicate noise. Score moderate, do not auto-close in case SSH rule itself missed.
 
+ANCHOR 8 — score ≤ 0.3, verdict 'Blocked_No_Other_Violations' — auto-close:
+- If no other security violations, active compromises, or credential anomalies are detected, and the suspicious activity is fully blocked/denied by the firewall (with no successful 'Allow' events), it is considered contained and safe to close (score ≤ 0.3).
+
 FALLBACK: If none of the anchors fit, output score 0.5, verdict 'Inconclusive_FW_Burst' — let the analyst review.
 
 EXPLANATION FIELD: max 15 words, one sentence. Name the dominant src/dst category and the dst port if known. Examples:
