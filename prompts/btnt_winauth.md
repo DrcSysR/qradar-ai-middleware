@@ -20,4 +20,9 @@ HIGHLY SUSPICIOUS (score 0.7-0.8, verdict 'WinAuth_Bruteforce_Confirmed'):
 CONFIRMED COMPROMISE (score 0.9-1.0, verdict 'WinAuth_Successful_Compromise'):
 - Failures followed by a successful Windows logon (Logon Type 2/3/10) for one of the brute-forced usernames from the same Source IP. Treat as account takeover.
 
-Output ONLY a JSON object with keys 'score' (float 0.0-1.0), 'verdict' (one of the strings above), 'explanation' (≤15 words, single sentence).
+MITIGATED — BLOCKED ATTACK, NO CONSEQUENCE (set "mitigated": true; KEEP the block; offense auto-closes):
+- Use this for the HIGHLY SUSPICIOUS band (0.7-0.8, 'WinAuth_Bruteforce_Confirmed'): the password spray is real but the Source IP is correctly blocked, there is ZERO successful Windows logon, and no sign of compromise. Set "mitigated": true together with the normal high score — the offense closes WITHOUT removing the IP from ME-PA-Suspicious-IP-Addresses (the block stays). This is the common case and should NOT be routed to an analyst.
+- Do NOT set mitigated for the FALSE POSITIVE band (0.0-0.3, cached-creds / known endpoint): keep the LOW score so the IP is UNBLOCKED.
+- Do NOT set mitigated for CONFIRMED COMPROMISE (0.9-1.0): a successful logon must stay OPEN for the analyst (mitigated:false).
+
+Output ONLY a JSON object with keys 'score' (float 0.0-1.0), 'verdict' (one of the strings above), 'explanation' (≤15 words, single sentence), and optional 'mitigated' (boolean, default false).

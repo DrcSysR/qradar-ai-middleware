@@ -287,7 +287,10 @@ def build_asset_context_block(events: list, refset_index: dict) -> str:
         + "\n--- END ASSET CONTEXT ---\n\n"
     )
 
-async def ask_ollama(client: httpx.AsyncClient, model: str, prompt: str, timeout: float = 600.0) -> tuple[float, str, str]:
+def _to_bool(v) -> bool:
+    return str(v).strip().lower() in ("true", "1", "yes")
+
+async def ask_ollama(client: httpx.AsyncClient, model: str, prompt: str, timeout: float = 600.0) -> tuple[float, str, str, bool]:
     num_ctx = MODELS_MAX_CTX.get(model, 32768)
     use_json_format = model in MODELS_WITH_JSON_FORMAT
     prompt_prefix = "" if use_json_format else "/no_think\n"
@@ -314,10 +317,11 @@ async def ask_ollama(client: httpx.AsyncClient, model: str, prompt: str, timeout
     return (
         float(parsed_json.get("score", 0.0)),
         parsed_json.get("verdict", "Unknown"),
-        parsed_json.get("explanation", "No explanation provided.")
+        parsed_json.get("explanation", "No explanation provided."),
+        _to_bool(parsed_json.get("mitigated", False))
     )
 
-async def ask_vertex(client: httpx.AsyncClient, model: str, prompt: str) -> tuple[float, str, str]:
+async def ask_vertex(client: httpx.AsyncClient, model: str, prompt: str) -> tuple[float, str, str, bool]:
     project_id = APP_CONFIG.get("vertex_project", "your-gcp-project-id")
     location = APP_CONFIG.get("vertex_location", "global")
     
@@ -372,9 +376,10 @@ async def ask_vertex(client: httpx.AsyncClient, model: str, prompt: str) -> tupl
         return (
             float(parsed_json.get("score", 0.0)),
             parsed_json.get("verdict", "Unknown"),
-            parsed_json.get("explanation", "No explanation provided.")
+            parsed_json.get("explanation", "No explanation provided."),
+            _to_bool(parsed_json.get("mitigated", False))
         )
-        
+
     except Exception as e:
         logging.error(f"Помилка парсингу відповіді Vertex AI: {e}")
         raise ValueError("Failed to parse Vertex AI response")
@@ -475,12 +480,17 @@ async def universal_analysis(payload: UniversalTrigger):
             f"Task: {instruction}\n\n"
             f"{asset_block}"
             f"--- START OF LOGS ---\n{logs_text}\n--- END OF LOGS ---\n\n"
-            "Based ONLY on the logs above, return a valid JSON object with exactly THREE keys: "
-            "'score', 'verdict', and 'explanation'.\n\n"
+            "Based ONLY on the logs above, return a valid JSON object with keys "
+            "'score', 'verdict', 'explanation', and optionally 'mitigated'.\n\n"
             "CRITICAL RULES FOR JSON:\n"
             "1. 'score' must be a float between 0.0 and 1.0 based on the rubric below.\n"
             "2. 'verdict' must be a short category string.\n"
-            "3. 'explanation' MUST BE EXTREMELY CONCISE. Strictly 1 short sentence, maximum 15 words. Do not write long paragraphs.\n\n"
+            "3. 'explanation' MUST BE EXTREMELY CONCISE. Strictly 1 short sentence, maximum 15 words. Do not write long paragraphs.\n"
+            "4. 'mitigated' (boolean, default false): set true ONLY when the TASK above explicitly tells you to, "
+            "for a real/suspicious action that was FULLY BLOCKED or DENIED with no successful outcome and no sign of an "
+            "already-compromised internal asset. A true value CLOSES the offense while KEEPING any existing block in place "
+            "(it does NOT unblock the source). Leave it false/omit when there is a successful compromise, a real consequence, "
+            "an internal host that itself needs remediation, or when the rule's TASK does not mention 'mitigated'.\n\n"
             "CRITICAL SCORING RUBRIC for 'score' (float 0.0 to 1.0):\n"
             "- 0.0 to 0.3: CLEAR FALSE POSITIVE. Routine administrative behavior, benign traffic, or no evidence of successful malicious action.\n"
             "- 0.4 to 0.6: SUSPICIOUS BUT INCONCLUSIVE. Anomalous behavior without clear evidence of intent or impact.\n"
@@ -504,13 +514,13 @@ async def universal_analysis(payload: UniversalTrigger):
         used_provider = provider
         used_fallback = False
         try:
-            score, verdict, explanation = await call_provider(provider, active_model)
+            score, verdict, explanation, mitigated = await call_provider(provider, active_model)
         except Exception as primary_err:
             if fallback_active:
                 fb_model = model_for(fallback_provider)
                 logging.warning(f"⚠️ Provider {provider} ({active_model}) failed for offense {payload.offense_id}: {primary_err}. Fallback → {fallback_provider} ({fb_model}).")
                 try:
-                    score, verdict, explanation = await call_provider(fallback_provider, fb_model)
+                    score, verdict, explanation, mitigated = await call_provider(fallback_provider, fb_model)
                     used_provider = fallback_provider
                     used_fallback = True
                 except Exception as fb_err:
@@ -534,6 +544,7 @@ async def universal_analysis(payload: UniversalTrigger):
         if (
             refset_cleanup
             and score <= 0.6
+            and not mitigated
             and details.get("entity_type") in ("SourceIP", "DestinationIP")
             and IPV4_RE.fullmatch(str(details.get("entity_value", "")).strip())
         ):
@@ -546,14 +557,20 @@ async def universal_analysis(payload: UniversalTrigger):
                 logging.error(f"⚠️ FP cleanup failed for {ip_to_clean} from {refset_cleanup}: {msg}")
                 refset_action_note = f" | Action: refset cleanup FAILED ({msg})"
 
-        note_text = f"AI Analysis ({provider_label}) | Verdict: {verdict} | Score: {score} | Reason: {explanation}{refset_action_note}"
+        mitigated_note = " | Mitigated: blocked, no consequence — closed, block retained" if (mitigated and not payload.is_manual) else ""
+        note_text = f"AI Analysis ({provider_label}) | Verdict: {verdict} | Score: {score} | Reason: {explanation}{refset_action_note}{mitigated_note}"
         note_url = f"{QRADAR_API_URL}/siem/offenses/{payload.offense_id}/notes?note_text={urllib.parse.quote(note_text)}"
         note_resp = await client.post(note_url, headers=HEADERS)
 
         if note_resp.status_code in (200, 201):
             logging.debug(f"Offense {payload.offense_id} successfully updated with note.")
 
-        if score <= 0.6 and not payload.is_manual:
+        if mitigated and not payload.is_manual:
+            # Реальна/підозріла активність, але повністю заблокована, без наслідків → закриваємо офенс,
+            # АЛЕ блок лишаємо (refset cleanup пропущено вище). Аналітика не турбуємо.
+            logging.info(f"🛡️ Офенс {payload.offense_id} mitigated (заблоковано, без наслідків). Закриття, блок збережено.")
+            await close_qradar_offense(client, payload.offense_id, score)
+        elif score <= 0.6 and not payload.is_manual:
             # Низький скор + авто-режим → автозакриття. Не призначаємо нікого, бо офенс закриється.
             # У ручному режимі офенс не закриваємо — аналітик сам натиснув "аналізувати" і хоче побачити результат.
             logging.debug(f"Score {score} is low. Triggering auto-close for Offense {payload.offense_id}")

@@ -24,4 +24,9 @@ DO NOT mark as FP just because:
 - There are no other failures from this IP. The rule fires on a SINGLE event by design — low volume is expected.
 - This is the first time we see this IP. Most attackers come from previously-unseen IPs.
 
-Output ONLY a JSON object with keys 'score' (float 0.0-1.0), 'verdict' (one of the strings above), 'explanation' (≤15 words, single sentence naming the triggering username and the decisive signal).
+MITIGATED — BLOCKED ATTACK, NO CONSEQUENCE (set "mitigated": true; KEEP the block; offense auto-closes):
+- Use this when the triggering event is a FAILED plain-username GP login (QID 53531473) and there is NO subsequent successful GP login from this Source IP — the policy-violating attempt was blocked and nothing got in. Set "mitigated": true together with the normal TP score (0.9-1.0): the offense closes WITHOUT removing the IP from ME-PA-Suspicious-IP-Addresses (the block stays). This is the dominant case for this rule and should NOT be routed to an analyst.
+- Do NOT set mitigated for 'GP_Plain_User_Successful_Compromise' (QID 53531474 success, or any follow-on success from this IP): keep it OPEN for the analyst (mitigated:false).
+- Do NOT set mitigated for the rare technical-glitch FALSE POSITIVE (0.0-0.3): that keeps its LOW score so the IP is UNBLOCKED.
+
+Output ONLY a JSON object with keys 'score' (float 0.0-1.0), 'verdict' (one of the strings above), 'explanation' (≤15 words, single sentence naming the triggering username and the decisive signal), and optional 'mitigated' (boolean, default false).

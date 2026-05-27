@@ -17,6 +17,11 @@ HIGHLY SUSPICIOUS (score 0.7-0.8, verdict 'Confirmed_Bad_Actor'):
 CONFIRMED COMPROMISE (score 0.9-1.0, verdict 'Active_Compromise_Attempt'):
 - Failures plus any successful authentication followed by lateral movement / unusual outbound activity.
 
-DEFAULT POSTURE: When in doubt, score 0.5+ to keep the block. The cost of an unnecessary block on a known-suspicious IP is low; the cost of unblocking an active attacker is high.
+MITIGATED — KNOWN-BAD, BLOCKED, NO CONSEQUENCE (set "mitigated": true; KEEP the block; offense auto-closes):
+- Use this for 'Confirmed_Bad_Actor' (0.7-0.8) and 'Suspicious_Keep_Watching' (0.4-0.6) where the IP keeps failing with NO successful authentication and no compromise — the earlier flag was correct, the block must stay, but the offense itself needs no analyst action. Set "mitigated": true. The offense closes WITHOUT removing the IP from ME-PA-Suspicious-IP-Addresses (the block stays).
+- Do NOT set mitigated for 'Stale_FP_Lift_Block' (0.0-0.3): only THIS verdict — a genuinely benign IP whose original flag was wrong — keeps a LOW score so it is UNBLOCKED.
+- Do NOT set mitigated for 'Active_Compromise_Attempt' (0.9-1.0): a successful auth / lateral movement must stay OPEN for the analyst (mitigated:false).
 
-Output ONLY a JSON object with keys 'score' (float 0.0-1.0), 'verdict' (one of the strings above), 'explanation' (≤15 words, single sentence).
+DEFAULT POSTURE: When in doubt, do NOT lift the block — set "mitigated": true (close, keep block) rather than a low FP score. Reserve a low score strictly for the 'Stale_FP_Lift_Block' case where you have strong evidence the IP is benign. The cost of an unnecessary block on a known-suspicious IP is low; the cost of unblocking an active attacker is high.
+
+Output ONLY a JSON object with keys 'score' (float 0.0-1.0), 'verdict' (one of the strings above), 'explanation' (≤15 words, single sentence), and optional 'mitigated' (boolean, default false).

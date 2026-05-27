@@ -20,4 +20,9 @@ HIGHLY SUSPICIOUS (score 0.7-0.8, verdict 'GP_Bruteforce_Confirmed'):
 CONFIRMED COMPROMISE (score 0.9-1.0, verdict 'GP_Bruteforce_Successful_Compromise'):
 - Failed attempts followed by a successful GP login from the same Source IP for one of the targeted usernames. Critical — VPN access likely compromised.
 
-Output ONLY a JSON object with keys 'score' (float 0.0-1.0), 'verdict' (one of the strings above), 'explanation' (≤15 words, single sentence).
+MITIGATED — BLOCKED ATTACK, NO CONSEQUENCE (set "mitigated": true; KEEP the block; offense auto-closes):
+- Use this for the HIGHLY SUSPICIOUS band (0.7-0.8, 'GP_Bruteforce_Confirmed'): the VPN password spray is real but the Source IP is correctly blocked, there is ZERO successful GP login, and no sign of compromise. Set "mitigated": true together with the normal high score — the offense closes WITHOUT removing the IP from ME-PA-Suspicious-IP-Addresses (the block stays). This is the common case and should NOT be routed to an analyst.
+- Do NOT set mitigated for the FALSE POSITIVE band (0.0-0.3, legitimate remote user): keep the LOW score so the user is UNBLOCKED.
+- Do NOT set mitigated for CONFIRMED COMPROMISE (0.9-1.0): a successful GP login must stay OPEN for the analyst (mitigated:false).
+
+Output ONLY a JSON object with keys 'score' (float 0.0-1.0), 'verdict' (one of the strings above), 'explanation' (≤15 words, single sentence), and optional 'mitigated' (boolean, default false).

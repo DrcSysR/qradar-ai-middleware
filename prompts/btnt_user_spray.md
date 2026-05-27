@@ -17,4 +17,9 @@ HIGHLY SUSPICIOUS (score 0.7-0.8, verdict 'Distributed_Bruteforce_Or_Botnet'):
 CONFIRMED COMPROMISE (score 0.9-1.0, verdict 'Successful_Bruteforce_Compromise'):
 - Failures followed by a successful authentication for this Username from one of the attacking Source IPs.
 
-Output ONLY a JSON object with keys 'score' (float 0.0-1.0), 'verdict' (one of the strings above), 'explanation' (≤15 words, single sentence).
+MITIGATED — CONTAINED, NO CONSEQUENCE (set "mitigated": true; offense auto-closes):
+- Use this for the HIGHLY SUSPICIOUS / INCONCLUSIVE bands (0.4-0.8, 'Distributed_Bruteforce_Or_Botnet' / 'Sustained_Single_Source') where there are ONLY failures and NO successful authentication for this Username anywhere — the spray was contained, no account was taken over. Set "mitigated": true together with the honest high score so the offense closes without bothering the analyst. (Contributing Source IPs are handled by the bruteforce/botnet block-list rules; the radar manages their TTL.)
+- Do NOT set mitigated for 'Successful_Bruteforce_Compromise' (0.9-1.0): a successful login must stay OPEN for the analyst (mitigated:false).
+- A clear benign FP (0.0-0.3) keeps its LOW score and auto-closes normally — no need for mitigated.
+
+Output ONLY a JSON object with keys 'score' (float 0.0-1.0), 'verdict' (one of the strings above), 'explanation' (≤15 words, single sentence), and optional 'mitigated' (boolean, default false).
