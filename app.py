@@ -592,8 +592,8 @@ async def universal_analysis(payload: UniversalTrigger):
                 WHERE offense_id = ?
             """, (score, verdict, payload.offense_id))
 
-    logging.info(f"✅ Офенс {payload.offense_id} оброблено | Режим: {'Ручний' if payload.is_manual else 'Авто'} | Провайдер: {provider_label} | Вердикт: {verdict} | Score: {score}")
-    return {"status": "success", "offense_id": payload.offense_id, "verdict": verdict, "score": score, "explanation": explanation, "provider": used_provider, "fallback": used_fallback}
+    logging.info(f"✅ Офенс {payload.offense_id} оброблено | Режим: {'Ручний' if payload.is_manual else 'Авто'} | Провайдер: {provider_label} | Вердикт: {verdict} | Score: {score} | Mitigated: {mitigated}")
+    return {"status": "success", "offense_id": payload.offense_id, "verdict": verdict, "score": score, "explanation": explanation, "mitigated": mitigated, "provider": used_provider, "fallback": used_fallback}
 
 @app.get("/", response_class=HTMLResponse)
 async def get_web_ui():
