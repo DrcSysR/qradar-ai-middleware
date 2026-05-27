@@ -34,6 +34,8 @@ CONFIRMED MALICIOUS (score 0.9-1.0, verdict 'Active_Beacon_Or_C2') — assigned:
 - Mixed FW_Action: same Process / Dst_IP / Dst_Port shows BOTH Deny and Allow rows — partial bypass, channel established alongside blocked attempts.
 - Destination is a known-bad / threat-intel-listed / freshly-registered domain or low-reputation hosting provider, regardless of process signing.
 
+DO NOT USE 'mitigated' HERE: the source is always one of OUR internal endpoints. "Fully blocked / no Allow" does NOT make a SENSITIVE-process egress safe to close — a blocked LOLBin/beacon means the endpoint itself may be compromised and MUST stay open for the analyst (keep the high score, mitigated:false). The benign-process case ('Legit_Process_Stuck_Retry') already auto-closes on its low score, so it needs no mitigated either. In short: never emit mitigated:true for this rule.
+
 NOTE FORMAT: Your "explanation" field will be written verbatim into the QRadar offense note, so make it useful for the analyst — name the process and the destination if known, e.g. "OneDrive.exe retrying decommissioned tenant 13.107.42.12:443" or "powershell.exe beaconing to 185.x.x.x:8443, no Allow seen".
 
 Output ONLY a JSON object with keys 'score' (float 0.0-1.0), 'verdict' (one of the strings above), 'explanation' (≤15 words, single sentence, name the process + destination when known).

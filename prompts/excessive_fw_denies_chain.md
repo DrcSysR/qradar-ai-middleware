@@ -1,6 +1,6 @@
-CONTEXT: Composite offense — "Excessive Firewall Denies Between Hosts" PRECEDED BY "Excessive Firewall Denies Across Multiple Hosts From A Local Host". This is the escalation chain: a single LOCAL source first generated denies toward MANY destinations (the "Across Multiple Hosts" rule), THEN concentrated denies between two hosts also tripped. Read the offense.description in the framing line above to confirm both sub-rules are named — if only "Between Hosts" appears, the Across-Multi sub-rule is absent and you should treat this as the simpler case (see ANCHOR 9 below).
+CONTEXT: Offense whose name contains "Excessive Firewall Denies Across Multiple Hosts From A Local Host" — either standalone ("…From A Local Host containing <Traffic End / URL Filtering / …>") or as part of an escalation chain ("Excessive Firewall Denies Between Hosts PRECEDED BY Excessive Firewall Denies Across Multiple Hosts From A Local Host"). A single LOCAL (internal) source generated denies toward MANY destinations. The source is by construction INTERNAL (the rule name says "From A Local Host"). The question is whether the local host is doing legitimate application/telemetry fan-out or broadcast/discovery, a misconfigured scanner, or actual lateral-movement reconnaissance.
 
-The escalation chain is interesting because the source is by construction INTERNAL (the rule's name says "From A Local Host"). The question is whether the local host is doing legitimate broadcast/discovery, a misconfigured scanner, or actual lateral-movement reconnaissance.
+CONSERVATIVE POLICY (source is OUR device): "fully blocked" does NOT by itself justify closing — a blocked scan from one of our hosts may be a compromised endpoint doing recon. Close (low score / FP) only when the fan-out shape is clearly benign (application/web/IoT/discovery). KEEP service-port / off-subnet scanning shapes OPEN even when fully blocked.
 
 CORPORATE NETWORK MAP — use this to classify each src/dst:
 - TRUSTED INTERNAL: 172.17.0.0/16, 192.168.48.0/21, 172.20.22.0/23 (VPN), 172.17.200.0/23 (remote DC)
@@ -10,7 +10,7 @@ CORPORATE NETWORK MAP — use this to classify each src/dst:
 
 INPUT SHAPE: Raw firewall deny events (Palo Alto / WFP / pfSense). Columns: Time, LogSource, EventName (QID), Category, sourceip, destinationip, destinationport, Action, payload. NO Sysmon / process correlation in this query — work from FW data alone.
 
-HARD SCORING ANCHORS — lowest applicable anchor wins.
+HARD SCORING ANCHORS — most SPECIFIC applicable anchor wins. PRECEDENCE: the internal-scanning anchors (3, 4, 5) and the external-blocked anchor (11) OVERRIDE the generic "blocked → close" anchor (10) — a recon/scan shape is never closed just because the firewall blocked it. Only fall to the low-score / blocked-close anchors when no scanning shape applies.
 
 ANCHOR 1 — MUST score ≤ 0.2, verdict 'Discovery_Multicast_Noise':
 - The "Across Multiple Hosts" pattern is driven by mDNS / SSDP / LLMNR / WS-Discovery / DHCP broadcast (dst ports 5353, 1900, 5355, 3702, 137-138, 67-68) OR destinations are in 224.0.0.0/4 / ff00::/8
@@ -20,6 +20,11 @@ ANCHOR 1 — MUST score ≤ 0.2, verdict 'Discovery_Multicast_Noise':
 ANCHOR 2 — MUST score ≤ 0.3, verdict 'IPv6_LinkLocal_Noise':
 - Source OR destination is in fe80::/10 OR ff02::/16
 - IPv6 link-local / multicast neighbor discovery, router solicitation, DHCPv6 — always noise.
+
+ANCHOR 2B — MUST score ≤ 0.3, verdict 'Benign_App_Web_Fanout' — FP, auto-close:
+- Source is TRUSTED INTERNAL and the fan-out hits MANY hosts but ONLY on web / app / IoT / infra ports — 80, 443, 8443, 8883 (MQTT), 5222/5223 (XMPP), 53 (DNS), 123 (NTP), 853 (DoT) — and NOT on any admin/service port from ANCHOR 3.
+- This is an application / telemetry / messaging client (browser, IoT/MQTT client, sync agent, DoH/DoT resolver) reaching many external/CDN endpoints that egress filtering or URL filtering blocked. It is NOT reconnaissance — recon targets SMB/RDP/SSH/WinRM/SQL, not 443/8883.
+- Offense.description containing "URL Filtering" with port 443/80 fan-out is a strong match for this anchor.
 
 ANCHOR 3 — score 0.5–0.7, verdict 'Local_Host_Scanning_LAN' — leave open:
 - Source is TRUSTED INTERNAL
@@ -49,11 +54,17 @@ ANCHOR 7 — score ≤ 0.3, verdict 'Known_Admin_Tool_Pattern':
 ANCHOR 8 — score ≤ 0.3, verdict 'Recurring_Noisy_Source':
 - Same source IP has appeared in dozens of identical offenses recently (you can infer this from steady event_count and stereotyped src→dst:port pattern) — the rule is firing on a noise generator (printer, IP camera, IoT). Recommend tuning rather than triage.
 
-ANCHOR 9 — if offense.description does NOT contain "preceded by Excessive Firewall Denies Across Multiple Hosts":
-- Treat as plain between-hosts deny burst per the rules in [[excessive_fw_denies_between_only]]. Default FP unless an external/guest scanner shape is visible.
+ANCHOR 9 — description-shape routing inside this prompt:
+- Standalone "Across Multiple Hosts From A Local Host …" (no Between-Hosts, no preceded-by) → apply the across-multi fan-out anchors above (1, 2, 2B, 3, 4, 5, 6, 7, 8) directly to the local-host fan-out.
+- Chain "Between Hosts PRECEDED BY Across Multiple Hosts …" → same anchors; the Across-Multi fan-out is the primary signal.
+- If the description is PURELY "Between Hosts" with NO Across-Multi component → treat as a plain between-hosts deny burst per [[excessive_fw_denies_between_only]] (default FP unless an external/guest scanner shape is visible).
 
 ANCHOR 10 — score ≤ 0.3, verdict 'Blocked_No_Other_Violations' — auto-close:
-- If no other security violations, lateral movement attempts, active infections, or successful bypasses are detected, and the suspicious activity is completely blocked/denied by the firewall, it is considered contained and safe to close (score ≤ 0.3).
+- ONLY when NO scanning shape (ANCHOR 3/4/5) and NO external-source shape (ANCHOR 11) applies: if the fan-out is benign (discovery/app/web per ANCHOR 1/2/2B), there are no other security violations / lateral-movement / active infection / successful bypass, and everything is blocked/denied — it is contained and safe to close (score ≤ 0.3). Do NOT use this anchor to close an internal service-port/off-subnet scan (those are ANCHOR 3/4/5 and stay OPEN even when blocked).
+
+ANCHOR 11 — set "mitigated": true (recognized + contained, auto-closes), verdict 'External_Scan_Blocked':
+- Source IP is EXTERNAL (public unicast) OR GUEST/untrusted-internal acting as a pure external-style scanner, the burst is a recognized scan/probe, and every event is a deny/block (no Allow row) with no internal asset implicated as compromised.
+- The firewall fully blocked an outside-origin scan — malicious intent, contained, no consequence. Set "mitigated": true with the honest score so the offense closes; the radar's PA action / botnet_scan handle the source IP. (NOTE: a GUEST device of ours probing service ports is ANCHOR 6 territory — if it looks like a compromised guest endpoint rather than a transient scanner, prefer leaving it open.)
 
 FALLBACK: If nothing fits, score 0.5, verdict 'Inconclusive_Local_Burst'.
 
@@ -62,4 +73,4 @@ EXPLANATION FIELD: max 15 words, one sentence. Name the source category, the fan
 - "Hikvision camera 192.168.100.42 mDNS noise across LAN, not scanning"
 - "Trusted host 172.17.71.10 hitting port 161 across many — likely SNMP polling, confirm with IT"
 
-Output ONLY a JSON object with keys 'score', 'verdict', 'explanation' (≤15 words).
+Output ONLY a JSON object with keys 'score', 'verdict', 'explanation' (≤15 words), and optional 'mitigated' (boolean, default false — set true only per ANCHOR 11 when an external/outside-origin scan was fully blocked).
