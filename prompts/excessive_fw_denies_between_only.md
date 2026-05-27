@@ -28,10 +28,10 @@ ANCHOR 3 — MUST score ≤ 0.3, verdict 'PA_R2L_Block_Already_Mitigated':
 - AND there is no Allow row for the same src→dst:port in the window
 - Palo Alto already blocked it — this is the firewall doing its job catching an external scan. Note the dst port; if it's RDP/SMB/SSH/HTTP-mgmt/IMPI exposed to the internet, raise the issue separately to network team but DO NOT score as compromise.
 
-ANCHOR 4 — score 0.5–0.7, verdict 'External_To_Internal_Sustained' — leave open:
+ANCHOR 4 — score 0.7–0.8, verdict 'External_Scan_Blocked' — set "mitigated": true (recognized + contained, auto-closes):
 - Source IP is EXTERNAL AND sustained deny burst (event_count high, multiple distinct dst hosts in the same offense, or multiple distinct dst ports = port-scan shape)
-- AND no Allow row from this source
-- Action by analyst: confirm the source is on a threat-intel feed, consider adding to ME-PA-Suspicious-IP-Addresses manually. Do NOT auto-close.
+- AND no Allow row from this source (every event is a deny/block)
+- This is a recognized external scan/probe that the firewall FULLY BLOCKED — malicious in intent but contained, no internal asset implicated, no consequence. Set "mitigated": true so the offense closes (the radar's own escalating PA action / botnet_scan handle the IP). Keep the honest high score. Do NOT route to an analyst just because the source is external — the block already did its job.
 
 ANCHOR 5 — score 0.6–0.8, verdict 'Guest_To_Internal_Probing' — leave open:
 - Source IP is in GUEST / UNTRUSTED INTERNAL (e.g. 172.19.x.x) AND destination is TRUSTED INTERNAL
@@ -51,6 +51,13 @@ ANCHOR 7 — score 0.4, verdict 'SSH_Bruteforce_Already_Blocked':
 ANCHOR 8 — score ≤ 0.3, verdict 'Blocked_No_Other_Violations' — auto-close:
 - If no other security violations, active compromises, or credential anomalies are detected, and the suspicious activity is fully blocked/denied by the firewall (with no successful 'Allow' events), it is considered contained and safe to close (score ≤ 0.3).
 
+MITIGATED — RECOGNIZED MALICIOUS BUT FULLY BLOCKED (set "mitigated": true; offense auto-closes):
+- Core rule for this offense type: when the deny burst is a recognized malicious/suspicious pattern (external scan, port-sweep, probe) that the firewall FULLY BLOCKED — every event a deny, NO Allow row for the same src→dst:port — AND no internal asset is implicated as the cause, set "mitigated": true with the honest score. The threat was recognized and contained; close it, don't bother the analyst. This is ANCHOR 3 and ANCHOR 4 (EXTERNAL source blocked).
+- KEEP OPEN (mitigated:false), because an internal/guest device of OURS is implicated and may itself be compromised even though the traffic was blocked:
+  - ANCHOR 5 (GUEST / untrusted-internal source probing the LAN) — the guest/BYOD device needs a look.
+  - ANCHOR 6 (TRUSTED-INTERNAL source making blocked outbound to a fixed external endpoint = beacon candidate) — the internal host may be compromised; the block stops the channel but not the infection.
+- Multicast/LAN-misconfig (ANCHOR 1, 2) stay as low-score FP and auto-close on score, no mitigated needed.
+
 FALLBACK: If none of the anchors fit, output score 0.5, verdict 'Inconclusive_FW_Burst' — let the analyst review.
 
 EXPLANATION FIELD: max 15 words, one sentence. Name the dominant src/dst category and the dst port if known. Examples:
@@ -59,4 +66,4 @@ EXPLANATION FIELD: max 15 words, one sentence. Name the dominant src/dst categor
 - "External 185.x.x.x port-scan against 172.17.x range, PA blocked, no allow"
 - "Guest 172.19.50.7 scanning 172.17.0.0/16 across ports 22/445/3389 — escalate"
 
-Output ONLY a JSON object with keys 'score' (float), 'verdict' (one of the verdict strings above), 'explanation' (≤15 words).
+Output ONLY a JSON object with keys 'score' (float), 'verdict' (one of the verdict strings above), 'explanation' (≤15 words), and optional 'mitigated' (boolean, default false — set true per ANCHOR 3/4 / the MITIGATED rule when an external malicious burst was fully blocked).
