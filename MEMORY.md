@@ -43,9 +43,11 @@
 
 ### 4. Звітність антивірусу: `falcon_pua_scan.py`
 *   Щоденний звіт по CrowdStrike Falcon PUP (Potentially Unwanted Programs) та ML-детекціях.
-*   Вилучає відомі хибні спрацьовування (FP) через налаштовані regex-патерни шляхів та SHA256-дозволені списки.
-*   Дедуплікує детекції по парі `(sha256, hostname)` у таблиці `falcon_pua_reported` в базі `ai_state.db`.
-*   Надсилає гарно форматовані зведені алерти в Google Chat через webhook.
+*   Вилучає відомі хибні спрацьовування (FP) через налаштовані regex-патерни шляхів (`falcon_pua_fp_path_regex`), дозволені імена файлів (`falcon_pua_fp_filenames`) та SHA256-дозволені списки (`falcon_pua_fp_sha256`).
+*   Фільтрує за порогом серйозності — за замовчуванням пропускає лише детекції з `severity > 40` (`falcon_pua_min_severity`).
+*   Дедуплікує детекції по парі `(sha256, hostname)` у таблиці `falcon_pua_reported` в базі `ai_state.db` (вікно `falcon_pua_dedup_days`, типово 30 днів); у межах одного запуску — по трійці `(sha256, hostname, filepath)`.
+*   Звіт групує елементи по робочих станціях; для кожної детекції показує ім'я файлу, SHA256, tactic/technique, час детекції, рекомендовану дію та клікабельне посилання на Falcon Console.
+*   Надсилає гарно форматовані зведені алерти в Google Chat через webhook (`falcon_pua_webhook_url`). Якщо всі події — відомі FP або вже надіслані, не надсилає нічого.
 
 ### 5. Спільний завантажувач: `prompts_loader.py`
 *   Забезпечує парсинг `prompts.json` та пошук збігів назв інцидентів QRadar.
@@ -116,10 +118,25 @@
 
 ---
 
+## 🎯 Покриті сценарії тріажу (Use Cases)
+Кожен сценарій = ключ у `prompts.json` + пара `prompts/*.md` + `queries/*.aql` (код не змінюється). Поточне покриття:
+*   **Автентифікація / доступ:** Admins-List поза IT VLAN, Service Admin List, перебір паролю (UC-01-1), атака на ресурси (UC-06-1).
+*   **Botnet / bruteforce (з очищенням refset `ME-PA-Suspicious-IP-Addresses`):** SSH block, Windows login block, GlobalProtect portal (email та plain-username), SSH/port scanning, suspicious-list bruteforce.
+*   **Bruteforce без refset-очищення:** rogue IP continuous deny, user-spray (багато fail під одним логіном).
+*   **Мережеві загрози:** PA Threat L2R monitoring, C2 beaconing, Rogue software detected.
+*   **Firewall Denies (composite-ланцюги):** Single Source, Across Multiple Hosts (chain), Between Hosts (only).
+*   **Compromised Host / multistage (composite):** PowerShell на скомпрометованому хості, успішний логін зі скомпрометованого хоста, запуск процесу з Shared/Temp директорії.
+*   **Default** — резервний промпт для будь-якого невідповідного офенсу.
+
+---
+
 ## 📝 Поточний статус та План розвитку (Roadmap)
 *   [x] Реалізовано асинхронну FastAPI архітектуру.
 *   [x] Додано sqlite3 WAL для координації станів.
 *   [x] Створено систему автооновлення та авто-ролбеку.
 *   [x] Налаштовано збір інфраструктурного контексту (Asset Context).
-*   [ ] Розширення бази точкових AQL-запитів під нові правила.
+*   [x] Реалізовано очищення refset при FP-вердикті та ботнет-полювання (`botnet_scan.py`).
+*   [x] Додано щоденну звітність CrowdStrike Falcon PUP/ML (`falcon_pua_scan.py`).
+*   [x] Розширено базу точкових AQL-запитів під composite-офенси (firewall denies, compromised host, multistage).
+*   [ ] Подальше розширення покриття правил під нові типи інцидентів.
 *   [ ] Покращення дизайну та інтерактивності вбудованого Web UI.
