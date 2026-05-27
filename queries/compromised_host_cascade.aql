@@ -7,5 +7,6 @@ SELECT DATEFORMAT(starttime, 'MM-dd HH:mm:ss') AS Time,
        UTF8(payload) AS RawPayload
 FROM events
 WHERE INOFFENSE({offense_id})
+AND QIDNAME(qid) NOT ILIKE '%Network connection%'
 AND LOGSOURCETYPENAME(devicetype) IN ('Microsoft Windows Security Event Log','CrowdStrike Falcon Host','Custom Rule Engine')
 ORDER BY starttime DESC LIMIT {limit} {time_depth}

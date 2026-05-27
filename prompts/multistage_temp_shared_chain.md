@@ -17,6 +17,8 @@ Critical Context
 
 Names like "Process Launched from Temp" and "Process from Shared Folder" sound malicious because malware historically drops payloads in `%TEMP%` and lateral movement uses SMB share execution. But in this environment those paths are heavily used by legitimate auto-updaters and IT software depots. Verify the Image and ParentImage payload before trusting the rule name.
 
+NOTE ON INPUT: raw Sysmon "Network connection detected" events are FILTERED OUT of your event feed (they are high-volume benign telemetry that used to bury the process-create events). You receive process-create, logon, brute-force, thread-injection, and CRE-derived alerts (X-Force Risky IP, C2 Beaconing). Judge network risk from those CRE alerts and their payloads, not from raw connection volume — and do NOT treat the absence of raw network-connection events as suspicious.
+
 Known False-Positive Patterns — Strongly Discount Each Match:
 
 A) "Process Launched from a Temp Directory" sub-rule is benign when the Image path matches one of:
@@ -25,7 +27,11 @@ A) "Process Launched from a Temp Directory" sub-rule is benign when the Image pa
    - ParentImage names a known updater binary (`diff_*.exe`, `*update*.exe`, `*Setup*.exe`) running as the same user.
    - Image is signed (`Company` field populated with a known vendor: Microsoft, Adobe, Zoom, Kingsoft, Google, Slack, Dropbox, Mozilla).
 
-B) "Process Launched from a Shared Folder" sub-rule is benign when the Image UNC path starts with `\\modern.org\SOFT\public\IT_Support\installs\` — this is the corporate IT software depot. Installers under that path are vetted by IT (1C, BarCode, drivers, internal tools). Also benign for `\\modern.org\SOFT\public\…` software stores in general.
+B) "Process Launched from a Shared Folder" sub-rule is benign when the Image UNC path is anywhere under the corporate IT software namespace `\\modern.org\soft\` (case-insensitive — the share appears as both `\\modern.org\SOFT\` and `\\modern.org\soft\`). This whole namespace is the IT-vetted software depot / deployment share; ANY subfolder counts as legitimate, e.g.:
+   - `\\modern.org\SOFT\public\IT_Support\installs\` and `\\…\IT_Support\Driver\` — vetted installers and drivers (1C, BarCode, HP/printer drivers, Hikvision camera SW, MS Office, internal tools).
+   - `\\modern.org\soft\deploy\` — installers and scripts pushed by IT.
+   - any other `\\modern.org\soft\…` subpath — treat as vetted.
+   Installers/scripts launched from this namespace are IT-vetted → not a red flag. Also benign: standard installer/system helpers in Temp that accompany such deploys — `C:\Windows\Temp\FalconSensor_Windows.exe` (CrowdStrike sensor install), `ose*.exe` (Office Source Engine), `DismHost.exe`, vendor `*Setup*.exe`/`*update*.exe` with a signed Company field. A CrowdStrike installer process running is NOT a Falcon detection — only a Falcon *detection/alert* event naming the host is a red flag.
 
 C) "Possible Brute Force Attempt" sub-rule firing on Kerberos pre-auth failures: when 3–15 failures occur from the same workstation under the SAME username within a short window (< 5 minutes) and there is NO successful logon shortly after — this is almost always a stale cached credential (old password in Windows Credential Manager, a service account whose password was rotated, an Outlook/OneDrive profile with the old password, or a phone with stored creds). Real brute force shows MANY usernames OR thousands of attempts OR a Success at the end.
 
@@ -46,7 +52,7 @@ H) X-Force Risky IP hits to `94.153.123.0/24` (Ukrtelecom/Datagroup) are frequen
 Real Red Flags — DO NOT Discount:
 
 - Image path in `C:\Users\Public\`, `C:\ProgramData\<random>\`, `C:\Windows\Temp\<random>.exe`, `C:\Users\<user>\Downloads\…\*.exe` with Company= `-` (unsigned) AND ParentImage is a browser/email/script host (chrome, msedge, outlook, wscript, mshta, powershell, cmd).
-- Process launched from an UNC path that is NOT the IT_Support depot — e.g. `\\<external>\share\` or `\\<usershare>\` or any UNC from an IP literal.
+- Process launched from an UNC path that is NOT under the `\\modern.org\soft\` namespace — e.g. `\\<external>\share\`, `\\<usershare>\`, or any UNC from an IP literal.
 - Brute Force where attempts cover MULTIPLE distinct usernames from the same workstation (password spray), OR where a Success follows the failures from the same source.
 - PowerShell or cmd Process Create whose CommandLine contains `-EncodedCommand`, `IEX`, `DownloadString`, `Invoke-WebRequest`, `-w hidden`, `FromBase64String`, certutil tricks.
 - Thread injection where source Image is unsigned in user temp / Public / ProgramData, OR matches known offensive-tool names.

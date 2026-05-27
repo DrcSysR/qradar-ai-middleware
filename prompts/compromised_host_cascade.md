@@ -19,6 +19,8 @@ Critical Context — "Compromised Host" cascade
 
 These rules fire when the source host is a member of the `Compromised Host` reference set. The membership is auto-populated by prior offense triggers. This creates a self-reinforcing loop: once a host is in the set, EVERY subsequent benign action (logon, PowerShell, even legitimate user apps making network connections) re-triggers the cascade rules, generating fresh composite offenses with severe-sounding names. Treat the cascade name with skepticism — verify the underlying events.
 
+NOTE ON INPUT: raw Sysmon "Network connection detected" events are FILTERED OUT of your event feed (they are high-volume benign telemetry that used to bury the process-create and logon events). You receive process-create, logon, thread-injection, and CRE-derived alerts (X-Force Risky IP, C2 Beaconing). Judge network risk from those CRE alerts and their payloads, not from raw connection volume — and do NOT treat the absence of raw network-connection events as suspicious. (Pattern A below therefore now manifests as the C2-Beaconing CRE alert mapping to an AppData app, not as raw connection bursts.)
+
 Known False-Positive Patterns — Strongly Discount Each Match:
 
 A) Massive bursts of `Sysmon EventID=3 Network connection detected` (often >90% of all events) where the `Image:` path lies under `C:\Users\<name>\AppData\Local\…` — almost always legitimate user-installed apps doing background telemetry/update polling. Examples observed in this environment:
