@@ -22,8 +22,18 @@ CONFIRMED COMPROMISE (score 0.9-1.0, verdict 'Successful_Compromise'):
 If INTERNAL ASSET CONTEXT marks the Source IP as a known internal asset, treat that as a strong FP signal.
 
 MITIGATED — BLOCKED ATTACK, NO CONSEQUENCE (set "mitigated": true; offense auto-closes; block stays):
-- Use this for the HIGHLY SUSPICIOUS / INCONCLUSIVE bands (0.4-0.8) where there are ONLY failures (auth failures and/or firewall denies) and NO successful login from this Source IP — the attack was contained and the IP is already blocked. Set "mitigated": true together with the honest high score so the offense closes without bothering the analyst. (The radar's escalating PA action keeps the IP blocked and manages its TTL.)
-- Do NOT set mitigated for 'Successful_Compromise' (0.9-1.0): a successful login must stay OPEN for the analyst (mitigated:false).
-- A clear benign FP (0.0-0.3, user error) keeps its LOW score and auto-closes normally — no need for mitigated.
+
+**FIRST CHECK — decisive:** scan the input events for ANY of these "success" markers tied to this Source IP:
+- EventName containing "Success", "Successful Login", "successful authentication", "Logged on" (Windows EventID 4624), or "Accepted password" (SSH success)
+- Action / FW_Action containing "Allow" / "Accept" for an auth port
+- Any row that is NOT a failure / NOT a deny / NOT "Bad Username"
+
+If you find ZERO such success markers → **set "mitigated": true** along with whatever band-appropriate score (0.4-0.8 for Single_Source_Targeting / Rogue_IP_Bruteforce_Confirmed). The attack is real but fully blocked, the IP is already in the suspicious refset, no internal account compromised — close without analyst action.
+
+If you find AT LEAST ONE success marker → set mitigated:false and use score 0.9-1.0 'Successful_Compromise' so the analyst sees it.
+
+Other clarifications:
+- A clear benign FP (0.0-0.3, 'Benign_User_Error' — successful login by the same user + tiny failure count + known device) keeps its LOW score and auto-closes normally — no need for mitigated.
+- Default posture when uncertain: prefer mitigated:true over leaving it open, because the radar already blocked the IP — the offense itself does not need analyst eyes unless there is real consequence.
 
 Output ONLY a JSON object with keys 'score' (float 0.0-1.0), 'verdict' (one of the strings above), 'explanation' (≤15 words, single sentence), and optional 'mitigated' (boolean, default false).
