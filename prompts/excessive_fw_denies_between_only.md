@@ -15,6 +15,8 @@ ANCHOR 1 — MUST score ≤ 0.2, verdict 'Multicast/LinkLocal_Noise':
 - Destination IP is in IPv4 multicast 224.0.0.0/4 OR IPv6 multicast ff00::/8 OR IPv4 169.254.0.0/16 OR IPv6 link-local fe80::/10
 - OR Source IP is in any of those ranges
 - OR src/dst is in 192.168.100.0/24 (Hikvision cameras) and the denied port is 1900 (SSDP), 5353 (mDNS), 3702 (WS-Discovery), 5355 (LLMNR), 137-139, or 67-68 (DHCP)
+- **OR the MAJORITY (≥40%) of events have destination in IPv4/IPv6 multicast OR link-local OR use a discovery port (5353/1900/3702/5355/137-139)** — the rule fired on discovery noise from the source device; the minority of unicast events is normal companion traffic from the same device (web/CDN/push) and does NOT change the verdict.
+- **BYOD carve-out:** if source is GUEST RFC1918 (e.g. 172.18.x.x, 172.19.x.x) AND ≥40% of events are multicast/discovery ports above AND the unicast destinations look like public CDN/SaaS (Apple 17.x.x.x, Google 8.8.x.x, Fastly 151.101.x.x, etc.) with NO service-port (445/3389/22/...) hitting trusted-internal — this is a mobile/IoT device on guest net doing normal discovery + internet, not lateral recon. Score 0.0–0.2.
 - This is mDNS / SSDP / LLMNR / camera-discovery noise. Always FP. The "potential C2" framing does NOT apply.
 
 ANCHOR 2 — MUST score ≤ 0.3, verdict 'LAN_To_LAN_Misconfig':
