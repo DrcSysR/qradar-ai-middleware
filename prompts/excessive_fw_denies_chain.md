@@ -21,10 +21,16 @@ ANCHOR 2 — MUST score ≤ 0.3, verdict 'IPv6_LinkLocal_Noise':
 - Source OR destination is in fe80::/10 OR ff02::/16
 - IPv6 link-local / multicast neighbor discovery, router solicitation, DHCPv6 — always noise.
 
-ANCHOR 2B — MUST score ≤ 0.3, verdict 'Benign_App_Web_Fanout' — FP, auto-close:
-- Source is TRUSTED INTERNAL and the fan-out hits MANY hosts but ONLY on web / app / IoT / infra ports — 80, 443, 8443, 8883 (MQTT), 5222/5223 (XMPP), 53 (DNS), 123 (NTP), 853 (DoT) — and NOT on any admin/service port from ANCHOR 3.
-- This is an application / telemetry / messaging client (browser, IoT/MQTT client, sync agent, DoH/DoT resolver) reaching many external/CDN endpoints that egress filtering or URL filtering blocked. It is NOT reconnaissance — recon targets SMB/RDP/SSH/WinRM/SQL, not 443/8883.
-- Offense.description containing "URL Filtering" with port 443/80 fan-out is a strong match for this anchor.
+ANCHOR 2B — MUST score ≤ 0.3, verdict 'Benign_App_Web_Fanout' — FP, auto-close. **OVERRIDES ANCHORS 3/4/5 — check this FIRST.**
+- **FIRST STEP — count the ports.** Look at the distinct `destinationport` values across all events.
+- **Trigger this anchor when ALL of:**
+  1. Source is TRUSTED INTERNAL (or any internal); AND
+  2. EVERY observed dst port is in the web/app/infra set `{80, 443, 8443, 8883 (MQTT), 5222, 5223 (XMPP), 53 (DNS), 123 (NTP), 853 (DoT), 5353 (mDNS), 7000}`; AND
+  3. NONE of the service/admin ports `{445, 3389, 22, 5985, 135, 1433, 3306, 5432, 161, 5900, 23, 593}` appears EVEN ONCE; AND
+  4. ≥ 80% of events are on a single web port (typically 443).
+- **Host count is IRRELEVANT here.** 50, 200, 600 destinations on port 443 = browser / sync-client / OS-update / telemetry / DoT-resolver fan-out hitting many CDN endpoints that egress or URL filtering blocked. It is NOT lateral recon — recon targets SMB/RDP/SSH/WinRM/SQL, NEVER pure 443.
+- Offense.description containing "URL Filtering" or "Traffic End" with port 443/80 fan-out is a strong match.
+- Do NOT apply ANCHOR 3 / 4 / 5 if condition (3) holds (no service port present) — those anchors require service-port presence; "many hosts on port 443" alone is NOT lateral recon, it's browsing/sync.
 
 ANCHOR 3 — score 0.5–0.7, verdict 'Local_Host_Scanning_LAN' — leave open:
 - Source is TRUSTED INTERNAL
@@ -65,6 +71,10 @@ ANCHOR 10 — score ≤ 0.3, verdict 'Blocked_No_Other_Violations' — auto-clos
 ANCHOR 11 — set "mitigated": true (recognized + contained, auto-closes), verdict 'External_Scan_Blocked':
 - Source IP is EXTERNAL (public unicast) OR GUEST/untrusted-internal acting as a pure external-style scanner, the burst is a recognized scan/probe, and every event is a deny/block (no Allow row) with no internal asset implicated as compromised.
 - The firewall fully blocked an outside-origin scan — malicious intent, contained, no consequence. Set "mitigated": true with the honest score so the offense closes; the radar's PA action / botnet_scan handle the source IP. (NOTE: a GUEST device of ours probing service ports is ANCHOR 6 territory — if it looks like a compromised guest endpoint rather than a transient scanner, prefer leaving it open.)
+
+VALID VERDICT STRINGS for this prompt — use ONLY one of:
+'Discovery_Multicast_Noise', 'IPv6_LinkLocal_Noise', 'Benign_App_Web_Fanout', 'Local_Host_Scanning_LAN', 'Local_Host_Scanning_Multiport', 'Local_Host_Scanning_Off_Subnet', 'Guest_Across_Multi_Hosts', 'Known_Admin_Tool_Pattern', 'Recurring_Noisy_Source', 'Blocked_No_Other_Violations', 'External_Scan_Blocked', 'Inconclusive_Local_Burst'.
+Do NOT emit verdicts from other prompts (e.g. 'Internal_Outbound_Burst', 'External_To_Internal_Sustained', 'LAN_To_LAN_Misconfig') — those belong to the "Between Hosts" prompt and do NOT apply here.
 
 FALLBACK: If nothing fits, score 0.5, verdict 'Inconclusive_Local_Burst'.
 
