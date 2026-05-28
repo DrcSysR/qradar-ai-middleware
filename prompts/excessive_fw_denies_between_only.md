@@ -23,6 +23,15 @@ ANCHOR 2 — MUST score ≤ 0.3, verdict 'LAN_To_LAN_Misconfig':
 - AND there is no row in the events with Action=Allow/Accept for the same src→dst:port
 - This is a misconfigured client retrying a service the dst doesn't allow (SMB to a non-server, RDP to a workstation, SQL to a host that moved, etc.). Almost always FP. Name the dst port in the explanation if it suggests the service.
 
+ANCHOR 2B — MUST score ≤ 0.3, verdict 'Benign_App_Web_Fanout_Outbound' — FP, auto-close. **OVERRIDES ANCHOR 6 — check this FIRST.**
+- **FIRST STEP — count the ports.** Source is TRUSTED INTERNAL, destinations are EXTERNAL or mixed.
+- **Trigger when ALL of:**
+  1. EVERY observed dst port is in the web/app/messaging/infra set `{80, 443, 8443, 53, 123, 853, 5222, 5223, 5228 (Google push), 5280, 5353 (mDNS), 5005 (RTP), 4244 (Viber chat), 3544 (Teredo), 7000, 8001-8010 (app/Tomcat-like)}`; AND
+  2. NONE of the service/admin ports `{445, 3389, 22, 5985, 135, 1433, 3306, 5432, 161, 5900, 23, 593}` appears EVEN ONCE; AND
+  3. Multiple distinct dst hosts (>5) — it's a fan-out shape, not a single-target burst.
+- This is normal outbound from a workstation/server reaching many SaaS/CDN/push/messaging endpoints that egress filtering blocked. NOT a beacon (a beacon is ONE fixed external IP on ONE port — ANCHOR 6). Host count is irrelevant when the port set is purely web/app/messaging.
+- Do NOT apply ANCHOR 6 if the fan-out spans many different dst IPs OR the port set is purely web/app.
+
 ANCHOR 3 — MUST score ≤ 0.3, verdict 'PA_R2L_Block_Already_Mitigated':
 - offense.description contains "R2L Action Block" OR Action=Block consistently AND Source IP is EXTERNAL (public unicast) AND Destination IP is TRUSTED INTERNAL
 - AND there is no Allow row for the same src→dst:port in the window
@@ -33,14 +42,14 @@ ANCHOR 4 — score 0.7–0.8, verdict 'External_Scan_Blocked' — set "mitigated
 - AND no Allow row from this source (every event is a deny/block)
 - This is a recognized external scan/probe that the firewall FULLY BLOCKED — malicious in intent but contained, no internal asset implicated, no consequence. Set "mitigated": true so the offense closes (the radar's own escalating PA action / botnet_scan handle the IP). Keep the honest high score. Do NOT route to an analyst just because the source is external — the block already did its job.
 
-ANCHOR 5 — score 0.6–0.8, verdict 'Guest_To_Internal_Probing' — leave open:
-- Source IP is in GUEST / UNTRUSTED INTERNAL (e.g. 172.19.x.x) AND destination is TRUSTED INTERNAL
+ANCHOR 5 — score 0.6–0.8, verdict 'Guest_To_Internal_Probing' — leave open. **REQUIRES the source IP to be in a GUEST / untrusted-internal RFC1918 range (e.g. 172.19.x.x); a public-unicast EXTERNAL source is NEVER this anchor — that is ANCHOR 4.**
+- Source IP is in GUEST / UNTRUSTED INTERNAL (RFC1918 outside the trusted ranges, e.g. 172.19.x.x, undocumented 10.x.x.x) AND destination is TRUSTED INTERNAL
 - AND burst hits multiple internal hosts OR multiple ports (lateral-scan shape)
 - This is the most dangerous shape in this rule: a device on guest/BYOD network probing corporate LAN. Even if blocked, escalate to analyst — possibly compromised guest device or rogue contractor laptop.
 
-ANCHOR 6 — score 0.7–0.9, verdict 'Internal_Outbound_Burst' — leave open:
+ANCHOR 6 — score 0.7–0.9, verdict 'Internal_Outbound_Burst' — leave open. **REQUIRES all of: (a) ONE single fixed external dst IP, (b) ONE single non-standard port, (c) repeated denies to that exact dst_ip:dst_port. If destinations span many IPs OR the port is 80/443/53/853, this is ANCHOR 2B (benign fan-out), NOT a beacon.**
 - Source IP is TRUSTED INTERNAL AND destination is EXTERNAL AND repeated denies to the SAME external IP
-- AND the dst port is non-standard (>1024, not 80/443/53)
+- AND the dst port is non-standard (>1024, not 80/443/53/853)
 - Internal host attempting blocked outbound to a fixed external endpoint = candidate beacon. Escalate.
 
 ANCHOR 7 — score 0.4, verdict 'SSH_Bruteforce_Already_Blocked':
@@ -57,6 +66,10 @@ MITIGATED — RECOGNIZED MALICIOUS BUT FULLY BLOCKED (set "mitigated": true; off
   - ANCHOR 5 (GUEST / untrusted-internal source probing the LAN) — the guest/BYOD device needs a look.
   - ANCHOR 6 (TRUSTED-INTERNAL source making blocked outbound to a fixed external endpoint = beacon candidate) — the internal host may be compromised; the block stops the channel but not the infection.
 - Multicast/LAN-misconfig (ANCHOR 1, 2) stay as low-score FP and auto-close on score, no mitigated needed.
+
+VALID VERDICT STRINGS for this prompt — use ONLY one of:
+'Multicast/LinkLocal_Noise', 'LAN_To_LAN_Misconfig', 'Benign_App_Web_Fanout_Outbound', 'PA_R2L_Block_Already_Mitigated', 'External_Scan_Blocked', 'Guest_To_Internal_Probing', 'Internal_Outbound_Burst', 'SSH_Bruteforce_Already_Blocked', 'Blocked_No_Other_Violations', 'Inconclusive_FW_Burst'.
+Do NOT emit verdicts from other prompts (e.g. 'Local_Host_Scanning_LAN', 'Local_Host_Scanning_Multiport', 'Highly Suspicious') — those belong to other rules.
 
 FALLBACK: If none of the anchors fit, output score 0.5, verdict 'Inconclusive_FW_Burst' — let the analyst review.
 
