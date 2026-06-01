@@ -1,0 +1,14 @@
+SELECT
+    sourceip AS Source,
+    destinationip AS DNS_Server,
+    "Application" AS App,
+    QIDNAME(qid) AS Event,
+    COUNT(*) AS Queries,
+    SUM("Bytes Sent") AS Bytes_Sent,
+    SUM("Bytes Received") AS Bytes_Received
+FROM events
+WHERE
+    INOFFENSE({offense_id})
+GROUP BY sourceip, destinationip, App, Event
+ORDER BY Queries DESC
+LIMIT {limit} {time_depth}

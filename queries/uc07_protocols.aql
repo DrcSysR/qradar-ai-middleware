@@ -1,0 +1,15 @@
+SELECT
+    sourceip AS Source,
+    destinationip AS Dest,
+    destinationport AS Port,
+    "Application" AS App,
+    QIDNAME(qid) AS Event,
+    COUNT(*) AS Sessions,
+    SUM("Bytes Sent") AS Bytes_Sent,
+    SUM("Bytes Received") AS Bytes_Received
+FROM events
+WHERE
+    INOFFENSE({offense_id})
+GROUP BY sourceip, destinationip, Port, App, Event
+ORDER BY Bytes_Sent DESC
+LIMIT {limit} {time_depth}
