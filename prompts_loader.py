@@ -29,6 +29,41 @@ def get_rule_keys(prompts_file: str) -> list[str]:
     return [k for k in mapping.keys() if k not in META_KEYS]
 
 
+def _iter_match_texts(description, rule_names):
+    """Тексти для матчингу в порядку пріоритету: спершу опис офенсу, потім назви
+    правил-учасників. rule_names — фолбек для офенсів, чий опис QRadar згенерував
+    з імені події (напр. 'Traffic End', 'incorrect password'), а не з імені UC-правила."""
+    yield description or ""
+    for rn in (rule_names or []):
+        yield rn or ""
+
+
+def _match_config(mapping, description, rule_names=None):
+    """Перша секція (у порядку prompts.json), чий ключ є substring опису офенсу
+    АБО назви правила-учасника. Повертає config або None. META_KEYS ігноруються."""
+    for text in _iter_match_texts(description, rule_names):
+        tl = text.lower()
+        if not tl:
+            continue
+        for key, config in mapping.items():
+            if key in META_KEYS:
+                continue
+            if key.lower() in tl:
+                return config
+    return None
+
+
+def offense_matches(rule_keys, description, rule_names=None) -> bool:
+    """True, якщо хоч один rule_key є substring опису офенсу або назви правила-учасника.
+    Використовується поллером як фільтр 'чи слати офенс на AI-аналіз'."""
+    keys_lower = [k.lower() for k in rule_keys]
+    for text in _iter_match_texts(description, rule_names):
+        tl = text.lower()
+        if tl and any(k in tl for k in keys_lower):
+            return True
+    return False
+
+
 def _resolve_config(config) -> tuple[str, str | None, str, str | None]:
     """Розпарсити елемент мапінгу: рядок або список [filename, assignee, aql_file, refset_cleanup].
     refset_cleanup — назва reference set, з якого треба видалити entity IP при FP-вердикті
@@ -52,26 +87,24 @@ def _resolve_config(config) -> tuple[str, str | None, str, str | None]:
     return filename, assignee, aql_file, refset_cleanup
 
 
-def get_dynamic_prompt(rule_name: str, prompts_file: str, prompts_dir: str) -> tuple[str, str | None, str, str | None]:
-    """Знайти у prompts.json першу секцію, ключ якої є substring назви офенсу.
-    Повертає (prompt_text, assignee, aql_filename, refset_cleanup). Якщо нічого не знайдено — Default; якщо й Default немає — фолбек."""
+def get_dynamic_prompt(rule_name: str, prompts_file: str, prompts_dir: str, rule_names: list | None = None) -> tuple[str, str | None, str, str | None]:
+    """Знайти у prompts.json першу секцію, ключ якої є substring опису офенсу
+    АБО назви будь-якого з правил-учасників (rule_names). Збіг за описом має пріоритет;
+    rule_names — фолбек для офенсів, чий опис QRadar згенерував з імені події, а не з імені UC.
+    Повертає (prompt_text, assignee, aql_filename, refset_cleanup). Якщо нічого не знайдено — Default."""
     mapping = _load_mapping(prompts_file)
     if not mapping:
         return DEFAULT_PROMPT_TEXT, None, DEFAULT_AQL_FILE, None
 
-    rule_lower = rule_name.lower()
-
-    # 1. Точкові правила
-    for key, config in mapping.items():
-        if key in META_KEYS:
-            continue
-        if key.lower() in rule_lower:
-            filename, assignee, aql_file, refset_cleanup = _resolve_config(config)
-            filepath = os.path.join(prompts_dir, filename)
-            if os.path.exists(filepath):
-                with open(filepath, "r", encoding="utf-8") as pf:
-                    return pf.read(), assignee, aql_file, refset_cleanup
-            return DEFAULT_PROMPT_TEXT, None, DEFAULT_AQL_FILE, None
+    # 1. Точкові правила: спершу опис офенсу, потім назви правил-учасників
+    config = _match_config(mapping, rule_name, rule_names)
+    if config is not None:
+        filename, assignee, aql_file, refset_cleanup = _resolve_config(config)
+        filepath = os.path.join(prompts_dir, filename)
+        if os.path.exists(filepath):
+            with open(filepath, "r", encoding="utf-8") as pf:
+                return pf.read(), assignee, aql_file, refset_cleanup
+        return DEFAULT_PROMPT_TEXT, None, DEFAULT_AQL_FILE, None
 
     # 2. Default
     if "Default" in mapping:

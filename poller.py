@@ -8,7 +8,7 @@ import fcntl
 import sys
 import sqlite3
 
-from prompts_loader import get_rule_keys
+from prompts_loader import get_rule_keys, offense_matches
 
 # --- НАЛАШТУВАННЯ ---
 LOOKBACK_TIME_MS = 24 * 60 * 60 * 1000  # 24 години у мілісекундах (deep/manual режим бере 7 днів через AQL time_depth)
@@ -49,6 +49,18 @@ def is_processed_in_db(offense_id):
     except sqlite3.OperationalError:
         return False
 
+def get_rules_map():
+    """id->name для всіх правил радара. Потрібно, щоб матчити офенс за НАЗВОЮ
+    правила-учасника, а не лише за описом (опис часто = ім'я події, напр. 'Traffic End')."""
+    try:
+        r = requests.get(f"{QRADAR_API}/analytics/rules?fields=id,name", headers=HEADERS, verify=False, timeout=30)
+        if r.status_code == 200:
+            return {item["id"]: item.get("name", "") for item in r.json()}
+        logging.warning(f"Не вдалося завантажити мапу правил: HTTP {r.status_code}")
+    except Exception as e:
+        logging.warning(f"Помилка завантаження мапи правил: {e}")
+    return {}
+
 def has_ai_note(offense_id):
     url = f"{QRADAR_API}/siem/offenses/{offense_id}/notes"
     try:
@@ -76,7 +88,10 @@ search_start_time = int(time.time() * 1000) - LOOKBACK_TIME_MS
 logging.info(f"Шукаємо офенси за останні 24 години (з {time.strftime('%Y-%m-%d %H:%M:%S', time.localtime(search_start_time/1000))})")
 
 # Запитуємо тільки відкриті інциденти, створені після search_start_time
-url = f"{QRADAR_API}/siem/offenses?filter=status%3D%22OPEN%22%20and%20start_time%3E{search_start_time}"
+# fields=...,rules — потрібні назви правил-учасників для матчингу за іменем правила
+url = f"{QRADAR_API}/siem/offenses?fields=id,description,rules&filter=status%3D%22OPEN%22%20and%20start_time%3E{search_start_time}"
+
+rules_map = get_rules_map()
 
 try:
     response = requests.get(url, headers=HEADERS, verify=False, timeout=10)
@@ -97,13 +112,14 @@ try:
 
             off_id = int(off["id"])
             desc = off.get("description", "")
+            rule_names = [rules_map.get(r.get("id"), "") for r in off.get("rules", [])]
 
             # 1. Швидка перевірка по базі даних
             if is_processed_in_db(off_id):
                 continue
 
-            # 2. Перевірка назви правила
-            if any(rule.lower() in desc.lower() for rule in target_rules):
+            # 2. Перевірка за описом офенсу АБО назвою правила-учасника
+            if offense_matches(target_rules, desc, rule_names):
 
                 # 3. Надійна перевірка через API (якщо в QRadar вже є нотатка, але БД була видалена)
                 if not has_ai_note(off_id):

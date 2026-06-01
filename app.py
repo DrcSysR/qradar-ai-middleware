@@ -33,6 +33,7 @@ MODELS_WITH_JSON_FORMAT = {"qwen2.5-coder:7b", "qwen2.5-coder:14b", "qwen2.5-cod
 
 # Кеш inverse-індексу reference sets (ip -> [setnames]). Скидається тільки рестартом сервісу.
 REFSET_CACHE = {"index": None, "ts": 0.0}
+RULES_MAP_CACHE = {"map": None, "ts": 0.0}
 IPV4_RE = re.compile(r'\b(?:\d{1,3}\.){3}\d{1,3}\b')
 
 # --- ЗАВАНТАЖЕННЯ КОНФІГУРАЦІЇ ---
@@ -102,8 +103,31 @@ class UniversalTrigger(BaseModel):
     offense_id: int
     is_manual: bool = False
 
-def get_dynamic_prompt(rule_name):
-    return _get_dynamic_prompt(rule_name, PROMPTS_FILE, PROMPTS_DIR)
+def get_dynamic_prompt(rule_name, rule_names=None):
+    return _get_dynamic_prompt(rule_name, PROMPTS_FILE, PROMPTS_DIR, rule_names=rule_names)
+
+
+async def fetch_rules_map(client: httpx.AsyncClient) -> dict:
+    url = f"{QRADAR_API_URL}/analytics/rules?fields=id,name"
+    try:
+        resp = await client.get(url, headers=HEADERS)
+        if resp.status_code != 200:
+            logging.warning(f"Rules map fetch failed: HTTP {resp.status_code}")
+            return {}
+        return {item["id"]: item.get("name", "") for item in resp.json()}
+    except Exception as e:
+        logging.warning(f"Rules map fetch error: {e}")
+        return {}
+
+
+async def get_rules_map(client: httpx.AsyncClient) -> dict:
+    ttl = float(APP_CONFIG.get("rules_map_cache_ttl_seconds", 3600))
+    now = time.time()
+    if RULES_MAP_CACHE["map"] is None or (now - RULES_MAP_CACHE["ts"]) > ttl:
+        RULES_MAP_CACHE["map"] = await fetch_rules_map(client)
+        RULES_MAP_CACHE["ts"] = now
+        logging.info(f"Rules map cache loaded: {len(RULES_MAP_CACHE['map'])} rules.")
+    return RULES_MAP_CACHE["map"]
 
 
 
@@ -129,6 +153,7 @@ async def get_offense_details(client: httpx.AsyncClient, offense_id: int):
         "entity_value": entity_value,
         "entity_type": entity_type,
         "offense_name": offense_name,
+        "rules": data.get("rules", []),
         "start_time": data.get("start_time"),
         "last_updated_time": data.get("last_updated_time"),
     }
@@ -448,7 +473,10 @@ async def universal_analysis(payload: UniversalTrigger):
         else:
             time_depth = "LAST 7 DAYS" if payload.is_manual else "LAST 4 HOURS"
 
-        instruction, assignee, aql_filename, refset_cleanup = get_dynamic_prompt(details['offense_name'])
+        # Назви правил-учасників — фолбек-матчинг, коли опис офенсу = ім'я події, а не UC
+        rules_map = await get_rules_map(client)
+        contributing_rule_names = [rules_map.get(r.get("id"), "") for r in details.get("rules", [])]
+        instruction, assignee, aql_filename, refset_cleanup = get_dynamic_prompt(details['offense_name'], contributing_rule_names)
 
         raw_events = await fetch_data_from_qradar(
             client, payload.offense_id, time_depth, aql_filename,
