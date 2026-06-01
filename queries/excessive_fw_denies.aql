@@ -5,7 +5,6 @@ SELECT
     destinationip AS Dst_IP,
     destinationport AS Dst_Port,
     "Process Name" AS Process,
-    REFERENCESETCONTAINS('Windows Sensitive Processes', "Process Name") AS Sensitive_Process,
     username AS User,
     "Application" AS App,
     "Action" AS FW_Action,
@@ -20,6 +19,6 @@ WHERE
     OR (sourceip = '{source_ip}'
         AND "Process Name" IS NOT NULL
         AND "Process Name" <> '')
-GROUP BY Event, Log_Source, Src_IP, Dst_IP, Dst_Port, Process, Sensitive_Process, User, App, FW_Action
+GROUP BY Event, Log_Source, Src_IP, Dst_IP, Dst_Port, Process, User, App, FW_Action
 ORDER BY Event_Count DESC
 LIMIT {limit} {time_depth}

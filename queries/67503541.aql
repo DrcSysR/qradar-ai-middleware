@@ -8,7 +8,6 @@ SELECT
 FROM events 
 WHERE 
     INOFFENSE({offense_id})
-    AND NOT REFERENCESETCONTAINS('Windows Servers', destinationip)
 GROUP BY Event_Name, Service_Account, Source_IP, Target_IP, Logon_Type
 ORDER BY Authentication_Attempts DESC
 LIMIT {limit} {time_depth}

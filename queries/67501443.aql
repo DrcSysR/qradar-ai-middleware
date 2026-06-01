@@ -8,9 +8,6 @@ SELECT
 FROM events 
 WHERE 
     INOFFENSE({offense_id})
-    AND NOT REFERENCESETCONTAINS('UC05-DNS Servers', sourceip)
-    AND NOT REFERENCESETCONTAINS('UC-ME Trusted Destination IPs', destinationip)
-    AND NOT REFERENCESETCONTAINS('UC-ME Safe Application List', "Application")
     AND NOT (
         QIDNAME(qid) ILIKE '%Non-RFC Compliant SSL Traffic on Port 443%'
         AND NETWORKNAME(destinationip) ILIKE '%Telegram_Infrastructure%'
