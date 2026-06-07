@@ -158,6 +158,30 @@ async def get_offense_details(client: httpx.AsyncClient, offense_id: int):
         "last_updated_time": data.get("last_updated_time"),
     }
 
+def _strip_aql_comments(aql: str) -> str:
+    # QRadar Ariel НЕ підтримує `--` коментарі — парсер не розпізнає їх як коментар,
+    # доходить до тексту (особливо не-ASCII) і падає 422 ParseError. Тож вирізаємо
+    # `--`...кінець-рядка перед відправкою, але тільки поза лапками (щоб не зачепити
+    # літерали типу '8.8--8.8', яких тут нема, але хай буде безпечно).
+    out = []
+    for line in aql.splitlines():
+        in_s = in_d = False
+        cut = None
+        i = 0
+        while i < len(line):
+            c = line[i]
+            if c == "'" and not in_d:
+                in_s = not in_s
+            elif c == '"' and not in_s:
+                in_d = not in_d
+            elif c == '-' and not in_s and not in_d and i + 1 < len(line) and line[i + 1] == '-':
+                cut = i
+                break
+            i += 1
+        out.append(line[:cut].rstrip() if cut is not None else line)
+    return "\n".join(out)
+
+
 async def fetch_data_from_qradar(client: httpx.AsyncClient, offense_id: int, time_depth: str, aql_filename: str, entity_value: str = "", entity_type: str = ""):
     filepath = os.path.join(QUERIES_DIR, aql_filename)
 
@@ -185,6 +209,7 @@ async def fetch_data_from_qradar(client: httpx.AsyncClient, offense_id: int, tim
         source_ip=source_ip,
         username=username,
     )
+    aql = _strip_aql_comments(aql)
 
     logging.debug(f"Executing Custom AQL ({aql_filename}): {aql}")
     
@@ -194,16 +219,16 @@ async def fetch_data_from_qradar(client: httpx.AsyncClient, offense_id: int, tim
         
         if response.status_code not in (200, 201):
             logging.error(f"AQL Error: {response.text}")
-            return []
-            
+            return None
+
         search_id = response.json().get("search_id")
         status = "WAIT"
-        
+
         while status != "COMPLETED":
             await asyncio.sleep(2)
             status_resp = await client.get(f"{QRADAR_API_URL}/ariel/searches/{search_id}", headers=HEADERS)
             status = status_resp.json().get("status", "ERROR")
-            if status == "ERROR": return []
+            if status == "ERROR": return None
 
         results_resp = await client.get(f"{QRADAR_API_URL}/ariel/searches/{search_id}/results", headers=HEADERS)
         events = results_resp.json().get("events", [])
@@ -212,7 +237,7 @@ async def fetch_data_from_qradar(client: httpx.AsyncClient, offense_id: int, tim
 
     except Exception as e:
         logging.error(f"Error fetching exact offense events: {e}")
-        return []
+        return None
 
 async def remove_ip_from_refset(client: httpx.AsyncClient, refset_name: str, ip_value: str) -> tuple[bool, str]:
     """Видалити IP з QRadar reference set. Повертає (success, message).
@@ -483,6 +508,19 @@ async def universal_analysis(payload: UniversalTrigger):
             entity_value=str(details.get("entity_value", "")),
             entity_type=details.get("entity_type", ""),
         )
+        if raw_events is None:
+            # AQL не виконався (422 ParseError / ERROR-статус / виняток). Порожній результат
+            # != помилка: НЕ закриваємо офенс, навіть з close_on_empty. Інакше зламаний запит
+            # тихо закриває реальні офенси як benign. Статус AQL_ERROR (≠ PROCESSED) → поллер
+            # переаналізує наступного циклу, щойно AQL виправлено.
+            logging.warning(f"⚠️ Офенс {payload.offense_id}: AQL не виконався (див. 'AQL Error' вище) — офенс залишаємо відкритим.")
+            note_text = "AI Analysis (SKIPPED) | AQL execution failed (see middleware log: 422 ParseError or ERROR status). Offense left OPEN for manual review — NOT auto-closed."
+            note_url = f"{QRADAR_API_URL}/siem/offenses/{payload.offense_id}/notes?note_text={urllib.parse.quote(note_text)}"
+            await client.post(note_url, headers=HEADERS)
+            with sqlite3.connect(DB_PATH) as conn:
+                conn.execute("UPDATE offenses SET status = 'AQL_ERROR', last_updated = CURRENT_TIMESTAMP WHERE offense_id = ?", (payload.offense_id,))
+            return {"status": "error", "message": "AQL execution failed; offense left open"}
+
         if not raw_events:
             # close_on_empty: для monitoring-юзкейсів AQL сам відфільтровує benign, тож порожній
             # результат у auto-режимі = чисто => закриваємо як benign (score 0.0). Manual не чіпаємо
