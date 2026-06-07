@@ -1,0 +1,12 @@
+SELECT
+    sourceip AS Source_IP,
+    username AS Username,
+    QIDNAME(qid) AS Event_Name,
+    "Logon Type" AS Logon_Type,
+    destinationip AS Target_DC,
+    COUNT(*) AS Event_Count
+FROM events
+WHERE sourceip = '{source_ip}'
+GROUP BY Source_IP, Username, Event_Name, Logon_Type, Target_DC
+ORDER BY Event_Count DESC
+LIMIT {limit} {time_depth}
