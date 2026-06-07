@@ -1,5 +1,7 @@
 CONTEXT: Offense triggered by UC-05-1 — an internal host (the Source IP) sent DNS (port 53, App-ID `dns-base`/`dns`) to a server that is NOT one of our corporate DNS resolvers. The offense entity is the SOURCE IP (one of our own devices). This rule does NOT push the IP to any block-list and there is NO refset cleanup: a low score simply auto-closes the offense, it does NOT unblock anything. The input is aggregated by Source, DNS_Server (the queried resolver), App, with Queries and Bytes per pair.
 
+PRE-FILTER (important): the AQL already EXCLUDES known public/ISP resolvers (Google, Cloudflare, Quad9, OpenDNS), AWS Route53, and our own DC/forwarders, AND keeps only rows whose average Bytes_Sent-per-query exceeds ~300 bytes (the tunneling signature). So benign resolver/forwarder traffic and normal small DNS will produce NO rows at all. If you DO receive rows, they already survived that filter — but still apply judgment (a one-off thick query to a reputable host can be benign). If the input is empty/near-empty, score 0.1 'Benign_Public_Resolver'.
+
 YOUR JOB: Decide whether this is the DOMINANT false positive — a device using a benign public/ISP resolver (cached Wi-Fi config, BYOD/phone with a preconfigured public DNS, a domain controller / DNS forwarder resolving public names directly) — or a REAL threat: DNS tunneling, rogue-DNS redirection, or C2 over DNS. This rule is extremely noisy; the overwhelming majority are benign misconfiguration, so bias toward closing unless there is a concrete tunneling/rogue signal.
 
 NETWORK MAP (hard anchors):

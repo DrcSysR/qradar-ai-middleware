@@ -10,6 +10,12 @@ SELECT
 FROM events
 WHERE
     INOFFENSE({offense_id})
+    -- Whitelist лише реально ненадійних/cleartext протоколів передачі — це і є сенс UC-07.
+    -- Звичайний HTTP/CDN/web-browsing, ssl/tls, stun/viber/quic, updates, dns тощо НЕ потрапляють сюди:
+    -- вони — домінантний benign і саме вони перевантажували аналітика. Порожній результат => немає
+    -- ризикованого протоколу => офенс не ескалюється. (Компроміс: bulk-HTTP-exfil через web-browsing
+    -- тут не ловиться — fast-модель його все одно не відрізняла; за потреби додати окремим порогом.)
+    AND "Application" IN ('ftp','ftp-data','tftp','telnet','rlogin','rsh','rexec','smtp','unknown-tcp','unknown-udp','unknown-p2p')
 GROUP BY sourceip, destinationip, Port, App, Event
 ORDER BY Bytes_Sent DESC
 LIMIT {limit} {time_depth}

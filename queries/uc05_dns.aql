@@ -9,6 +9,15 @@ SELECT
 FROM events
 WHERE
     INOFFENSE({offense_id})
+    -- Відсікаємо benign на рівні запиту: відомі публічні резолвери (Google/Cloudflare/Quad9/OpenDNS),
+    -- AWS Route53 (forwarder), і наші DNS-форвардери/DC (HQ + PL). Те, що лишилось, модель не побачить
+    -- як benign і не зможе нагалюцинувати "tunneling" на DC→Route53.
+    AND destinationip NOT IN ('8.8.8.8','8.8.4.4','1.1.1.1','1.0.0.1','9.9.9.9','149.112.112.112','208.67.222.222','208.67.220.220')
+    AND NOT INCIDR('205.251.192.0/23', destinationip)
+    AND sourceip NOT IN ('192.168.16.3','192.168.16.9','192.168.16.15','172.17.61.6','172.17.61.112','172.17.61.252')
 GROUP BY sourceip, destinationip, App, Event
+-- Tunneling-сигнатура = великі байти на запит. Звичайний DNS ~50-150 байт; поріг 300 лишає тільки
+-- аномально "товсті" запити. Порожній результат => весь трафік був benign => офенс не ескалюється.
+HAVING SUM("Bytes Sent") > 300 * COUNT(*)
 ORDER BY Queries DESC
 LIMIT {limit} {time_depth}
