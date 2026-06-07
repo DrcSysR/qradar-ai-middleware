@@ -65,13 +65,18 @@ def offense_matches(rule_keys, description, rule_names=None) -> bool:
 
 
 def _resolve_config(config) -> tuple[str, str | None, str, str | None]:
-    """Розпарсити елемент мапінгу: рядок або список [filename, assignee, aql_file, refset_cleanup].
+    """Розпарсити елемент мапінгу: рядок або список
+    [filename, assignee, aql_file, refset_cleanup, close_on_empty].
     refset_cleanup — назва reference set, з якого треба видалити entity IP при FP-вердикті
-    (порожній рядок або відсутність — ніяких дій з refset)."""
+    (порожній рядок або відсутність — ніяких дій з refset).
+    close_on_empty (5-й елемент, опційний) — якщо truthy ('close_on_empty'/'true'/'1'/'yes'),
+    то коли AQL не повертає жодної події, офенс закривається як benign (score 0.0) замість SKIP.
+    Призначене для monitoring-юзкейсів, де AQL сам відфільтровує benign і порожній результат = чисто."""
     filename = ""
     assignee = None
     aql_file = DEFAULT_AQL_FILE
     refset_cleanup = None
+    close_on_empty = False
 
     if isinstance(config, str):
         filename = config
@@ -83,35 +88,38 @@ def _resolve_config(config) -> tuple[str, str | None, str, str | None]:
             aql_file = config[2].strip()
         if len(config) > 3 and isinstance(config[3], str) and config[3].strip():
             refset_cleanup = config[3].strip()
+        if len(config) > 4 and str(config[4]).strip().lower() in ("close_on_empty", "true", "1", "yes"):
+            close_on_empty = True
 
-    return filename, assignee, aql_file, refset_cleanup
+    return filename, assignee, aql_file, refset_cleanup, close_on_empty
 
 
-def get_dynamic_prompt(rule_name: str, prompts_file: str, prompts_dir: str, rule_names: list | None = None) -> tuple[str, str | None, str, str | None]:
+def get_dynamic_prompt(rule_name: str, prompts_file: str, prompts_dir: str, rule_names: list | None = None) -> tuple[str, str | None, str, str | None, bool]:
     """Знайти у prompts.json першу секцію, ключ якої є substring опису офенсу
     АБО назви будь-якого з правил-учасників (rule_names). Збіг за описом має пріоритет;
     rule_names — фолбек для офенсів, чий опис QRadar згенерував з імені події, а не з імені UC.
-    Повертає (prompt_text, assignee, aql_filename, refset_cleanup). Якщо нічого не знайдено — Default."""
+    Повертає (prompt_text, assignee, aql_filename, refset_cleanup, close_on_empty).
+    close_on_empty=True лише для зматченого юзкейсу з 5-м елементом-прапорцем; Default/фолбек — False."""
     mapping = _load_mapping(prompts_file)
     if not mapping:
-        return DEFAULT_PROMPT_TEXT, None, DEFAULT_AQL_FILE, None
+        return DEFAULT_PROMPT_TEXT, None, DEFAULT_AQL_FILE, None, False
 
     # 1. Точкові правила: спершу опис офенсу, потім назви правил-учасників
     config = _match_config(mapping, rule_name, rule_names)
     if config is not None:
-        filename, assignee, aql_file, refset_cleanup = _resolve_config(config)
+        filename, assignee, aql_file, refset_cleanup, close_on_empty = _resolve_config(config)
         filepath = os.path.join(prompts_dir, filename)
         if os.path.exists(filepath):
             with open(filepath, "r", encoding="utf-8") as pf:
-                return pf.read(), assignee, aql_file, refset_cleanup
-        return DEFAULT_PROMPT_TEXT, None, DEFAULT_AQL_FILE, None
+                return pf.read(), assignee, aql_file, refset_cleanup, close_on_empty
+        return DEFAULT_PROMPT_TEXT, None, DEFAULT_AQL_FILE, None, False
 
     # 2. Default
     if "Default" in mapping:
-        filename, _, aql_file, _ = _resolve_config(mapping["Default"])
+        filename, _, aql_file, _, _ = _resolve_config(mapping["Default"])
         filepath = os.path.join(prompts_dir, filename)
         if os.path.exists(filepath):
             with open(filepath, "r", encoding="utf-8") as pf:
-                return pf.read(), None, aql_file, None
+                return pf.read(), None, aql_file, None, False
 
-    return DEFAULT_PROMPT_TEXT, None, DEFAULT_AQL_FILE, None
+    return DEFAULT_PROMPT_TEXT, None, DEFAULT_AQL_FILE, None, False

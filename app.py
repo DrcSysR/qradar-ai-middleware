@@ -476,7 +476,7 @@ async def universal_analysis(payload: UniversalTrigger):
         # Назви правил-учасників — фолбек-матчинг, коли опис офенсу = ім'я події, а не UC
         rules_map = await get_rules_map(client)
         contributing_rule_names = [rules_map.get(r.get("id"), "") for r in details.get("rules", [])]
-        instruction, assignee, aql_filename, refset_cleanup = get_dynamic_prompt(details['offense_name'], contributing_rule_names)
+        instruction, assignee, aql_filename, refset_cleanup, close_on_empty = get_dynamic_prompt(details['offense_name'], contributing_rule_names)
 
         raw_events = await fetch_data_from_qradar(
             client, payload.offense_id, time_depth, aql_filename,
@@ -484,6 +484,19 @@ async def universal_analysis(payload: UniversalTrigger):
             entity_type=details.get("entity_type", ""),
         )
         if not raw_events:
+            # close_on_empty: для monitoring-юзкейсів AQL сам відфільтровує benign, тож порожній
+            # результат у auto-режимі = чисто => закриваємо як benign (score 0.0). Manual не чіпаємо
+            # (аналітик сам тригернув — хай бачить). Без прапорця — стара поведінка (SKIP).
+            if close_on_empty and not payload.is_manual:
+                logging.info(f"✅ Офенс {payload.offense_id}: AQL без подій після benign-фільтра → авто-закриття (close_on_empty).")
+                note_text = "AI Analysis (AUTO-CLOSE) | No risky events after AQL benign-filter — benign traffic only. Score: 0.0. Closed automatically."
+                note_url = f"{QRADAR_API_URL}/siem/offenses/{payload.offense_id}/notes?note_text={urllib.parse.quote(note_text)}"
+                await client.post(note_url, headers=HEADERS)
+                await close_qradar_offense(client, payload.offense_id, 0.0)
+                with sqlite3.connect(DB_PATH) as conn:
+                    conn.execute("UPDATE offenses SET status = 'PROCESSED', last_updated = CURRENT_TIMESTAMP WHERE offense_id = ?", (payload.offense_id,))
+                return {"status": "closed", "message": "No risky events after benign-filter; auto-closed", "score": 0.0}
+
             logging.warning(f"⚠️ Для офенсу {payload.offense_id} не знайдено подій.")
             note_text = "AI Analysis (SKIPPED) | No events found by AQL. Events might be filtered out, aged out, or based on flows."
             note_url = f"{QRADAR_API_URL}/siem/offenses/{payload.offense_id}/notes?note_text={urllib.parse.quote(note_text)}"
@@ -491,7 +504,7 @@ async def universal_analysis(payload: UniversalTrigger):
 
             with sqlite3.connect(DB_PATH) as conn:
                 conn.execute("UPDATE offenses SET status = 'NO_EVENTS', last_updated = CURRENT_TIMESTAMP WHERE offense_id = ?", (payload.offense_id,))
-            
+
             return {"status": "skipped", "message": "No events found"}
 
         max_chars = int((MODELS_MAX_CTX.get(active_model, 32768) - 4096) * 3.5) if provider == "ollama" else 2000000
