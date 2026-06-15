@@ -1,0 +1,40 @@
+SELECT
+    destinationip AS Dest,
+    destinationport AS Port,
+    "Application" AS App,
+    "Web Category" AS Category,
+    COUNT(*) AS Conns,
+    SUM("Bytes Sent") AS Bytes_Sent,
+    SUM("Bytes Received") AS Bytes_Received
+FROM events
+WHERE
+    INOFFENSE({offense_id})
+    -- UC-02-1 спрацьовує суто за фактом "dest у рефсеті Botnet C&C IPs" (фід X-Force).
+    -- Проблема: цей рефсет (~101k записів) РЯСНО засмічений shared-front IP Cloudflare —
+    -- 172.67/104.16-31 тощо. За ними сидять мільйони легітимних сайтів, тож будь-який юзер,
+    -- що відкрив Cloudflare-сайт, тригерить офенс. Членство в рефсеті для Cloudflare НЕ є доказом.
+    -- Тому відкидаємо внутрішні адреси і ОПУБЛІКОВАНІ діапазони Cloudflare. Усе, що лишилось
+    -- (raw IP, хостинг/VPS, unknown-tcp), модель ще побачить і оцінить. Реальний beaconing за
+    -- Cloudflare ловить окреме правило 148849 (UC-ME Network C2 Beaconing, qid 53512404).
+    -- Порожній результат => лишились тільки benign Cloudflare-фронти => close_on_empty закриває офенс.
+    AND NOT INCIDR('10.0.0.0/8', destinationip)
+    AND NOT INCIDR('172.16.0.0/12', destinationip)
+    AND NOT INCIDR('192.168.0.0/16', destinationip)
+    -- Cloudflare (офіційні діапазони https://www.cloudflare.com/ips/)
+    AND NOT INCIDR('104.16.0.0/12', destinationip)
+    AND NOT INCIDR('172.64.0.0/13', destinationip)
+    AND NOT INCIDR('162.158.0.0/15', destinationip)
+    AND NOT INCIDR('198.41.128.0/17', destinationip)
+    AND NOT INCIDR('173.245.48.0/20', destinationip)
+    AND NOT INCIDR('141.101.64.0/18', destinationip)
+    AND NOT INCIDR('108.162.192.0/18', destinationip)
+    AND NOT INCIDR('190.93.240.0/20', destinationip)
+    AND NOT INCIDR('188.114.96.0/20', destinationip)
+    AND NOT INCIDR('197.234.240.0/22', destinationip)
+    AND NOT INCIDR('103.21.244.0/22', destinationip)
+    AND NOT INCIDR('103.22.200.0/22', destinationip)
+    AND NOT INCIDR('103.31.4.0/22', destinationip)
+    AND NOT INCIDR('131.0.72.0/22', destinationip)
+GROUP BY destinationip, destinationport, "Application", "Web Category"
+ORDER BY Conns DESC
+LIMIT {limit} {time_depth}
