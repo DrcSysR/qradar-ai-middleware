@@ -9,18 +9,20 @@ SELECT
 FROM events
 WHERE
     INOFFENSE({offense_id})
-    -- UC-02-1 спрацьовує суто за фактом "dest у рефсеті Botnet C&C IPs" (фід X-Force).
-    -- Проблема: цей рефсет (~101k записів) РЯСНО засмічений shared-front IP Cloudflare —
-    -- 172.67/104.16-31 тощо. За ними сидять мільйони легітимних сайтів, тож будь-який юзер,
-    -- що відкрив Cloudflare-сайт, тригерить офенс. Членство в рефсеті для Cloudflare НЕ є доказом.
-    -- Тому відкидаємо внутрішні адреси і ОПУБЛІКОВАНІ діапазони Cloudflare. Усе, що лишилось
-    -- (raw IP, хостинг/VPS, unknown-tcp), модель ще побачить і оцінить. Реальний beaconing за
-    -- Cloudflare ловить окреме правило 148849 (UC-ME Network C2 Beaconing, qid 53512404).
-    -- Порожній результат => лишились тільки benign Cloudflare-фронти => close_on_empty закриває офенс.
+    -- UC-02-1 спрацьовує суто за фактом "dest у рефсеті Botnet C&C IPs" (фід X-Force, ~101k записів).
+    -- Рефсет РЯСНО засмічений shared-front IP великих CDN/SaaS (Cloudflare домінує: 172.67/104.16-31),
+    -- за якими сидять мільйони легітимних сайтів. Будь-який юзер на Cloudflare/Meta/Apple-сервісі
+    -- тригерить офенс. Тому за зразком uc05/uc07 відсікаємо benign на рівні AQL: внутрішні адреси,
+    -- публічні резолвери і ОПУБЛІКОВАНІ діапазони масових CDN/SaaS. Усе, що лишилось (raw IP,
+    -- VPS-хостинг типу DigitalOcean/OVH, unknown-tcp) — модель ще побачить і оцінить. Порожній
+    -- результат => лишились тільки відомі benign-фронти => close_on_empty закриває офенс детерміновано.
+    -- Реальний beaconing за Cloudflare окремо ловить правило 148849 (UC-ME Network C2 Beaconing).
     AND NOT INCIDR('10.0.0.0/8', destinationip)
     AND NOT INCIDR('172.16.0.0/12', destinationip)
     AND NOT INCIDR('192.168.0.0/16', destinationip)
-    -- Cloudflare (офіційні діапазони https://www.cloudflare.com/ips/)
+    -- Публічні DNS-резолвери (DoT/DoH/plain)
+    AND destinationip NOT IN ('8.8.8.8','8.8.4.4','1.1.1.1','1.0.0.1','9.9.9.9','149.112.112.112','208.67.222.222','208.67.220.220')
+    -- Cloudflare (https://www.cloudflare.com/ips/) — головний джерело FP
     AND NOT INCIDR('104.16.0.0/12', destinationip)
     AND NOT INCIDR('172.64.0.0/13', destinationip)
     AND NOT INCIDR('162.158.0.0/15', destinationip)
@@ -35,6 +37,32 @@ WHERE
     AND NOT INCIDR('103.22.200.0/22', destinationip)
     AND NOT INCIDR('103.31.4.0/22', destinationip)
     AND NOT INCIDR('131.0.72.0/22', destinationip)
+    -- Apple (увесь 17.0.0.0/8 належить Apple)
+    AND NOT INCIDR('17.0.0.0/8', destinationip)
+    -- Meta / Facebook / Instagram / WhatsApp
+    AND NOT INCIDR('157.240.0.0/16', destinationip)
+    AND NOT INCIDR('31.13.24.0/21', destinationip)
+    AND NOT INCIDR('31.13.64.0/18', destinationip)
+    AND NOT INCIDR('57.144.0.0/14', destinationip)
+    AND NOT INCIDR('66.220.144.0/20', destinationip)
+    AND NOT INCIDR('69.63.176.0/20', destinationip)
+    AND NOT INCIDR('69.171.224.0/19', destinationip)
+    AND NOT INCIDR('129.134.0.0/16', destinationip)
+    AND NOT INCIDR('173.252.64.0/18', destinationip)
+    AND NOT INCIDR('179.60.192.0/22', destinationip)
+    AND NOT INCIDR('185.60.216.0/22', destinationip)
+    AND NOT INCIDR('204.15.20.0/22', destinationip)
+    AND NOT INCIDR('195.5.51.0/24', destinationip)
+    -- Fastly CDN
+    AND NOT INCIDR('151.101.0.0/16', destinationip)
+    AND NOT INCIDR('199.232.0.0/16', destinationip)
+    -- Google (web + DNS фронти)
+    AND NOT INCIDR('142.250.0.0/15', destinationip)
+    AND NOT INCIDR('172.217.0.0/16', destinationip)
+    AND NOT INCIDR('216.58.192.0/19', destinationip)
+    AND NOT INCIDR('74.125.0.0/16', destinationip)
+    AND NOT INCIDR('64.233.160.0/19', destinationip)
+    AND NOT INCIDR('209.85.128.0/17', destinationip)
 GROUP BY destinationip, destinationport, "Application", "Web Category"
 ORDER BY Conns DESC
 LIMIT {limit} {time_depth}

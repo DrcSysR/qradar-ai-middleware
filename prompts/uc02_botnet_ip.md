@@ -6,10 +6,11 @@ CRITICAL CONTEXT — read before scoring:
 The offense fired ONLY because the destination IP is listed in a large (~101k) X-Force
 threat feed. That feed is polluted with SHARED-INFRASTRUCTURE front IPs (CDN / cloud
 reverse-proxies) behind which millions of legitimate sites live. Mere membership in the
-feed is therefore NOT evidence of compromise. The well-known Cloudflare ranges have
-already been filtered out of the events below; what remains are the destinations that
-still deserve judgement. Score on the OBSERVED BEHAVIOUR (application, web category,
-port, volume, periodicity), never on the bare fact that the rule fired.
+feed is therefore NOT evidence of compromise. The well-known benign CDN/SaaS ranges
+(Cloudflare, Apple, Meta, Google, Fastly, public DNS resolvers) have already been
+filtered out of the events below; what remains are the destinations that still deserve
+judgement. Score on the OBSERVED BEHAVIOUR (application, web category, port, volume,
+periodicity), never on the bare fact that the rule fired.
 
 FIRST CHECK — is this just normal web traffic to a flagged front?
 1. Is the 'App' a normal browser/web app ('web-browsing', 'ssl', 'tls', 'quic',
