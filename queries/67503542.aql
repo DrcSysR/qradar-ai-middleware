@@ -10,9 +10,16 @@ FROM events
 WHERE 
     qid = 53512404
     AND INOFFENSE({offense_id})
-    AND NOT INCIDR('172.16.0.0/12', destinationip) 
-    AND NOT INCIDR('192.168.0.0/16', destinationip) 
+    AND NOT INCIDR('172.16.0.0/12', destinationip)
+    AND NOT INCIDR('192.168.0.0/16', destinationip)
     AND NOT INCIDR('10.0.0.0/8', destinationip)
+    AND "Application" NOT IN (
+        'google-base','google-play','gmail-base','google-gemini','youtube-base',
+        'ms-update','dns-base','dns-over-https','dns-over-tls','ntp-base','quic-base',
+        'ping','teredo','telegram-base','whatsapp-base','whatsapp-web','facebook-base',
+        'instagram-base','tiktok-base','icloud-base','crowdstrike',
+        'traps-management-service','zabbix'
+    )
 GROUP BY destinationip, destinationport, "Application", "Web Category"
 ORDER BY Beacon_Count DESC
 LIMIT {limit} {time_depth}
