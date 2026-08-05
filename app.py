@@ -592,11 +592,24 @@ async def universal_analysis(payload: UniversalTrigger):
 
             return {"status": "skipped", "message": "No events found"}
 
-        max_chars = int((MODELS_MAX_CTX.get(active_model, 32768) - 4096) * 3.5) if provider in ("ollama", "openai") else 2000000
-        logs_text = str(raw_events)[:max_chars]
-
         refset_index = await get_refset_index(client)
         asset_block = build_asset_context_block(raw_events, refset_index)
+
+        if provider == "openai":
+            # llm01 (llama.cpp) має лише ctx 8192, а лог/IP-текст токенізується щільно (~2.1 симв/токен).
+            # Різати треба ВЕСЬ промпт, не лише логи: окрім виводу резервуємо фіксовану частину
+            # (інструкція + рубрика/boilerplate + asset-блок), інакше llama.cpp віддає
+            # 400 exceed_context_size_error. Бюджет під логи = залишок контексту.
+            ctx = MODELS_MAX_CTX.get(active_model, 8192)
+            CHARS_PER_TOK = 2.0        # консервативно (реально ~2.1 на логах) — краще недобрати, ніж 400
+            OUTPUT_RESERVE_TOK = 1024  # короткий JSON-вердикт; із запасом
+            fixed_chars = len(instruction) + len(asset_block) + 3200  # 3200 ≈ константна рубрика/boilerplate промпту
+            max_chars = max(500, int((ctx - OUTPUT_RESERVE_TOK) * CHARS_PER_TOK) - fixed_chars)
+        elif provider == "ollama":
+            max_chars = int((MODELS_MAX_CTX.get(active_model, 32768) - 4096) * 3.5)
+        else:
+            max_chars = 2000000
+        logs_text = str(raw_events)[:max_chars]
 
         prompt = (
             "You are an expert Tier-2 SOC analyst. "
