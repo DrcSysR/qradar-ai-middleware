@@ -28,6 +28,10 @@ MODELS_MAX_CTX = {
     "qwen2.5-coder:32b": 32768,
     "qwen3.5:9b": 65536,
     "qwen3.5:27b": 65536,
+    # llm01 (llama.cpp, OpenAI /v1) — сервер піднято з ctx 8192 (2 GB VRAM, більший KV-кеш не влазить).
+    # Тримаємо тут 8192, інакше max_chars ріже промпт під 32k і переповнює контекст → падіння якості.
+    "qwen2.5-coder-3b": 8192,
+    "qwen2.5-coder-7b": 8192,
 }
 MODELS_WITH_JSON_FORMAT = {"qwen2.5-coder:7b", "qwen2.5-coder:14b", "qwen2.5-coder:32b"}
 
@@ -371,6 +375,42 @@ async def ask_ollama(client: httpx.AsyncClient, model: str, prompt: str, timeout
         _to_bool(parsed_json.get("mitigated", False))
     )
 
+async def ask_openai(client: httpx.AsyncClient, model: str, prompt: str, timeout: float = 600.0) -> tuple[float, str, str, bool]:
+    # llm01 (llama.cpp, OpenAI-сумісний /v1). response_format=json_object → строгий JSON.
+    # Слово "json" уже присутнє у промпті (вимога OpenAI-формату), тож режим спрацьовує.
+    base = APP_CONFIG.get("openai_base", "http://127.0.0.1:8080/v1").rstrip("/")
+    endpoint = f"{base}/chat/completions"
+
+    headers = {"Content-Type": "application/json"}
+    api_key = APP_CONFIG.get("openai_api_key", "")
+    if api_key:  # llm01 зараз без автентифікації; ключ додаємо лише якщо його увімкнуть на сервері
+        headers["Authorization"] = f"Bearer {api_key}"
+
+    payload = {
+        "model": model,
+        "messages": [{"role": "user", "content": prompt}],
+        "temperature": 0.1,
+        "response_format": {"type": "json_object"},
+        "stream": False,
+    }
+
+    response = await client.post(endpoint, headers=headers, json=payload, timeout=timeout)
+    response.raise_for_status()
+    llm_text = response.json()["choices"][0]["message"]["content"]
+
+    if not llm_text or not llm_text.strip():
+        raise ValueError("Empty response from OpenAI-compatible endpoint")
+
+    json_match = re.search(r'\{[^{}]*"score"[^{}]*\}', llm_text)
+    parsed_json = json.loads(json_match.group()) if json_match else json.loads(llm_text.strip())
+
+    return (
+        float(parsed_json.get("score", 0.0)),
+        parsed_json.get("verdict", "Unknown"),
+        parsed_json.get("explanation", "No explanation provided."),
+        _to_bool(parsed_json.get("mitigated", False))
+    )
+
 async def ask_vertex(client: httpx.AsyncClient, model: str, prompt: str) -> tuple[float, str, str, bool]:
     project_id = APP_CONFIG.get("vertex_project", "your-gcp-project-id")
     location = APP_CONFIG.get("vertex_location", "global")
@@ -466,6 +506,13 @@ async def universal_analysis(payload: UniversalTrigger):
     provider = APP_CONFIG.get("ai_provider", "ollama")
     fallback_provider = APP_CONFIG.get("ai_fallback", "")
 
+    # Ручний глибокий аналіз може йти окремим провайдером: локальний llm01 не тягне
+    # справжню deep-модель (32B ≈ 1 t/s на CPU), тож manual маршрутизуємо у хмару
+    # (ai_manual_provider=vertex), а авто-тріаж лишаємо на швидкому локальному llm01.
+    # Без ключа — стара поведінка (той самий провайдер для manual і auto).
+    if payload.is_manual and APP_CONFIG.get("ai_manual_provider"):
+        provider = APP_CONFIG["ai_manual_provider"]
+
     def model_for(p: str) -> str:
         if p == "vertex":
             return APP_CONFIG.get("vertex_deep", "gemini-1.5-pro") if payload.is_manual else APP_CONFIG.get("vertex_fast", "gemini-1.5-flash")
@@ -545,7 +592,7 @@ async def universal_analysis(payload: UniversalTrigger):
 
             return {"status": "skipped", "message": "No events found"}
 
-        max_chars = int((MODELS_MAX_CTX.get(active_model, 32768) - 4096) * 3.5) if provider == "ollama" else 2000000
+        max_chars = int((MODELS_MAX_CTX.get(active_model, 32768) - 4096) * 3.5) if provider in ("ollama", "openai") else 2000000
         logs_text = str(raw_events)[:max_chars]
 
         refset_index = await get_refset_index(client)
@@ -594,6 +641,11 @@ async def universal_analysis(payload: UniversalTrigger):
         async def call_provider(p: str, model: str):
             if p == "vertex":
                 return await ask_vertex(ai_client, model, prompt)
+            if p == "openai":
+                # llm01 (172.17.61.218:8080) — plain HTTP у VLAN 601, TLS не задіяний → verify=False client.
+                # Окремий таймаут, щоб повільна генерація на llm01 не блокувала fallback на Vertex.
+                openai_timeout = float(APP_CONFIG.get("openai_timeout_seconds", APP_CONFIG.get("timeout_seconds", 600)))
+                return await ask_openai(client, model, prompt, timeout=openai_timeout)
             # Ollama локальний (127.0.0.1, HTTP) — TLS не задіяний, можна будь-яким клієнтом.
             # Окремий короткий таймаут потрібен, щоб черга в Олламі не блокувала fallback на 10 хв.
             ollama_timeout = float(APP_CONFIG.get("ollama_timeout_seconds", APP_CONFIG.get("timeout_seconds", 600)))
