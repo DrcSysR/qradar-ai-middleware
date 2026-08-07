@@ -98,6 +98,10 @@ def init_db():
                 last_updated DATETIME DEFAULT CURRENT_TIMESTAMP
             )
         """)
+        # Міграція: колонку escalated додано пізніше (каскадна тріаж), на проді таблиця вже існує.
+        cols = {row[1] for row in conn.execute("PRAGMA table_info(offenses)")}
+        if "escalated" not in cols:
+            conn.execute("ALTER TABLE offenses ADD COLUMN escalated INTEGER DEFAULT 0")
 init_db()
 
 app = FastAPI(title="QRadar AI Middleware")
@@ -538,12 +542,15 @@ async def universal_analysis(payload: UniversalTrigger):
         window_ms = (7 * 24 * 60 * 60 * 1000) if payload.is_manual else (4 * 60 * 60 * 1000)
         offense_start = details.get("start_time")
         offense_end = details.get("last_updated_time") or offense_start
-        if offense_start:
-            start_ms = int(offense_start) - window_ms
-            stop_ms = int(offense_end) + 5 * 60 * 1000  # +5 хв буфер на пізні події
-            time_depth = f"START {start_ms} STOP {stop_ms}"
-        else:
-            time_depth = "LAST 7 DAYS" if payload.is_manual else "LAST 4 HOURS"
+
+        def compute_time_depth(win_ms: int) -> str:
+            if offense_start:
+                start_ms = int(offense_start) - win_ms
+                stop_ms = int(offense_end) + 5 * 60 * 1000  # +5 хв буфер на пізні події
+                return f"START {start_ms} STOP {stop_ms}"
+            return f"LAST {max(1, win_ms // (60 * 60 * 1000))} HOURS"
+
+        time_depth = compute_time_depth(window_ms)
 
         # Назви правил-учасників — фолбек-матчинг, коли опис офенсу = ім'я події, а не UC
         rules_map = await get_rules_map(client)
@@ -595,85 +602,92 @@ async def universal_analysis(payload: UniversalTrigger):
         refset_index = await get_refset_index(client)
         asset_block = build_asset_context_block(raw_events, refset_index)
 
-        if provider == "openai":
-            # llm01 (llama.cpp) має лише ctx 8192, а лог/IP-текст токенізується щільно (~2.1 симв/токен).
-            # Різати треба ВЕСЬ промпт, не лише логи: окрім виводу резервуємо фіксовану частину
-            # (інструкція + рубрика/boilerplate + asset-блок), інакше llama.cpp віддає
-            # 400 exceed_context_size_error. Бюджет під логи = залишок контексту.
-            ctx = MODELS_MAX_CTX.get(active_model, 8192)
-            CHARS_PER_TOK = 2.0        # консервативно (реально ~2.1 на логах) — краще недобрати, ніж 400
-            OUTPUT_RESERVE_TOK = 1024  # короткий JSON-вердикт; із запасом
-            fixed_chars = len(instruction) + len(asset_block) + 3200  # 3200 ≈ константна рубрика/boilerplate промпту
-            max_chars = max(500, int((ctx - OUTPUT_RESERVE_TOK) * CHARS_PER_TOK) - fixed_chars)
-        elif provider == "ollama":
-            max_chars = int((MODELS_MAX_CTX.get(active_model, 32768) - 4096) * 3.5)
-        else:
-            max_chars = 2000000
-        logs_text = str(raw_events)[:max_chars]
+        # Промпт збирається під конкретного провайдера: бюджет символів залежить від його
+        # контексту (llm01 ctx 8192 vs Vertex 2 млн), тож при ескалації на tier-2 промпт
+        # треба перезібрати, а не переслати нарізаний під llm01.
+        def build_prompt(p: str, model: str, events, assets: str) -> str:
+            if p == "openai":
+                # llm01 (llama.cpp) має лише ctx 8192, а лог/IP-текст токенізується щільно (~2.1 симв/токен).
+                # Різати треба ВЕСЬ промпт, не лише логи: окрім виводу резервуємо фіксовану частину
+                # (інструкція + рубрика/boilerplate + asset-блок), інакше llama.cpp віддає
+                # 400 exceed_context_size_error. Бюджет під логи = залишок контексту.
+                ctx = MODELS_MAX_CTX.get(model, 8192)
+                CHARS_PER_TOK = 2.0        # консервативно (реально ~2.1 на логах) — краще недобрати, ніж 400
+                OUTPUT_RESERVE_TOK = 1024  # короткий JSON-вердикт; із запасом
+                fixed_chars = len(instruction) + len(assets) + 3200  # 3200 ≈ константна рубрика/boilerplate промпту
+                max_chars = max(500, int((ctx - OUTPUT_RESERVE_TOK) * CHARS_PER_TOK) - fixed_chars)
+            elif p == "ollama":
+                max_chars = int((MODELS_MAX_CTX.get(model, 32768) - 4096) * 3.5)
+            else:
+                max_chars = 2000000
+            logs_text = str(events)[:max_chars]
 
-        prompt = (
-            "You are an expert Tier-2 SOC analyst. "
-            f"Context: QRadar triggered an offense named '{details['offense_name']}'. "
-            "However, SIEM rules often generate False Positives due to normal administrative tasks, "
-            "misconfigurations, or routine network traffic. Your primary job is to act as a filter.\n\n"
-            f"Task: {instruction}\n\n"
-            f"{asset_block}"
-            f"--- START OF LOGS ---\n{logs_text}\n--- END OF LOGS ---\n\n"
-            "Based ONLY on the logs above, return a valid JSON object with keys "
-            "'score', 'verdict', 'explanation', and optionally 'mitigated'.\n\n"
-            "CRITICAL RULES FOR JSON:\n"
-            "1. 'score' must be a float between 0.0 and 1.0 based on the rubric below.\n"
-            "2. 'verdict' must be a short category string.\n"
-            "3. 'explanation' MUST BE EXTREMELY CONCISE. Strictly 1 short sentence, maximum 15 words. Do not write long paragraphs.\n"
-            "4. 'mitigated' (boolean, default false): set TRUE for a real/suspicious action that was FULLY BLOCKED, "
-            "DENIED, DROPPED or FAILED with NO successful outcome and no sign of an already-compromised internal asset "
-            "(e.g. an external IP whose scan or brute-force the firewall denied, or repeated auth failures with ZERO "
-            "successes). A true value CLOSES the offense while KEEPING any existing block in place (it does NOT unblock "
-            "the source). This is the correct, expected outcome for the high-volume 'real but already-stopped' case — "
-            "PREFER mitigated:true over a 0.7+ score whenever the threat was contained and no internal host needs action. "
-            "Leave it false ONLY when there is a successful/allowed connection, a real un-blocked consequence, or an "
-            "internal host that itself needs remediation.\n\n"
-            "CRITICAL SCORING RUBRIC for 'score' (float 0.0 to 1.0):\n"
-            "- 0.0 to 0.3: CLEAR FALSE POSITIVE. Routine administrative behavior, benign traffic, or no evidence of successful malicious action.\n"
-            "- 0.4 to 0.6: SUSPICIOUS BUT INCONCLUSIVE. Anomalous behavior without clear evidence of intent or impact.\n"
-            "- 0.7 to 0.8: HIGHLY SUSPICIOUS with a REAL, UN-BLOCKED consequence (a successful/allowed connection, lateral "
-            "movement, data egress). If the suspicious activity was blocked/denied/failed, it does NOT belong here — use "
-            "mitigated:true instead.\n"
-            "- 0.9 to 1.0: CONFIRMED COMPROMISE. Clear evidence of successful attack, data exfiltration, or unauthorized access.\n\n"
-            "ANTI-DEFAULT RULE: a score of 0.7+ pages a human analyst. Do NOT pick 0.7-0.8 because you are uncertain — "
-            "uncertainty WITHOUT a concrete un-blocked consequence is the 0.4-0.6 band (auto-closes) or, if the threat was "
-            "contained, mitigated:true. Use the EXACT verdict string defined in the TASK above; never emit a generic band "
-            "name such as 'Highly Suspicious' as the verdict.\n\n"
-            "If INTERNAL ASSET CONTEXT is provided above, weigh it: traffic matching an asset's expected role "
-            "(e.g., LDAP traffic to a 'LDAP Servers' IP) lowers the score; out-of-role behavior "
-            "(e.g., a 'Database Servers' IP making outbound web traffic) raises it.\n\n"
-            "Do NOT default to a high score just because an offense was triggered. Be highly skeptical. "
-            "Output ONLY the JSON object."
-        )
+            return (
+                "You are an expert Tier-2 SOC analyst. "
+                f"Context: QRadar triggered an offense named '{details['offense_name']}'. "
+                "However, SIEM rules often generate False Positives due to normal administrative tasks, "
+                "misconfigurations, or routine network traffic. Your primary job is to act as a filter.\n\n"
+                f"Task: {instruction}\n\n"
+                f"{assets}"
+                f"--- START OF LOGS ---\n{logs_text}\n--- END OF LOGS ---\n\n"
+                "Based ONLY on the logs above, return a valid JSON object with keys "
+                "'score', 'verdict', 'explanation', and optionally 'mitigated'.\n\n"
+                "CRITICAL RULES FOR JSON:\n"
+                "1. 'score' must be a float between 0.0 and 1.0 based on the rubric below.\n"
+                "2. 'verdict' must be a short category string.\n"
+                "3. 'explanation' MUST BE EXTREMELY CONCISE. Strictly 1 short sentence, maximum 15 words. Do not write long paragraphs.\n"
+                "4. 'mitigated' (boolean, default false): set TRUE for a real/suspicious action that was FULLY BLOCKED, "
+                "DENIED, DROPPED or FAILED with NO successful outcome and no sign of an already-compromised internal asset "
+                "(e.g. an external IP whose scan or brute-force the firewall denied, or repeated auth failures with ZERO "
+                "successes). A true value CLOSES the offense while KEEPING any existing block in place (it does NOT unblock "
+                "the source). This is the correct, expected outcome for the high-volume 'real but already-stopped' case — "
+                "PREFER mitigated:true over a 0.7+ score whenever the threat was contained and no internal host needs action. "
+                "Leave it false ONLY when there is a successful/allowed connection, a real un-blocked consequence, or an "
+                "internal host that itself needs remediation.\n\n"
+                "CRITICAL SCORING RUBRIC for 'score' (float 0.0 to 1.0):\n"
+                "- 0.0 to 0.3: CLEAR FALSE POSITIVE. Routine administrative behavior, benign traffic, or no evidence of successful malicious action.\n"
+                "- 0.4 to 0.6: SUSPICIOUS BUT INCONCLUSIVE. Anomalous behavior without clear evidence of intent or impact.\n"
+                "- 0.7 to 0.8: HIGHLY SUSPICIOUS with a REAL, UN-BLOCKED consequence (a successful/allowed connection, lateral "
+                "movement, data egress). If the suspicious activity was blocked/denied/failed, it does NOT belong here — use "
+                "mitigated:true instead.\n"
+                "- 0.9 to 1.0: CONFIRMED COMPROMISE. Clear evidence of successful attack, data exfiltration, or unauthorized access.\n\n"
+                "ANTI-DEFAULT RULE: a score of 0.7+ pages a human analyst. Do NOT pick 0.7-0.8 because you are uncertain — "
+                "uncertainty WITHOUT a concrete un-blocked consequence is the 0.4-0.6 band (auto-closes) or, if the threat was "
+                "contained, mitigated:true. Use the EXACT verdict string defined in the TASK above; never emit a generic band "
+                "name such as 'Highly Suspicious' as the verdict.\n\n"
+                "If INTERNAL ASSET CONTEXT is provided above, weigh it: traffic matching an asset's expected role "
+                "(e.g., LDAP traffic to a 'LDAP Servers' IP) lowers the score; out-of-role behavior "
+                "(e.g., a 'Database Servers' IP making outbound web traffic) raises it.\n\n"
+                "Do NOT default to a high score just because an offense was triggered. Be highly skeptical. "
+                "Output ONLY the JSON object."
+            )
 
-        async def call_provider(p: str, model: str):
+        prompt = build_prompt(provider, active_model, raw_events, asset_block)
+
+        async def call_provider(p: str, model: str, prompt_text: str):
             if p == "vertex":
-                return await ask_vertex(ai_client, model, prompt)
+                return await ask_vertex(ai_client, model, prompt_text)
             if p == "openai":
                 # llm01 (172.17.61.218:8080) — plain HTTP у VLAN 601, TLS не задіяний → verify=False client.
                 # Окремий таймаут, щоб повільна генерація на llm01 не блокувала fallback на Vertex.
                 openai_timeout = float(APP_CONFIG.get("openai_timeout_seconds", APP_CONFIG.get("timeout_seconds", 600)))
-                return await ask_openai(client, model, prompt, timeout=openai_timeout)
+                return await ask_openai(client, model, prompt_text, timeout=openai_timeout)
             # Ollama локальний (127.0.0.1, HTTP) — TLS не задіяний, можна будь-яким клієнтом.
             # Окремий короткий таймаут потрібен, щоб черга в Олламі не блокувала fallback на 10 хв.
             ollama_timeout = float(APP_CONFIG.get("ollama_timeout_seconds", APP_CONFIG.get("timeout_seconds", 600)))
-            return await ask_ollama(client, model, prompt, timeout=ollama_timeout)
+            return await ask_ollama(client, model, prompt_text, timeout=ollama_timeout)
 
         used_provider = provider
         used_fallback = False
         try:
-            score, verdict, explanation, mitigated = await call_provider(provider, active_model)
+            score, verdict, explanation, mitigated = await call_provider(provider, active_model, prompt)
         except Exception as primary_err:
             if fallback_active:
                 fb_model = model_for(fallback_provider)
                 logging.warning(f"⚠️ Provider {provider} ({active_model}) failed for offense {payload.offense_id}: {primary_err}. Fallback → {fallback_provider} ({fb_model}).")
                 try:
-                    score, verdict, explanation, mitigated = await call_provider(fallback_provider, fb_model)
+                    fb_prompt = build_prompt(fallback_provider, fb_model, raw_events, asset_block)
+                    score, verdict, explanation, mitigated = await call_provider(fallback_provider, fb_model, fb_prompt)
                     used_provider = fallback_provider
                     used_fallback = True
                 except Exception as fb_err:
@@ -688,6 +702,55 @@ async def universal_analysis(payload: UniversalTrigger):
                 return {"status": "error", "message": f"AI analysis failed: {str(primary_err)}"}
 
         provider_label = f"{used_provider.upper()} [fallback]" if used_fallback else used_provider.upper()
+
+        # --- КАСКАДНА ТРІАЖ (tier-2) ---
+        # Локальна модель на tier-1 дешева, але заслабка, щоб самій вирішувати «будити аналітика».
+        # Тому все, що вона підняла вище порога і НЕ визнала mitigated, переганяємо на важку
+        # модель (Vertex) з ширшим вікном подій: ескалюється лише хвіст >0.6, тож вартість хмари
+        # пропорційна реальному сигналу. Вердикт tier-2 повністю заміщає tier-1 — далі по коду
+        # він і вирішує cleanup/закриття/призначення.
+        escalated = False
+        escalation_note = ""
+        esc_provider = APP_CONFIG.get("escalate_provider", "vertex")
+        if (
+            APP_CONFIG.get("escalate_enabled", False)
+            and not payload.is_manual
+            and not mitigated
+            and score > float(APP_CONFIG.get("escalate_threshold", 0.6))
+            and esc_provider != used_provider  # tier-1 уже відпрацював на цьому провайдері (напр. пішов туди fallback-ом)
+        ):
+            esc_model = APP_CONFIG.get("escalate_model") or APP_CONFIG.get("vertex_deep", "gemini-1.5-pro")
+            t1_score, t1_verdict = score, verdict
+            try:
+                esc_window_ms = int(float(APP_CONFIG.get("escalate_window_hours", 168)) * 60 * 60 * 1000)
+                esc_time_depth = compute_time_depth(esc_window_ms)
+                logging.info(f"⬆️ Офенс {payload.offense_id}: tier-1 {used_provider} дав score {t1_score} → ескалація на {esc_provider} ({esc_model}), вікно {esc_time_depth}")
+
+                esc_events = await fetch_data_from_qradar(
+                    client, payload.offense_id, esc_time_depth, aql_filename,
+                    entity_value=str(details.get("entity_value", "")),
+                    entity_type=details.get("entity_type", ""),
+                )
+                # Ширша вибірка не вийшла (AQL впав або нічого не дав) — не привід гасити
+                # ескалацію: важка модель варта запуску і на подіях tier-1.
+                if not esc_events:
+                    logging.warning(f"⚠️ Офенс {payload.offense_id}: ширша вибірка порожня/зламана — ескалюємо на подіях tier-1.")
+                    esc_events = raw_events
+                    esc_assets = asset_block
+                else:
+                    esc_assets = build_asset_context_block(esc_events, refset_index)
+
+                esc_prompt = build_prompt(esc_provider, esc_model, esc_events, esc_assets)
+                score, verdict, explanation, mitigated = await call_provider(esc_provider, esc_model, esc_prompt)
+                escalated = True
+                provider_label = f"{used_provider.upper()}→{esc_provider.upper()} escalated"
+                escalation_note = f" | Tier-1 ({used_provider}): {t1_score} {t1_verdict}"
+                logging.info(f"✅ Офенс {payload.offense_id}: tier-2 {esc_provider} → score {score} ({verdict}), подій {len(esc_events)} за {esc_time_depth}")
+            except Exception as esc_err:
+                # Провал ескалації не має ламати конвеєр: лишаємо вердикт tier-1 як є.
+                logging.error(f"⚠️ Ескалація офенсу {payload.offense_id} на {esc_provider} впала: {esc_err}. Лишаємо вердикт tier-1.")
+                score, verdict = t1_score, t1_verdict
+                escalation_note = f" | Tier-2 escalation FAILED ({esc_provider}) — tier-1 verdict kept"
 
         # Refset cleanup: для правил-наповнювачів радар уже додав sourceip у block-list.
         # Якщо AI визнав FP — знімаємо IP з refset, ефективно скасовуючи блок (PA-тег
@@ -711,7 +774,7 @@ async def universal_analysis(payload: UniversalTrigger):
                 refset_action_note = f" | Action: refset cleanup FAILED ({msg})"
 
         mitigated_note = " | Mitigated: blocked, no consequence — closed, block retained" if (mitigated and not payload.is_manual) else ""
-        note_text = f"AI Analysis ({provider_label}) | Verdict: {verdict} | Score: {score} | Reason: {explanation}{refset_action_note}{mitigated_note}"
+        note_text = f"AI Analysis ({provider_label}) | Verdict: {verdict} | Score: {score} | Reason: {explanation}{refset_action_note}{mitigated_note}{escalation_note}"
         note_url = f"{QRADAR_API_URL}/siem/offenses/{payload.offense_id}/notes?note_text={urllib.parse.quote(note_text)}"
         note_resp = await client.post(note_url, headers=HEADERS)
 
@@ -740,13 +803,13 @@ async def universal_analysis(payload: UniversalTrigger):
 
         with sqlite3.connect(DB_PATH) as conn:
             conn.execute("""
-                UPDATE offenses 
-                SET status = 'PROCESSED', score = ?, verdict = ?, last_updated = CURRENT_TIMESTAMP
+                UPDATE offenses
+                SET status = 'PROCESSED', score = ?, verdict = ?, escalated = ?, last_updated = CURRENT_TIMESTAMP
                 WHERE offense_id = ?
-            """, (score, verdict, payload.offense_id))
+            """, (score, verdict, 1 if escalated else 0, payload.offense_id))
 
     logging.info(f"✅ Офенс {payload.offense_id} оброблено | Режим: {'Ручний' if payload.is_manual else 'Авто'} | Провайдер: {provider_label} | Вердикт: {verdict} | Score: {score} | Mitigated: {mitigated}")
-    return {"status": "success", "offense_id": payload.offense_id, "verdict": verdict, "score": score, "explanation": explanation, "mitigated": mitigated, "provider": used_provider, "fallback": used_fallback}
+    return {"status": "success", "offense_id": payload.offense_id, "verdict": verdict, "score": score, "explanation": explanation, "mitigated": mitigated, "provider": used_provider, "fallback": used_fallback, "escalated": escalated}
 
 @app.get("/", response_class=HTMLResponse)
 async def get_web_ui():
