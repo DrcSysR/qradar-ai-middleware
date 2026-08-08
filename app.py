@@ -657,7 +657,9 @@ async def universal_analysis(payload: UniversalTrigger):
             if p == "vertex":
                 return await ask_vertex(ai_client, model, prompt_text)
             if p == "openai":
-                # llm01 (172.17.61.218:8080) — plain HTTP у VLAN 601, TLS не задіяний → verify=False client.
+                # Сервер з llama.cpp (адреса — в openai_base; на 2026-08-08 це 10.2.10.1:8080
+                # через node-local OVS-міст vmbr11, а НЕ стара 172.17.61.218 у VLAN 601).
+                # Plain HTTP, TLS не задіяний → verify=False client.
                 # Окремий таймаут, щоб повільна генерація на llm01 не блокувала fallback на Vertex.
                 openai_timeout = float(APP_CONFIG.get("openai_timeout_seconds", APP_CONFIG.get("timeout_seconds", 600)))
                 return await ask_openai(client, model, prompt_text, timeout=openai_timeout)
