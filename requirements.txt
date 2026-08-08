@@ -1,0 +1,16 @@
+# Прямі залежності. Версії зафіксовані за станом venv на mdlwr01 (2026-08-08),
+# Python 3.11.2. Транзитивні (starlette, anyio, h11, httpcore, pyasn1, cachetools,
+# rsa) тягнуться автоматично — окремого lock-файлу немає, бо немає CI.
+#
+# Встановлення / оновлення на проді:
+#   /opt/qradar-middleware/venv/bin/pip install -r requirements.txt
+# autoupdate.sh робить це сам, коли requirements.txt змінився у новому коміті.
+
+fastapi==0.135.3
+uvicorn==0.44.0
+gunicorn==25.3.0
+httpx==0.28.1
+requests==2.33.1
+pydantic==2.12.5
+google-auth==2.49.2
+urllib3==2.6.3

@@ -14,6 +14,7 @@ import sqlite3
 import time
 
 from prompts_loader import get_dynamic_prompt as _get_dynamic_prompt
+import config_schema
 
 VERTEX_KEY_PATH = "/opt/qradar-middleware/me-vertex-ai-studio-666353d9e1df.json"
 CONFIG_FILE = "/opt/qradar-middleware/config.json"
@@ -42,23 +43,11 @@ IPV4_RE = re.compile(r'\b(?:\d{1,3}\.){3}\d{1,3}\b')
 
 # --- ЗАВАНТАЖЕННЯ КОНФІГУРАЦІЇ ---
 def load_config():
-    if os.path.exists(CONFIG_FILE):
-        try:
-            with open(CONFIG_FILE, "r", encoding="utf-8") as f:
-                return json.load(f)
-        except Exception as e:
-            print(f"Failed to load config.json: {e}")
-    
-    return {
-        "qradar_url": "https://127.0.0.1",
-        "qradar_token": "",
-        "ollama_url": "http://127.0.0.1:11434",
-        "fast_model": "qwen2.5-coder:7b",
-        "deep_model": "qwen2.5-coder:32b",
-        "timeout_seconds": 600,
-        "aql_limit": 1500,
-        "debug_mode": False
-    }
+    # Читання + валідація за реєстром у config_schema.py: невідомий ключ (одруківка)
+    # і невірний тип більше не проходять мовчки, а лишають слід у лозі. Дефолти НЕ
+    # підмішуються — повертається рівно вміст файлу, тож усі виклики .get(key, default)
+    # нижче по коду поводяться точно як раніше.
+    return config_schema.load(CONFIG_FILE)
 
 APP_CONFIG = load_config()
 
