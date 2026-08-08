@@ -138,6 +138,30 @@ def check_orphan_prompts(used_md):
             warn(f"prompts/{name} не згадується в prompts.json (сирота?)")
 
 
+def collect_subscript_keys():
+    """Ключі, що читаються ЧЕРЕЗ ІНДЕКС (APP_CONFIG["x"]), а не .get().
+
+    Такий доступ падає з KeyError, якщо ключа немає в config.json — і падає на рівні
+    модуля, тобто сервіс просто не підніметься. Отже такий ключ фактично обовʼязковий
+    і має бути позначений обовʼязковим у SCHEMA (дефолт None), інакше реєстр обіцяє,
+    що ключ можна не вказувати, а насправді його відсутність кладе прод.
+    """
+    keys = set()
+    for name in sorted(os.listdir(BASE)):
+        if not name.endswith(".py"):
+            continue
+        try:
+            tree = ast.parse(open(os.path.join(BASE, name), encoding="utf-8").read(), filename=name)
+        except SyntaxError:
+            continue
+        for node in ast.walk(tree):
+            if (isinstance(node, ast.Subscript) and isinstance(node.value, ast.Name)
+                    and node.value.id in CONFIG_OBJECTS and isinstance(node.slice, ast.Constant)
+                    and isinstance(node.slice.value, str)):
+                keys.add(node.slice.value)
+    return keys
+
+
 def collect_config_keys():
     """Ключі конфіга, що фактично використовуються в коді: літеральні
     CONFIG.get("..."), CONFIG["..."] і ключі словників DEFAULTS у сканерах."""
@@ -183,6 +207,15 @@ def check_config_registry():
     unused = sorted(set(config_schema.SCHEMA) - used)
     if unused:
         warn("у SCHEMA є ключі, яких код не читає (застаріли?): " + ", ".join(unused))
+
+    # Ключ через індекс = сервіс не підніметься без нього, тож у SCHEMA він має бути
+    # обовʼязковим. Інакше реєстр каже "необовʼязковий", а видалення ключа кладе прод.
+    for key in sorted(collect_subscript_keys()):
+        entry = config_schema.SCHEMA.get(key)
+        if entry and entry[1] is not None:
+            fail(f"'{key}' читається через індекс CONFIG['{key}'] (KeyError без нього, "
+                 f"сервіс не стартує), але в SCHEMA позначений необовʼязковим — "
+                 f"або зробіть його required (дефолт None), або читайте через .get()")
 
     if os.path.exists(PROD_CONFIG) and os.access(PROD_CONFIG, os.R_OK):
         try:

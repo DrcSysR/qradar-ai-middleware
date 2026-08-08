@@ -66,7 +66,10 @@ if not DEBUG_MODE:
 
 # Динамічні глобальні змінні
 QRADAR_API_URL = f"{APP_CONFIG['qradar_url']}/api"
-OLLAMA_API_URL = f"{APP_CONFIG['ollama_url']}/api/generate"
+# .get(), а не індекс: Ollama з інфраструктури виведена (2026-08-08, лишились
+# Qwen-3B на llama.cpp + Vertex), і ключа в config.json більше немає. Прямий індекс
+# тут клав би сервіс на старті з KeyError, хоча провайдер навіть не використовується.
+OLLAMA_API_URL = f"{APP_CONFIG.get('ollama_url', 'http://127.0.0.1:11434')}/api/generate"
 HEADERS = {
     "SEC": APP_CONFIG['qradar_token'],
     "Content-Type": "application/json",
@@ -503,8 +506,9 @@ async def universal_analysis(payload: UniversalTrigger):
     # справжню deep-модель (32B ≈ 1 t/s на CPU), тож manual маршрутизуємо у хмару
     # (ai_manual_provider=vertex), а авто-тріаж лишаємо на швидкому локальному llm01.
     # Без ключа — стара поведінка (той самий провайдер для manual і auto).
-    if payload.is_manual and APP_CONFIG.get("ai_manual_provider"):
-        provider = APP_CONFIG["ai_manual_provider"]
+    manual_provider = APP_CONFIG.get("ai_manual_provider")
+    if payload.is_manual and manual_provider:
+        provider = manual_provider
 
     def model_for(p: str) -> str:
         if p == "vertex":
