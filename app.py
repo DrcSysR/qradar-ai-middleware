@@ -56,6 +56,11 @@ DEBUG_MODE = APP_CONFIG.get("debug_mode", False)
 LOG_LEVEL = logging.DEBUG if DEBUG_MODE else logging.INFO
 
 logging.basicConfig(level=LOG_LEVEL, format="%(asctime)s - %(levelname)s - %(message)s")
+# Під gunicorn кореневий логер уже має хендлери, і basicConfig() у такому разі МОВЧКИ
+# нічого не робить — рівень лишається WARNING. Через це в journalctl не було жодного
+# INFO: ні "Офенс оброблено", ні авто-закриття, ні ескалацій, і сервіс виглядав мертвим,
+# хоча працював. Рівень треба виставити явно; хендлери gunicorn лишаємо його ж.
+logging.getLogger().setLevel(LOG_LEVEL)
 
 if not DEBUG_MODE:
     logging.getLogger("httpx").setLevel(logging.WARNING)
