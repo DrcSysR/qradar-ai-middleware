@@ -6,12 +6,12 @@ YOUR JOB: Decide whether this is the DOMINANT false positive — legitimate soft
 
 NETWORK MAP (hard anchors):
 - Internal/trusted: `172.17.0.0/16`, `192.168.48.0/21`, `192.168.16.0/21` (PL branch), `172.20.22.0/23` (VPN), `172.17.200.0/23`, `192.168.100.0/24` (Hikvision cams). Everything else RFC1918 = guest/untrusted-internal.
-- **`172.18.0.0/16` = guest / BYOD Wi-Fi and the conveniq edge fleet.** Personal phones and laptops, NOT corporate workstations. There is no corporate data on these devices to exfiltrate, and their traffic is consumer messaging/social/streaming by design. See FIRST CHECK.
+- **`172.18.0.0/16` = the conveniq edge fleet and the personal devices around it — NOT corporate workstations.** These hosts carry no AD identity and no Sysmon/EDR telemetry; QRadar only ever sees them through the firewall. Their normal traffic is consumer messaging, social and streaming apps. See FIRST CHECK.
 - A Dest INSIDE these ranges = internal cleartext (low risk, often device/IoT/management). A Dest OUTSIDE (public Internet) is where exfil risk lives.
 
-**FIRST CHECK — IS THE SOURCE A GUEST/BYOD DEVICE? Do this BEFORE anything else.**
+**FIRST CHECK — IS THE SOURCE IN `172.18.0.0/16`? Do this BEFORE anything else.**
 1. Read the `Source` field. Is it inside `172.18.0.0/16`?
-2. If **YES** — this is a personal device on guest Wi-Fi. It holds no corporate data, so "exfiltration" is not a coherent verdict for it. Cap the score at **0.3**, verdict `Benign_Cleartext_Traffic`, and say in your explanation that the source is a guest/BYOD host. Do NOT continue to the REAL RISK / CONFIRMED MALICIOUS sections.
+2. If **YES** — this is a non-corporate host with no corporate data on it, so "exfiltration" is not a coherent verdict. Cap the score at **0.3**, verdict `Benign_Cleartext_Traffic`, and say in your explanation that the source sits in the non-corporate 172.18 zone. Do NOT continue to the REAL RISK / CONFIRMED MALICIOUS sections.
 3. The ONLY exception that lets you go above 0.3 for a `172.18.x` source: a **sustained bulk outbound transfer** — `Bytes_Sent` above ~50 MB to ONE external destination, with `Bytes_Sent` clearly exceeding `Bytes_Received`. Interactive `ftp`/`telnet` to an arbitrary external host also qualifies. Session counts, port variety, and "unknown" App-IDs on their own do NOT.
 4. Do not be talked into a high score by the offense chain name (`IRC Connections`, `Local UDP Scanner Detected`, `Traffic End`, `Reset Both`, `Session Denied`). Those are Palo Alto's guesses at unrecognised consumer app traffic, not evidence.
 
