@@ -4,7 +4,9 @@
         "Index 0 (Prompt File)": "Назва .md файлу в папці /prompts з інструкціями для ШІ.",
         "Index 1 (Assignee)": "Логін аналітика в QRadar (наприклад, 'admin'). Якщо вказано, офенс автоматично призначиться на нього при високому скорі. Якщо не треба — \"\".",
         "Index 2 (AQL Query)": "Назва .aql файлу в папці /queries. Якщо порожньо \"\" або не вказано, система візьме default.aql.",
-        "Index 3 (Refset Cleanup On FP)": "Назва reference set, з якого видалити entity IP офенсу при FP-вердикті (score ≤ 0.6). Працює лише для офенсів з entity_type=SourceIP/DestinationIP. Порожньо \"\" або не вказано — refset не чіпаємо. Використовується для коректного зняття IP, які радар сам додав у блок-лист, але AI визнав FP."
+        "Index 3 (Refset Cleanup On FP)": "Назва reference set, з якого видалити entity IP офенсу при FP-вердикті (score ≤ 0.6). Працює лише для офенсів з entity_type=SourceIP/DestinationIP. Порожньо \"\" або не вказано — refset не чіпаємо. Використовується для коректного зняття IP, які радар сам додав у блок-лист, але AI визнав FP.",
+        "Index 4 (close_on_empty)": "Для monitoring-юзкейсів, де benign відсіює сам AQL: порожній результат в авто-режимі = чисто, офенс закривається зі score 0.0 без звернення до AI. Ручний режим не чіпається.",
+        "ПОРЯДОК КЛЮЧІВ МАЄ ЗНАЧЕННЯ": "Опис офенсу — це ланцюг правил, і в нього часто підпадає кілька ключів одразу. Виграє ПЕРШИЙ у порядку цього файлу, тому ключі мають іти від найсильнішого сигналу до найслабшого: cascade (компрометований хост) → multistage (запуск з Temp/шари) → окремі техніки (інжекція потоку). Приклад: офенс 1206489 'Process Created a Thread into System Process preceded by Detected a Successful Login From a Compromised Host' іде на compromised_host_cascade, а не на remote_thread_injection — і це правильно."
     },
     "UC-ME-Admins-List authentication outside IT VLAN": [ "67500565.md", "sergii.legerko", "67500565.aql" ],
     "UC-ME Service Admin List authentication" : [ "67503541.md", "sergii.legerko", "67503541.aql" ],
@@ -30,9 +32,9 @@
     "Excessive Firewall Denies Between Hosts" : [ "excessive_fw_denies_between_only.md", "sergii.legerko", "excessive_fw_denies_between_only.aql" ],
     "Powershell Has Been Launched in a Compromised Host" : [ "compromised_host_cascade.md", "sergii.legerko", "compromised_host_cascade.aql" ],
     "Detected a Successful Login From a Compromised Host" : [ "compromised_host_cascade.md", "sergii.legerko", "compromised_host_cascade.aql" ],
-    "Process Created a Thread into System Process" : [ "remote_thread_injection.md", "sergii.legerko", "remote_thread_injection.aql", "", "close_on_empty" ],
-    "Process Created a Thread into Another Process" : [ "remote_thread_injection.md", "sergii.legerko", "remote_thread_injection.aql", "", "close_on_empty" ],
     "Process Launched from a Shared Folder" : [ "multistage_temp_shared_chain.md", "sergii.legerko", "multistage_temp_shared_chain.aql" ],
     "Process Launched from a Temp Directory" : [ "multistage_temp_shared_chain.md", "sergii.legerko", "multistage_temp_shared_chain.aql" ],
+    "Process Created a Thread into System Process" : [ "remote_thread_injection.md", "sergii.legerko", "remote_thread_injection.aql", "", "close_on_empty" ],
+    "Process Created a Thread into Another Process" : [ "remote_thread_injection.md", "sergii.legerko", "remote_thread_injection.aql", "", "close_on_empty" ],
     "Default": [ "default.md", "", "default.aql" ]
 }
