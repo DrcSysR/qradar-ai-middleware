@@ -21,8 +21,18 @@ TRUE POSITIVE (score 0.9-1.0, verdict 'GP_Plain_User_Attack'):
 - Username is a service-account name (`backup`, `svc-something`) — attacker has done some recon and is targeting service accounts. Score 0.95-1.0.
 
 CONFIRMED COMPROMISE (score 1.0, verdict 'GP_Plain_User_Successful_Compromise'):
+
+**SECOND CHECK — POINT AT THE SUCCESS ROW, OR DO NOT CLAIM ONE.**
+This verdict wakes an analyst and must never rest on an assumed success. Before you may emit it, walk these steps literally:
+1. Find a row in the input whose `Event_Name` is a GlobalProtect **success** (`… auth success`, `… authentication success`, QID 53531474) — an actual row, present in the data you were given.
+2. If **NO** success row exists — every GP row from this IP is a failure — then NOTHING got in. The verdict is `GP_Plain_User_Attack` with `mitigated: true`. Do NOT emit 'GP_Plain_User_Successful_Compromise'. Do NOT write "followed by a successful login", "was followed by", or any phrasing implying a success you cannot point at. An IP that only ever failed did not compromise anything.
+3. If a success row DOES exist — read its `Username`. If that username is a corporate email (`@modern-expo.com`, `@modern.org`, `@modern-eng.eu`, `@modernpl.local`, `@gpgw.modern-expo.com`), the compromise verdict **DOES NOT APPLY** — see the bullet below. Only a success under a **plain / non-corporate-domain** username qualifies.
+4. Your `explanation` must name the exact username on the success row. If you cannot name it, you do not have one.
+
+Only after SECOND CHECK passes:
 - The triggering event is QID 53531474 (success) with a plain username — VPN access was just granted to an attacker. Critical.
 - OR: a real plain-username attempt from this IP coexists with a successful GP login from the same IP under ANOTHER **plain / non-corporate-domain** username — credential pivot. Score 1.0.
+- NEVER set `mitigated: true` on this verdict. A successful compromise has a consequence by definition, so it stays OPEN for the analyst regardless of whether the IP is blocked now.
 - **DOES NOT APPLY when the only successful logins from this IP are under a CORPORATE EMAIL username** (`@modern-expo.com`, `@modern.org`, `@modern-eng.eu`, `@modernpl.local`, `@gpgw.modern-expo.com`). The AQL input is AGGREGATED and carries **no ordering** — you cannot tell whether that success came before or after the failure, and in practice it usually came *before*: it is the employee's own legitimate SAML login from their hotel / home / mobile IP. A corporate-email success from the same IP is CONTEXT that makes a benign explanation MORE likely; it is never on its own proof of a pivot, and it can never turn an empty-username FP (see FIRST CHECK) into a compromise.
 
 FALSE POSITIVE — narrow technical glitch only (score 0.0-0.3, verdict 'GP_Plain_User_FP'):

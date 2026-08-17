@@ -30,6 +30,8 @@
     "Excessive Firewall Denies Between Hosts" : [ "excessive_fw_denies_between_only.md", "sergii.legerko", "excessive_fw_denies_between_only.aql" ],
     "Powershell Has Been Launched in a Compromised Host" : [ "compromised_host_cascade.md", "sergii.legerko", "compromised_host_cascade.aql" ],
     "Detected a Successful Login From a Compromised Host" : [ "compromised_host_cascade.md", "sergii.legerko", "compromised_host_cascade.aql" ],
+    "Process Created a Thread into System Process" : [ "remote_thread_injection.md", "sergii.legerko", "remote_thread_injection.aql", "", "close_on_empty" ],
+    "Process Created a Thread into Another Process" : [ "remote_thread_injection.md", "sergii.legerko", "remote_thread_injection.aql", "", "close_on_empty" ],
     "Process Launched from a Shared Folder" : [ "multistage_temp_shared_chain.md", "sergii.legerko", "multistage_temp_shared_chain.aql" ],
     "Process Launched from a Temp Directory" : [ "multistage_temp_shared_chain.md", "sergii.legerko", "multistage_temp_shared_chain.aql" ],
     "Default": [ "default.md", "", "default.aql" ]

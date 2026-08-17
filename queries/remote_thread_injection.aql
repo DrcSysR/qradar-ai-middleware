@@ -1,0 +1,41 @@
+SELECT
+    LOGSOURCENAME(logsourceid) AS Hostname,
+    "Process Name" AS Injector,
+    "Process Path" AS Injector_Path,
+    "Target Process Name" AS Target_Proc,
+    "Target Process Path" AS Target_Path,
+    username AS Acct,
+    COUNT(*) AS Events
+FROM events
+WHERE
+    INOFFENSE({offense_id})
+    -- УВАГА по аліасах: Target і User — зарезервовані слова, QRadar на них віддає
+    -- ParseError 28508 без номера рядка. Звідси Target_Proc / Acct.
+    --
+    -- Самі CRE-події (Process Created a Thread into ...) не несуть імен процесів —
+    -- усе корисне лежить у Sysmon EventID 8. Беремо тільки їх.
+    AND QIDNAME(qid) ILIKE '%CreateRemoteThread%'
+    -- BENIGN PRE-FILTER. За добу по організації CreateRemoteThread дає ~2300 подій, з них
+    -- rdpclip-csrss (1218) + dwm-csrss (474) + Autodesk (376) — це 90% обсягу і 100% шуму.
+    -- Пари матчимо РАЗОМ зі шляхом інжектора: підробка з іменем dwm.exe, запущена з Temp,
+    -- фільтр не пройде і дійде до аналізу.
+    AND NOT ("Process Name" ILIKE 'rdpclip.exe' AND "Process Path" ILIKE '%ystem32%' AND "Target Process Name" ILIKE 'csrss.exe')
+    AND NOT ("Process Name" ILIKE 'dwm.exe' AND "Process Path" ILIKE '%ystem32%' AND "Target Process Name" ILIKE 'csrss.exe')
+    AND NOT ("Process Name" ILIKE 'SystemSettings.exe' AND "Process Path" ILIKE '%ImmersiveControlPanel%')
+    AND NOT ("Process Name" ILIKE 'AdskAccessServiceHost.exe' AND "Process Path" ILIKE '%Autodesk%')
+    AND NOT ("Process Name" ILIKE 'Code.exe' AND "Target Process Name" ILIKE 'Code.exe')
+    AND NOT ("Process Name" ILIKE 'WerFault.exe' AND "Process Path" ILIKE '%ystem32%')
+    -- Sysmon читає lsass легітимно; будь-який ІНШИЙ інжектор у lsass.exe навмисно лишається.
+    AND NOT ("Process Name" ILIKE 'Sysmon64.exe' AND "Process Path" ILIKE '%Windows%')
+    AND NOT ("Process Name" ILIKE 'OcsService.exe' AND "Process Path" ILIKE '%OCS Inventory%')
+    -- Sysmon часто не резолвить ціль і пише Target Process Path = unknown process. Для
+    -- браузерів і шелу це їхня внутрішня пісочниця — ~130 подій/добу без жодного сигналу
+    -- (цілі не видно, аналізувати нема що). Знімаємо ЛИШЕ для цих інжекторів: нерозпізнана
+    -- ціль у RustDesk чи невідомого процесу лишається видимою.
+    AND NOT ("Target Process Path" ILIKE '%unknown process%' AND "Process Name" ILIKE 'chrome.exe')
+    AND NOT ("Target Process Path" ILIKE '%unknown process%' AND "Process Name" ILIKE 'msedge.exe')
+    AND NOT ("Target Process Path" ILIKE '%unknown process%' AND "Process Name" ILIKE 'dwm.exe')
+    AND NOT ("Target Process Path" ILIKE '%unknown process%' AND "Process Name" ILIKE 'explorer.exe')
+GROUP BY Hostname, Injector, Injector_Path, Target_Proc, Target_Path, Acct
+ORDER BY Events DESC
+LIMIT {limit} {time_depth}

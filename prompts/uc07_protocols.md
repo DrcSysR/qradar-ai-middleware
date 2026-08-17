@@ -6,7 +6,23 @@ YOUR JOB: Decide whether this is the DOMINANT false positive — legitimate soft
 
 NETWORK MAP (hard anchors):
 - Internal/trusted: `172.17.0.0/16`, `192.168.48.0/21`, `192.168.16.0/21` (PL branch), `172.20.22.0/23` (VPN), `172.17.200.0/23`, `192.168.100.0/24` (Hikvision cams). Everything else RFC1918 = guest/untrusted-internal.
+- **`172.18.0.0/16` = guest / BYOD Wi-Fi and the conveniq edge fleet.** Personal phones and laptops, NOT corporate workstations. There is no corporate data on these devices to exfiltrate, and their traffic is consumer messaging/social/streaming by design. See FIRST CHECK.
 - A Dest INSIDE these ranges = internal cleartext (low risk, often device/IoT/management). A Dest OUTSIDE (public Internet) is where exfil risk lives.
+
+**FIRST CHECK — IS THE SOURCE A GUEST/BYOD DEVICE? Do this BEFORE anything else.**
+1. Read the `Source` field. Is it inside `172.18.0.0/16`?
+2. If **YES** — this is a personal device on guest Wi-Fi. It holds no corporate data, so "exfiltration" is not a coherent verdict for it. Cap the score at **0.3**, verdict `Benign_Cleartext_Traffic`, and say in your explanation that the source is a guest/BYOD host. Do NOT continue to the REAL RISK / CONFIRMED MALICIOUS sections.
+3. The ONLY exception that lets you go above 0.3 for a `172.18.x` source: a **sustained bulk outbound transfer** — `Bytes_Sent` above ~50 MB to ONE external destination, with `Bytes_Sent` clearly exceeding `Bytes_Received`. Interactive `ftp`/`telnet` to an arbitrary external host also qualifies. Session counts, port variety, and "unknown" App-IDs on their own do NOT.
+4. Do not be talked into a high score by the offense chain name (`IRC Connections`, `Local UDP Scanner Detected`, `Traffic End`, `Reset Both`, `Session Denied`). Those are Palo Alto's guesses at unrecognised consumer app traffic, not evidence.
+
+CONSUMER APP DESTINATIONS — `unknown-tcp`/`unknown-udp` here is NORMAL (treat as FP):
+Palo Alto labels a proprietary messaging/VoIP protocol it cannot decode as `unknown-tcp`/`unknown-udp`. That label describes App-ID's ignorance, not the traffic's intent. When the destination belongs to a consumer platform, the unknown label carries NO risk signal:
+- Telegram — `149.154.160.0/20`, `91.108.0.0/16`
+- Meta (Facebook / WhatsApp / Instagram) — `157.240.0.0/16`, `31.13.0.0/16`, `179.60.192.0/22`; port 5222 is WhatsApp/XMPP
+- Google / YouTube — `142.250.0.0/15`, `172.217.0.0/16`, `216.58.192.0/19`, `74.125.0.0/16`
+- Apple — `17.0.0.0/8`; Microsoft/Skype, Zoom, Viber, Discord, Signal, TikTok
+- Local ISP CDN and mobile-operator ranges serving the same apps
+Also benign regardless of App-ID: DNS/DHCP to the local gateway (ports 53/67/68), SSDP/mDNS/UPnP multicast (port 1900, 5353), and NAT keepalive/IPSec (ports 500/4500). Symmetric or download-heavy byte counts (`Bytes_Received` ≥ `Bytes_Sent`) confirm ordinary app use — exfiltration is by definition upload-heavy.
 
 BENIGN APP-IDs / DESTINATIONS (treat as FP):
 - `ms-update`, `windows-update`, `apple-update`, `google-update`, `adobe-update` and similar updater App-IDs over port 80 — OS/vendor patching legitimately uses HTTP.
@@ -23,8 +39,10 @@ SUSPICIOUS / INCONCLUSIVE (score 0.4-0.6, verdict 'Unusual_Cleartext_Transfer'):
 - Cleartext to an unrecognised external host but modest volume and a normal-looking App-ID (`web-browsing`) — could be an obscure-but-legit site. Auto-closes.
 
 REAL RISK — KEEP OPEN (score 0.7-0.9, verdict 'Cleartext_Exfil_or_Risky_Protocol'):
+Every bullet here requires a CORPORATE source (see FIRST CHECK — a `172.18.x` source cannot reach this section) AND concrete volume or protocol evidence, not merely an "unknown" App-ID.
 - Large Bytes_Sent OUTBOUND to a single EXTERNAL, non-CDN/unknown host over cleartext — possible data exfiltration (weigh Bytes_Sent ≫ Bytes_Received to an arbitrary destination).
-- App-ID = `ftp`, `telnet`, `tftp`, `smtp` (cleartext), or `unknown-tcp`/`unknown-udp` to an external host — risky/odd protocol, not normal corporate traffic.
+- App-ID = `ftp`, `ftp-data`, `telnet`, `tftp`, `rlogin`, `rsh`, `rexec` or cleartext `smtp` to an EXTERNAL host — an interactive/transfer protocol with no place in corporate traffic. These qualify on their own.
+- `unknown-tcp`/`unknown-udp` to an external host qualifies ONLY when the destination is not a consumer platform from the list above AND `Bytes_Sent` is substantial and exceeds `Bytes_Received`. Unknown + chatty + low-volume + consumer destination = `Benign_Cleartext_Traffic`, not exfil. This bullet was the dominant false positive on this rule — apply it strictly.
 - Sustained bulk internal→external transfer over port 80 to an IP with no CDN/vendor reputation.
 
 CONFIRMED MALICIOUS (score 0.9-1.0, verdict 'Cleartext_Exfil_or_Risky_Protocol'): clear large-volume outbound cleartext transfer to a hostile/unknown external host, or interactive Telnet/FTP to an arbitrary external host.

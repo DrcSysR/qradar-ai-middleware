@@ -81,6 +81,50 @@ HEADERS = {
     "Accept": "application/json"
 }
 
+# --- ЗАПОБІЖНИК: вердикт «компрометація» не може автозакритись ---
+# Промпти прямо забороняють ставити mitigated:true разом з вердиктом про успішну
+# компрометацію, але модель це правило регулярно ігнорує: офенси 1188072, 1189958,
+# 1189968 (GP_Plain_User_Successful_Compromise, score 0.9) і 1173288
+# (Active_Lateral_Movement_Compromised_Admin, score 0.9) закрились самі з
+# mitigated:true. Найгірший сценарій — низький скор при такому вердикті: тоді офенс
+# не лише закриється, а ще й зніме IP з блок-листа. Тому правило дублюємо в коді:
+# сказав «компрометація» — офенс лишається відкритим і йде на аналітика.
+COMPROMISE_VERDICT_RE = re.compile(
+    r"compromis|lateral[ _-]?movement|account[ _-]?takeover|successful[ _-]?(?:intrusion|breach)",
+    re.IGNORECASE,
+)
+# Заперечення ('No_Compromise', 'Not_Compromised', 'FP — no compromise') під запобіжник
+# не підпадають, інакше він спрацьовував би на нормальних benign-вердиктах.
+# Межа слова тут НЕ \b: вердикти пишуться в snake_case, а `_` — символ слова, тож
+# у 'Host_Not_Compromised' перед 'Not' межі немає і заперечення б не спрацювало.
+NON_COMPROMISE_VERDICT_RE = re.compile(
+    r"(?<![A-Za-z])(?:no|not|non|un|never|without)[ _-]*compromis"
+    r"|false[ _-]?positive"
+    r"|(?<![A-Za-z])fp(?![A-Za-z])",
+    re.IGNORECASE,
+)
+COMPROMISE_SCORE_FLOOR = 0.9
+
+
+def enforce_compromise_guard(verdict, score, mitigated):
+    """Вердикт про компрометацію → mitigated знімаємо, score піднімаємо до порога ескалації.
+
+    Повертає (score, mitigated, note). Порожній note = запобіжник не спрацював.
+    """
+    text = str(verdict or "")
+    if not COMPROMISE_VERDICT_RE.search(text) or NON_COMPROMISE_VERDICT_RE.search(text):
+        return score, mitigated, ""
+    # Вердикт уже веде на аналітика — втручатись нема сенсу.
+    if not mitigated and score > 0.6:
+        return score, mitigated, ""
+    new_score = max(score, COMPROMISE_SCORE_FLOOR)
+    note = (
+        f" | Guard: вердикт '{text}' = компрометація → mitigated знято"
+        f"{f', score {score}→{new_score}' if new_score != score else ''}, офенс лишається відкритим"
+    )
+    return new_score, False, note
+
+
 def init_db():
     with sqlite3.connect(DB_PATH) as conn:
         # WAL дозволяє паралельні читання + одне запис без "database is locked"
@@ -703,6 +747,15 @@ async def universal_analysis(payload: UniversalTrigger):
 
         provider_label = f"{used_provider.upper()} [fallback]" if used_fallback else used_provider.upper()
 
+        # Запобіжник на tier-1 навмисно ДО каскаду: інакше "компрометація + mitigated:true"
+        # від дешевої моделі не пройшла б умову ескалації (`not mitigated`) і закрилась би,
+        # так і не побачивши важку модель.
+        guard_note = ""
+        score, mitigated, g = enforce_compromise_guard(verdict, score, mitigated)
+        if g:
+            guard_note = g
+            logging.warning(f"🚨 Офенс {payload.offense_id}: tier-1{g}")
+
         # --- КАСКАДНА ТРІАЖ (tier-2) ---
         # Локальна модель на tier-1 дешева, але заслабка, щоб самій вирішувати «будити аналітика».
         # Тому все, що вона підняла вище порога і НЕ визнала mitigated, переганяємо на важку
@@ -742,6 +795,11 @@ async def universal_analysis(payload: UniversalTrigger):
 
                 esc_prompt = build_prompt(esc_provider, esc_model, esc_events, esc_assets)
                 score, verdict, explanation, mitigated = await call_provider(esc_provider, esc_model, esc_prompt)
+                # Вердикт tier-2 повністю заміщає tier-1, тож запобіжник треба прогнати ще раз.
+                score, mitigated, g = enforce_compromise_guard(verdict, score, mitigated)
+                if g:
+                    guard_note = g
+                    logging.warning(f"🚨 Офенс {payload.offense_id}: tier-2{g}")
                 escalated = True
                 provider_label = f"{used_provider.upper()}→{esc_provider.upper()} escalated"
                 escalation_note = f" | Tier-1 ({used_provider}): {t1_score} {t1_verdict}"
@@ -774,7 +832,7 @@ async def universal_analysis(payload: UniversalTrigger):
                 refset_action_note = f" | Action: refset cleanup FAILED ({msg})"
 
         mitigated_note = " | Mitigated: blocked, no consequence — closed, block retained" if (mitigated and not payload.is_manual) else ""
-        note_text = f"AI Analysis ({provider_label}) | Verdict: {verdict} | Score: {score} | Reason: {explanation}{refset_action_note}{mitigated_note}{escalation_note}"
+        note_text = f"AI Analysis ({provider_label}) | Verdict: {verdict} | Score: {score} | Reason: {explanation}{refset_action_note}{mitigated_note}{guard_note}{escalation_note}"
         note_url = f"{QRADAR_API_URL}/siem/offenses/{payload.offense_id}/notes?note_text={urllib.parse.quote(note_text)}"
         note_resp = await client.post(note_url, headers=HEADERS)
 
