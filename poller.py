@@ -11,8 +11,8 @@ import sqlite3
 from prompts_loader import get_rule_keys, offense_matches
 
 # --- НАЛАШТУВАННЯ ---
-LOOKBACK_TIME_MS = 24 * 60 * 60 * 1000  # 24 години у мілісекундах (deep/manual режим бере 7 днів через AQL time_depth)
-MAX_OFFENSES_PER_RUN = 50
+LOOKBACK_TIME_MS = 48 * 60 * 60 * 1000  # 48 годин: страховка, щоб офенси, пропущені під час бурсту, не гинули поза вікном (deep/manual режим бере 7 днів через AQL time_depth)
+MAX_OFFENSES_PER_RUN = 100  # 100 x ~6.6с ≈ 11 хв на ран; таймер рахує від завершення, fcntl-лок не дасть накластися
 LOG_FILE = "/opt/qradar-middleware/poller.log"
 LOCK_FILE = "/opt/qradar-middleware/poller.lock"
 DB_PATH = "/opt/qradar-middleware/ai_state.db"
