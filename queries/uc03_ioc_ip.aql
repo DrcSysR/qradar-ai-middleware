@@ -1,0 +1,71 @@
+SELECT
+    sourceip AS Internal_Host,
+    destinationip AS IOC_IP,
+    destinationport AS Port,
+    QIDNAME(qid) AS IOC_Category,
+    "Application" AS App,
+    "Web Category" AS Category,
+    COUNT(*) AS Conns,
+    SUM("Bytes Sent") AS Bytes_Sent,
+    SUM("Bytes Received") AS Bytes_Received
+FROM events
+WHERE
+    INOFFENSE({offense_id})
+    -- UC-03-1 індексується по ЗОВНІШНЬОМУ IOC-IP (offense_source = destinationip),
+    -- а внутрішній хост лежить у sourceip — тому Internal_Host обов'язковий у виводі,
+    -- інакше неясно, кого саме перевіряємо.
+    --
+    -- Правило спрацьовує суто за фактом присутності IP у фідах X-Force ("Risky IP" —
+    -- Spam / Scanning / Anonymisation / Malware тощо). Ті самі фіди РЯСНО засмічені
+    -- shared-front IP великих CDN/SaaS, як і Botnet C&C у UC-02-1. Тому відсікаємо
+    -- benign тим самим перевіреним блоком, що в uc02_botnet_ip.aql (тримати синхронно).
+    -- Порожній результат => лишились тільки відомі benign-фронти => close_on_empty.
+    AND NOT INCIDR('10.0.0.0/8', destinationip)
+    AND NOT INCIDR('172.16.0.0/12', destinationip)
+    AND NOT INCIDR('192.168.0.0/16', destinationip)
+    -- Публічні DNS-резолвери (DoT/DoH/plain)
+    AND destinationip NOT IN ('8.8.8.8','8.8.4.4','1.1.1.1','1.0.0.1','9.9.9.9','149.112.112.112','208.67.222.222','208.67.220.220')
+    -- Cloudflare (https://www.cloudflare.com/ips/) — головний джерело FP
+    AND NOT INCIDR('104.16.0.0/12', destinationip)
+    AND NOT INCIDR('172.64.0.0/13', destinationip)
+    AND NOT INCIDR('162.158.0.0/15', destinationip)
+    AND NOT INCIDR('198.41.128.0/17', destinationip)
+    AND NOT INCIDR('173.245.48.0/20', destinationip)
+    AND NOT INCIDR('141.101.64.0/18', destinationip)
+    AND NOT INCIDR('108.162.192.0/18', destinationip)
+    AND NOT INCIDR('190.93.240.0/20', destinationip)
+    AND NOT INCIDR('188.114.96.0/20', destinationip)
+    AND NOT INCIDR('197.234.240.0/22', destinationip)
+    AND NOT INCIDR('103.21.244.0/22', destinationip)
+    AND NOT INCIDR('103.22.200.0/22', destinationip)
+    AND NOT INCIDR('103.31.4.0/22', destinationip)
+    AND NOT INCIDR('131.0.72.0/22', destinationip)
+    -- Apple (увесь 17.0.0.0/8 належить Apple)
+    AND NOT INCIDR('17.0.0.0/8', destinationip)
+    -- Meta / Facebook / Instagram / WhatsApp
+    AND NOT INCIDR('157.240.0.0/16', destinationip)
+    AND NOT INCIDR('31.13.24.0/21', destinationip)
+    AND NOT INCIDR('31.13.64.0/18', destinationip)
+    AND NOT INCIDR('57.144.0.0/14', destinationip)
+    AND NOT INCIDR('66.220.144.0/20', destinationip)
+    AND NOT INCIDR('69.63.176.0/20', destinationip)
+    AND NOT INCIDR('69.171.224.0/19', destinationip)
+    AND NOT INCIDR('129.134.0.0/16', destinationip)
+    AND NOT INCIDR('173.252.64.0/18', destinationip)
+    AND NOT INCIDR('179.60.192.0/22', destinationip)
+    AND NOT INCIDR('185.60.216.0/22', destinationip)
+    AND NOT INCIDR('204.15.20.0/22', destinationip)
+    AND NOT INCIDR('195.5.51.0/24', destinationip)
+    -- Fastly CDN
+    AND NOT INCIDR('151.101.0.0/16', destinationip)
+    AND NOT INCIDR('199.232.0.0/16', destinationip)
+    -- Google (web + DNS фронти)
+    AND NOT INCIDR('142.250.0.0/15', destinationip)
+    AND NOT INCIDR('172.217.0.0/16', destinationip)
+    AND NOT INCIDR('216.58.192.0/19', destinationip)
+    AND NOT INCIDR('74.125.0.0/16', destinationip)
+    AND NOT INCIDR('64.233.160.0/19', destinationip)
+    AND NOT INCIDR('209.85.128.0/17', destinationip)
+GROUP BY sourceip, destinationip, destinationport, QIDNAME(qid), "Application", "Web Category"
+ORDER BY Conns DESC
+LIMIT {limit} {time_depth}

@@ -1,0 +1,35 @@
+SELECT
+    LOGSOURCENAME(logsourceid) AS Host,
+    "Process Path" AS Proc_Path,
+    destinationip AS Dst,
+    destinationport AS Dport,
+    username AS Acct,
+    COUNT(*) AS Conns
+FROM events
+WHERE
+    INOFFENSE({offense_id})
+    -- Правило зветься "Outbound", але спрацьовує і на ВНУТРІШНІ призначення. Уся корисна
+    -- телеметрія лежить у Sysmon EventID 3; сама CRE-подія дублює поля без хоста й юзера,
+    -- тому беремо лише реальний endpoint-івент.
+    AND QIDNAME(qid) ILIKE '%Network connection detected%'
+    AND "Process Name" ILIKE 'rundll32.exe'
+    -- BENIGN PRE-FILTER. Заміряно по організації: 99% обсягу — це rundll32, що хостить DLL
+    -- легітимного LOB-застосунку і йде на ВНУТРІШНІ сервіси (найбільше 172.17.61.144:1433
+    -- та :3030 — MS SQL через ODBC). Знімаємо внутрішні адреси цілком.
+    AND NOT INCIDR('10.0.0.0/8', destinationip)
+    AND NOT INCIDR('172.16.0.0/12', destinationip)
+    AND NOT INCIDR('192.168.0.0/16', destinationip)
+    -- ...і НАШІ ЖЕ публічні діапазони (DMZ/NAT): rundll32 на 188.163.216.101:443 — це
+    -- десятки робочих станцій, що ходять на наш власний опублікований сервіс.
+    AND NOT INCIDR('188.163.216.96/28', destinationip)
+    AND NOT INCIDR('212.1.102.0/24', destinationip)
+    AND NOT INCIDR('212.1.103.0/24', destinationip)
+    AND NOT INCIDR('168.119.209.0/24', destinationip)
+    AND destinationip != '82.207.23.25'
+    -- Свідомо НЕ вносимо в whitelist діапазони Microsoft/Azure/AWS: після зняття внутрішніх
+    -- лишається ~20-30 рядків на добу по всій організації, і модель здатна відрізнити
+    -- телеметрію Windows на 443 від сирого IP чи чистого HTTP на невідомий хост. Whitelist
+    -- хмар засліпив би нас саме там, де реальний C2 і живе.
+GROUP BY Host, "Process Path", destinationip, destinationport, username
+ORDER BY Conns DESC
+LIMIT {limit} {time_depth}

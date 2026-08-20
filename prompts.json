@@ -12,6 +12,7 @@
     "UC-ME Service Admin List authentication" : [ "67503541.md", "sergii.legerko", "67503541.aql" ],
     "UC-06-1 Потенційна атака на ресурси" : [ "67500653.md", "sergii.legerko", "67500653.aql" ],
     "UC-02-1 Потенційне з'єднання з Botnet (IP)" : [ "uc02_botnet_ip.md", "sergii.legerko", "uc02_botnet_ip.aql", "", "close_on_empty" ],
+    "UC-03-1 Виявлення IOC в реальному часі (IP)" : [ "uc03_ioc_ip.md", "sergii.legerko", "uc03_ioc_ip.aql", "", "close_on_empty" ],
     "UC-01-1 Перебір паролю до облікового запис" : [ "67500646.md", "sergii.legerko", "67500646.aql" ],
     "UC-ME Network C2 Beaconing" : ["67503542.md", "sergii.legerko", "67503542.aql"],
     "UC-ME-PA Threat categories monitoring R2L" : [ "67501443.md", "sergii.legerko", "67501443.aql" ],
@@ -36,5 +37,6 @@
     "Process Launched from a Temp Directory" : [ "multistage_temp_shared_chain.md", "sergii.legerko", "multistage_temp_shared_chain.aql" ],
     "Process Created a Thread into System Process" : [ "remote_thread_injection.md", "sergii.legerko", "remote_thread_injection.aql", "", "close_on_empty" ],
     "Process Created a Thread into Another Process" : [ "remote_thread_injection.md", "sergii.legerko", "remote_thread_injection.aql", "", "close_on_empty" ],
+    "RunDLL32 Outbound Network Connection" : [ "rundll32_outbound.md", "sergii.legerko", "rundll32_outbound.aql" ],
     "Default": [ "default.md", "", "default.aql" ]
 }
