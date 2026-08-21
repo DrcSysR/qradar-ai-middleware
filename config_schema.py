@@ -53,6 +53,15 @@ SCHEMA = {
     "timeout_seconds":                (NUM,  600),
     "ollama_timeout_seconds":         (NUM,  600),
     "openai_timeout_seconds":         (NUM,  600),
+    # Дедлайн полінгу Ariel. Пошук, що не встиг, скасовується → AQL_ERROR → офенс
+    # лишається відкритим і буде переаналізований, а воркер не висить.
+    "aql_poll_timeout_seconds":       (NUM,  180),
+
+    # --- глибина вікна AQL (відраховується від часу офенсу, не від "now") ---
+    # Скільки «передісторії» до старту офенсу підтягувати. Велике manual-вікно на гучних
+    # лог-сорсах робить INOFFENSE скановищем на десятки ГБ — 168 ставити лише свідомо.
+    "manual_window_hours":            (NUM,  24),
+    "auto_window_hours":              (NUM,  4),
 
     # --- каскадна тріаж (tier-2) ---
     "escalate_enabled":               (bool, False),

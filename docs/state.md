@@ -1,0 +1,131 @@
+# qradar-ai-middleware — поточний стан
+
+**Актуально на:** 2026-08-21 · **Керує:** скіл `qradar-soc` + `CLAUDE.md` репо · **Прод:** так
+
+## 1. Призначення і межі
+
+Сервіс автоматичного тріажу офенсів QRadar через LLM. Читає офенс із QRadar REST,
+підбирає під нього промпт і AQL-запит, віддає агрегований результат моделі, отримує
+JSON-вердикт (`score` / `verdict` / `explanation` / `mitigated`) і на його підставі
+**закриває офенс, призначає аналітику або знімає IP із блок-листа Palo Alto**.
+
+Не входить: правила кореляції в самому QRadar (їх редагують у веб-консолі),
+онбординг лог-сорсів (релей `api-gw`, окремий скіл), операції з firewall поза
+reference set'ами.
+
+## 2. Компоненти, хости, мережа
+
+| Компонент | Хост / IP | Роль |
+|---|---|---|
+| `qradar-middleware.service` | mdlwr01 (172.17.61.225) | FastAPI+gunicorn, 3 воркери uvicorn, `0.0.0.0:5000` |
+| `qradar-poller.timer/.service` | mdlwr01 | oneshot кожні 10 хв (`OnUnitActiveSec=10min`) |
+| QRadar (event collector, API) | 172.17.61.184 | джерело офенсів і подій, Ariel-пошуки |
+| llm01 (`openai` провайдер) | on-prem llama.cpp `/v1` | tier-1 модель авто-тріажу |
+| Vertex AI | GCP | tier-2 ескалація + manual-режим |
+| Palo Alto pa-vm | 172.17.64.101 | цільовий firewall блок-листів (через QRadar reference sets) |
+
+Прод-дерево — `/opt/qradar-middleware` (той самий git-репо, `autoupdate.sh` робить
+`git pull` на місці).
+
+## 3. Як це працює (механізми)
+
+```
+QRadar offenses API ──► poller.py (кожні 10 хв, вікно 48 год, ліміт 100/ран)
+                          │ фільтр: OPEN + опис/назва правила є ключем у prompts.json
+                          │ skip: status=PROCESSED у ai_state.db або вже є нотатка "AI Analysis"
+                          ▼
+              POST 127.0.0.1:5000/universal-analysis {offense_id, is_manual:false}
+                          │
+   app.py: offense details ─► prompts.json: ключ → prompts/*.md + queries/*.aql
+                          ├─ AQL: POST /ariel/searches → полінг (дедлайн) → results → DELETE
+                          ├─ порожній результат + close_on_empty → авто-закриття score 0.0
+                          ├─ порожній без прапорця → NO_EVENTS, офенс лишається відкритим
+                          ├─ AQL не виконався → AQL_ERROR, офенс лишається відкритим
+                          ▼
+             tier-1 (llm01) ──score > escalate_threshold──► tier-2 (Vertex, вікно 168 год)
+                          ▼
+     вердикт → нотатка в офенс + одне з: close / assign / залишити відкритим
+                          └─ FP + налаштований refset → DELETE IP із блок-листа
+```
+
+Матчинг юзкейсу — **substring опису офенсу**, з фолбеком на **назви правил-учасників**
+(бо QRadar часто називає офенс іменем події, напр. «Traffic End», а не іменем UC).
+
+Вердикт → дія (авто-режим):
+
+| Умова | Дія |
+|---|---|
+| `mitigated: true` | закрити, блок лишити |
+| `score ≤ 0.6`, не mitigated | закрити; якщо для правила заданий refset і entity=IP → **зняти IP із блок-листа** |
+| `score > 0.6` + assignee | лишити відкритим, призначити |
+| `is_manual: true` | ніколи не закриває автоматично |
+
+Побічні джоби (cron на mdlwr01): `falcon_pua_scan.py` (09:00, дайджест Falcon PUP у
+Google Chat), `cdn_allowlist_update.py` (06:30, рефсет CDN-allowlist ~22 тис. IP),
+`botnet_scan.py` (systemd timer, кожні 4 год, review+hunt блок-листа),
+`cortex_xdr_scan.py` (**свідомо вимкнений** до жовтня 2026 — фід мертвий з 2026-08-04).
+
+## 4. Ключові файли й скрипти
+
+| Шлях | Що робить |
+|---|---|
+| `app.py` | FastAPI: `POST /universal-analysis`, `GET /` (HTML-форма ручного запуску) |
+| `poller.py` | standalone-поллер під systemd timer |
+| `prompts.json` | мапа: ключ опису → `[prompt.md, assignee, query.aql, refset_cleanup?, close_on_empty?]` |
+| `prompts/*.md`, `queries/*.aql` | інструкція моделі та AQL під кожен юзкейс |
+| `prompts_loader.py` | резолв мапінгу + фолбек на `Default` |
+| `config_schema.py` | реєстр ключів `config.json` з типами й дефолтами, валідація на старті |
+| `tests/smoke_test.py` | смоук: одруківки в `prompts.json`, відсутні `.aql`, невідомі плейсхолдери, невідомі ключі конфігу, синтаксис модулів |
+| `tools/aql_runner.py`, `tools/ai_state_stats.py` | ручна діагностика |
+| `autoupdate.sh`, `deploy.sh` | деплой: pip → смоук-гейт → рестарт → health → rollback |
+
+Стан — `ai_state.db` (SQLite): таблиці `offenses`, `botnet_scan`,
+`falcon_pua_reported`, `cortex_xdr_reported`.
+
+## 5. Доступ і секрети
+
+- SSH: `ssh mdlwr01` (ключ через SSH-агент Bitwarden; при потребі `ProxyJump nginx2`).
+- `config.json` — **гітіґнорений**, містить QRadar SEC-токен, webhook Google Chat,
+  параметри Vertex. Ключ Vertex — окремий JSON поруч, теж не в git.
+- Пароль/токени шукати в Bitwarden (запис по назві сервісу), не в репо.
+- `.gitignore` ігнорує `*.json`, крім `prompts.json` — тримати саме так.
+
+## 6. Операційні процедури
+
+```bash
+systemctl status qradar-middleware qradar-poller.timer      # стан
+journalctl -u qradar-middleware -f                          # вердикти в реальному часі
+tail -f /opt/qradar-middleware/poller.log                   # черга поллера
+python3 tests/smoke_test.py                                 # перед комітом
+```
+
+Деплой: `git push origin main` → cron `autoupdate.sh` (хвилини 9,19,29,39,49,59)
+підхоплює коміт, ставить залежності, прогоняє смоук-гейт, рестартує, перевіряє
+health, при провалі відкатує. Негайно — `./deploy.sh` на хості.
+
+## 7. Відомі проблеми, обмеження, борг
+
+- **Поллер насичений у бізнес-години.** Ліміт 100 офенсів/ран, вікно 48 год. Черга
+  спорожняється лише в тихі години; підняття ліміту без паралелізму не допоможе —
+  ран послідовний (~9 хв на 100 офенсів).
+- **Джерело потоку — два правила.** UC-07-1 (≈379 офенсів/год) і UC-05-1 (≈90/год)
+  дають ~82% усього обсягу офенсів радара; мідлваре здебільшого їх підчищає через
+  `close_on_empty`. Лікується тюнінгом правил у QRadar, не в коді.
+- **Покриття.** ~68% з ~28 тис. відкритих офенсів — типи, які мідлваре вміє
+  тріажити, але вони поза 48-год вікном поллера і вже не будуть розібрані.
+  Решта — типи без ключа в `prompts.json` (IRC Connections, Session Denied,
+  File Decode, URL Filtering, expired account, Tor, Credential Exfil та ін.).
+- **Композитні офенси аналізуються однією лінзою.** Промпт і AQL підбираються за
+  описом офенсу; докази решти правил-учасників у запит не потрапляють. У парі з
+  `close_on_empty` це означає авто-закриття 0.0 при чистому «своєму» шарі.
+- **Опис офенсу мутує** — QRadar переписує його під останнє спрацьоване правило,
+  тож ключ матчингу нестабільний у часі.
+- **Нікому нічого не призначено.** Відкритих призначених офенсів — 0; усі вердикти
+  `> 0.6` за спостережуваний період були `mitigated: true` і закрились тихо.
+- Немає CI й лінтера — лише `tests/smoke_test.py`, який гейтить деплой.
+- 12 рядків залипли в статусі `PROCESSING` (найстаріший з квітня) — шкоди не роблять.
+
+## 8. Історія змін
+
+- [2026-08-21 — дедлайн полінгу AQL, прибирання Ariel-пошуків, конфігуровані вікна](changes/2026-08-21-b-aql-deadline-ariel-cleanup-vikna.md)
+- [2026-08-21 — аудит потоку офенсів і тріаж 10 нерозібраних](changes/2026-08-21-a-audyt-potoku-ofensiv.md)

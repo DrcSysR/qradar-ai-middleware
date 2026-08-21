@@ -231,6 +231,18 @@ def _strip_aql_comments(aql: str) -> str:
     return "\n".join(out)
 
 
+async def _delete_ariel_search(client: httpx.AsyncClient, search_id: str) -> None:
+    """Прибрати за собою пошук в Ariel. QRadar тримає завершені пошуки на диску, а мідлваре
+    робить один пошук на офенс — при ~570 офенсах/год це ~13 тис. осиротілих пошуків на добу
+    (міряно: 5202 у списку). DELETE на незавершеному пошуку ще й скасовує його виконання."""
+    if not search_id:
+        return
+    try:
+        await client.delete(f"{QRADAR_API_URL}/ariel/searches/{search_id}", headers=HEADERS)
+    except Exception as e:
+        logging.debug(f"Ariel search {search_id} cleanup failed: {e}")
+
+
 async def fetch_data_from_qradar(client: httpx.AsyncClient, offense_id: int, time_depth: str, aql_filename: str, entity_value: str = "", entity_type: str = ""):
     filepath = os.path.join(QUERIES_DIR, aql_filename)
 
@@ -273,15 +285,29 @@ async def fetch_data_from_qradar(client: httpx.AsyncClient, offense_id: int, tim
         search_id = response.json().get("search_id")
         status = "WAIT"
 
+        # Полінг з дедлайном. Без нього цикл не має виходу взагалі: INOFFENSE по широкому
+        # вікну на гучному лог-сорсі легко дає 300+ с (міряно: 26 ГБ, 41% за 281 с), і такий
+        # пошук тримає воркер gunicorn до кінця httpx-таймауту. Дедлайн → None → статус
+        # AQL_ERROR → офенс лишається ВІДКРИТИМ, поллер переаналізує наступного циклу.
+        deadline = time.monotonic() + float(APP_CONFIG.get("aql_poll_timeout_seconds", 180))
+
         while status != "COMPLETED":
+            if time.monotonic() > deadline:
+                logging.error(f"AQL timeout: пошук {search_id} не завершився за {APP_CONFIG.get('aql_poll_timeout_seconds', 180)} с — скасовую, офенс лишається відкритим.")
+                await _delete_ariel_search(client, search_id)
+                return None
             await asyncio.sleep(2)
             status_resp = await client.get(f"{QRADAR_API_URL}/ariel/searches/{search_id}", headers=HEADERS)
             status = status_resp.json().get("status", "ERROR")
-            if status == "ERROR": return None
+            if status in ("ERROR", "CANCELED"):
+                logging.error(f"AQL status={status} для пошуку {search_id}.")
+                await _delete_ariel_search(client, search_id)
+                return None
 
         results_resp = await client.get(f"{QRADAR_API_URL}/ariel/searches/{search_id}/results", headers=HEADERS)
         events = results_resp.json().get("events", [])
-        
+        await _delete_ariel_search(client, search_id)
+
         return [{k: v for k, v in e.items() if v and v != "null"} for e in events]
 
     except Exception as e:
@@ -581,7 +607,13 @@ async def universal_analysis(payload: UniversalTrigger):
 
         # Вікно AQL відраховуємо від часу офенсу, а не від "now": інакше manual-аналіз
         # старого офенсу (або auto з затримкою) втрапляє у порожній період.
-        window_ms = (7 * 24 * 60 * 60 * 1000) if payload.is_manual else (4 * 60 * 60 * 1000)
+        # manual раніше жорстко брав 7 днів «передісторії». На гучних лог-сорсах це
+        # перетворювало INOFFENSE у скан десятків ГБ (CNS141: 26 ГБ, 41% за 281 с), тобто
+        # deep-режим не працював саме там, де найпотрібніший. Тепер обидва вікна — з конфігу:
+        # manual_window_hours / auto_window_hours. Хочеш назад 7 днів — постав 168 у config.json.
+        manual_hours = float(APP_CONFIG.get("manual_window_hours", 24))
+        auto_hours = float(APP_CONFIG.get("auto_window_hours", 4))
+        window_ms = int((manual_hours if payload.is_manual else auto_hours) * 60 * 60 * 1000)
         offense_start = details.get("start_time")
         offense_end = details.get("last_updated_time") or offense_start
 
