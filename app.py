@@ -244,6 +244,33 @@ async def _delete_ariel_search(client: httpx.AsyncClient, search_id: str) -> Non
         logging.debug(f"Ariel search {search_id} cleanup failed: {e}")
 
 
+async def fetch_events_multi_lens(client: httpx.AsyncClient, offense_id: int, time_depth: str,
+                                  aql_files: list, entity_value: str = "", entity_type: str = "") -> tuple:
+    """Виконати AQL кожної лінзи й склеїти події. Повертає (events, failed_aql_files).
+
+    events = None лише коли впали ВСІ лінзи (тоді вище по стеку — AQL_ERROR і офенс
+    лишається відкритим). Якщо впала частина — віддаємо те, що зібралось, а список
+    failed сигналізує викликачу, що close_on_empty застосовувати вже не можна.
+    Ключ `Lens` додається лише на композиті, щоб не з'їдати контекст llm01 даремно."""
+    events, failed = [], []
+    multi = len(aql_files) > 1
+    for aql_file in aql_files:
+        part = await fetch_data_from_qradar(
+            client, offense_id, time_depth, aql_file,
+            entity_value=entity_value, entity_type=entity_type,
+        )
+        if part is None:
+            failed.append(aql_file)
+            continue
+        if multi:
+            for ev in part:
+                ev["Lens"] = aql_file
+        events.extend(part)
+    if failed and len(failed) == len(aql_files):
+        return None, failed
+    return events, failed
+
+
 async def fetch_data_from_qradar(client: httpx.AsyncClient, offense_id: int, time_depth: str, aql_filename: str, entity_value: str = "", entity_type: str = ""):
     filepath = os.path.join(QUERIES_DIR, aql_filename)
 
@@ -654,24 +681,12 @@ async def universal_analysis(payload: UniversalTrigger):
         if len(aql_files) > 1:
             close_on_empty = bool(lenses) and all(l["close_on_empty"] for l in lenses) and not truncated
 
-        raw_events, failed_lenses = [], []
-        for aql_file in aql_files:
-            part = await fetch_data_from_qradar(
-                client, payload.offense_id, time_depth, aql_file,
-                entity_value=str(details.get("entity_value", "")),
-                entity_type=details.get("entity_type", ""),
-            )
-            if part is None:
-                failed_lenses.append(aql_file)
-                continue
-            if len(aql_files) > 1:
-                for ev in part:
-                    ev["Lens"] = aql_file    # щоб модель бачила, з якого шару подія
-            raw_events.extend(part)
-
-        if failed_lenses and len(failed_lenses) == len(aql_files):
-            raw_events = None                # усі лінзи впали → AQL_ERROR, офенс лишається відкритим
-        elif failed_lenses:
+        raw_events, failed_lenses = await fetch_events_multi_lens(
+            client, payload.offense_id, time_depth, aql_files,
+            entity_value=str(details.get("entity_value", "")),
+            entity_type=details.get("entity_type", ""),
+        )
+        if failed_lenses and raw_events is not None:
             close_on_empty = False           # частина шарів невідома → порожньо ≠ «чисто»
             logging.warning(f"⚠️ Офенс {payload.offense_id}: AQL не виконався для {failed_lenses} — close_on_empty знято.")
 
@@ -850,8 +865,10 @@ async def universal_analysis(payload: UniversalTrigger):
                 esc_time_depth = compute_time_depth(esc_window_ms)
                 logging.info(f"⬆️ Офенс {payload.offense_id}: tier-1 {used_provider} дав score {t1_score} → ескалація на {esc_provider} ({esc_model}), вікно {esc_time_depth}")
 
-                esc_events = await fetch_data_from_qradar(
-                    client, payload.offense_id, esc_time_depth, aql_filename,
+                # Ті самі лінзи, що й на tier-1: вердикт tier-2 повністю заміщає tier-1,
+                # тож дати важкій моделі вужчу вибірку — значить втратити шари доказів.
+                esc_events, _esc_failed = await fetch_events_multi_lens(
+                    client, payload.offense_id, esc_time_depth, aql_files,
                     entity_value=str(details.get("entity_value", "")),
                     entity_type=details.get("entity_type", ""),
                 )
