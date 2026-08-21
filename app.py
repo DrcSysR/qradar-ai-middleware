@@ -14,6 +14,7 @@ import sqlite3
 import time
 
 from prompts_loader import get_dynamic_prompt as _get_dynamic_prompt
+from prompts_loader import get_matched_lenses
 import config_schema
 
 VERTEX_KEY_PATH = "/opt/qradar-middleware/me-vertex-ai-studio-666353d9e1df.json"
@@ -631,11 +632,49 @@ async def universal_analysis(payload: UniversalTrigger):
         contributing_rule_names = [rules_map.get(r.get("id"), "") for r in details.get("rules", [])]
         instruction, assignee, aql_filename, refset_cleanup, close_on_empty = get_dynamic_prompt(details['offense_name'], contributing_rule_names)
 
-        raw_events = await fetch_data_from_qradar(
-            client, payload.offense_id, time_depth, aql_filename,
-            entity_value=str(details.get("entity_value", "")),
-            entity_type=details.get("entity_type", ""),
-        )
+        # Композитний офенс: збираємо події з AQL УСІХ зматчених лінз, а не лише першої.
+        # Промпт/assignee/refset лишаються від лінзи з найвищим пріоритетом (get_dynamic_prompt).
+        lenses = get_matched_lenses(details['offense_name'], PROMPTS_FILE, contributing_rule_names)
+        aql_files, seen_aql = [], set()
+        for lens in lenses:
+            if lens["aql_file"] not in seen_aql:
+                seen_aql.add(lens["aql_file"])
+                aql_files.append(lens["aql_file"])
+        if not aql_files:
+            aql_files = [aql_filename]      # шлях Default — лінз не зматчилось
+        max_lenses = int(APP_CONFIG.get("max_aql_lenses_per_offense", 3))
+        truncated = len(aql_files) > max_lenses
+        if truncated:
+            logging.info(f"Офенс {payload.offense_id}: лінз {len(aql_files)}, беру перші {max_lenses} за пріоритетом.")
+            aql_files = aql_files[:max_lenses]
+
+        # close_on_empty на композиті лишається лише якщо його мають УСІ лінзи: лінза без
+        # прапорця означає, що для неї порожній результат — не «чисто», а «невідомо».
+        # Одна лінза (≈92% трафіку) — поведінка не змінюється взагалі.
+        if len(aql_files) > 1:
+            close_on_empty = bool(lenses) and all(l["close_on_empty"] for l in lenses) and not truncated
+
+        raw_events, failed_lenses = [], []
+        for aql_file in aql_files:
+            part = await fetch_data_from_qradar(
+                client, payload.offense_id, time_depth, aql_file,
+                entity_value=str(details.get("entity_value", "")),
+                entity_type=details.get("entity_type", ""),
+            )
+            if part is None:
+                failed_lenses.append(aql_file)
+                continue
+            if len(aql_files) > 1:
+                for ev in part:
+                    ev["Lens"] = aql_file    # щоб модель бачила, з якого шару подія
+            raw_events.extend(part)
+
+        if failed_lenses and len(failed_lenses) == len(aql_files):
+            raw_events = None                # усі лінзи впали → AQL_ERROR, офенс лишається відкритим
+        elif failed_lenses:
+            close_on_empty = False           # частина шарів невідома → порожньо ≠ «чисто»
+            logging.warning(f"⚠️ Офенс {payload.offense_id}: AQL не виконався для {failed_lenses} — close_on_empty знято.")
+
         if raw_events is None:
             # AQL не виконався (422 ParseError / ERROR-статус / виняток). Порожній результат
             # != помилка: НЕ закриваємо офенс, навіть з close_on_empty. Інакше зламаний запит

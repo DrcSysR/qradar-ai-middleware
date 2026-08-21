@@ -38,19 +38,59 @@ def _iter_match_texts(description, rule_names):
         yield rn or ""
 
 
-def _match_config(mapping, description, rule_names=None):
-    """Перша секція (у порядку prompts.json), чий ключ є substring опису офенсу
-    АБО назви правила-учасника. Повертає config або None. META_KEYS ігноруються."""
+def _match_all_configs(mapping, description, rule_names=None):
+    """Усі секції, чий ключ є substring опису офенсу АБО назви якогось правила-учасника,
+    у порядку пріоритету (опис → правила), без дублів. Повертає [(key, config), ...]."""
+    out = []
+    seen = set()
     for text in _iter_match_texts(description, rule_names):
         tl = text.lower()
         if not tl:
             continue
         for key, config in mapping.items():
-            if key in META_KEYS:
+            if key in META_KEYS or key in seen:
                 continue
             if key.lower() in tl:
-                return config
-    return None
+                seen.add(key)
+                out.append((key, config))
+    return out
+
+
+def _match_config(mapping, description, rule_names=None):
+    """Перша секція (у порядку prompts.json), чий ключ є substring опису офенсу
+    АБО назви правила-учасника. Повертає config або None. META_KEYS ігноруються.
+    Делегує в _match_all_configs, щоб пріоритет тут і в get_matched_lenses не розійшовся."""
+    matches = _match_all_configs(mapping, description, rule_names)
+    return matches[0][1] if matches else None
+
+
+def get_matched_lenses(description: str, prompts_file: str, rule_names: list | None = None) -> list[dict]:
+    """Усі зматчені юзкейси («лінзи») для офенсу, у порядку пріоритету.
+
+    Композитний офенс QRadar несе кілька правил одночасно (спостережений приклад:
+    інжект у процес + зловживання sc.exe + C2-бікон + UC-07-1 на одному хості).
+    Матчинг за одним ключем давав ОДНУ лінзу: виконувався тільки її AQL, а докази
+    решти правил-учасників не потрапляли в запит узагалі — і в парі з close_on_empty
+    офенс закривався як benign score 0.0, бо *своя* лінза була чиста. Тому app.py
+    бере промпт/assignee/refset від першої лінзи, а події збирає з AQL усіх.
+
+    Кожен елемент: {key, prompt_file, assignee, aql_file, refset_cleanup, close_on_empty}.
+    Порожній список = жодного збігу (далі спрацьовує Default у get_dynamic_prompt)."""
+    mapping = _load_mapping(prompts_file)
+    if not mapping:
+        return []
+    lenses = []
+    for key, config in _match_all_configs(mapping, description, rule_names):
+        prompt_file, assignee, aql_file, refset_cleanup, close_on_empty = _resolve_config(config)
+        lenses.append({
+            "key": key,
+            "prompt_file": prompt_file,
+            "assignee": assignee,
+            "aql_file": aql_file,
+            "refset_cleanup": refset_cleanup,
+            "close_on_empty": close_on_empty,
+        })
+    return lenses
 
 
 def offense_matches(rule_keys, description, rule_names=None) -> bool:
