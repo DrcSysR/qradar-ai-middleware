@@ -645,12 +645,35 @@ async def universal_analysis(payload: UniversalTrigger):
         offense_start = details.get("start_time")
         offense_end = details.get("last_updated_time") or offense_start
 
+        # Стеля на РОЗМАХ вікна, незалежно від віку офенсу. QRadar доливає події в той самий
+        # офенс місяцями (реальний випадок: 955703 — відкритий 17.04.2026, 68 млн подій,
+        # оновлювався щодня), і тоді START рахувався б від дати створення. INOFFENSE через
+        # півроку історії Ariel не витягує: спрацьовує aql_poll_timeout_seconds, офенс іде в
+        # AQL_ERROR, лишається відкритим і повторюється КОЖЕН цикл поллера — три таких офенси
+        # зациклюють пайплайн.
+        # Дефолт 192 год = 168 (escalate_window_hours) + доба запасу на тривалість офенсу.
+        # Точно про те, коли стеля спрацьовує: коли (тривалість офенсу + вікно) > 192 год.
+        # Для auto (4 год) це офенси, старші за ~8 діб; при ескалації (168 год) — старші за
+        # ~добу, і тоді вона зрізає найдавнішу частину передісторії. Це свідомо: для
+        # багатоденного офенсу найсвіжіші 8 діб і є правильними даними для тріажу.
+        max_span_ms = int(float(APP_CONFIG.get("max_aql_span_hours", 192)) * 60 * 60 * 1000)
+
         def compute_time_depth(win_ms: int) -> str:
             if offense_start:
-                start_ms = int(offense_start) - win_ms
                 stop_ms = int(offense_end) + 5 * 60 * 1000  # +5 хв буфер на пізні події
+                start_ms = int(offense_start) - win_ms
+                # Тримаємось свіжого кінця: обрізаємо початок, а не хвіст — найновіші події
+                # для тріажу цінніші за передісторію піврічної давнини.
+                floor_ms = stop_ms - max_span_ms
+                if start_ms < floor_ms:
+                    logging.warning(
+                        f"⚠️ Офенс {payload.offense_id}: вікно AQL обрізане з "
+                        f"{(stop_ms - start_ms) // 3600000} год до {max_span_ms // 3600000} год "
+                        f"(офенс живе з {time.strftime('%Y-%m-%d', time.localtime(int(offense_start) / 1000))})."
+                    )
+                    start_ms = floor_ms
                 return f"START {start_ms} STOP {stop_ms}"
-            return f"LAST {max(1, win_ms // (60 * 60 * 1000))} HOURS"
+            return f"LAST {max(1, min(win_ms, max_span_ms) // (60 * 60 * 1000))} HOURS"
 
         time_depth = compute_time_depth(window_ms)
 
