@@ -10,6 +10,10 @@ SELECT
                                '208.67.222.222','208.67.220.220','223.5.5.5','223.6.6.6',
                                '119.29.29.29','114.114.114.114','77.88.8.8','77.88.8.1',
                                '94.140.14.14','94.140.15.15') THEN 'public-resolver'
+        -- Приватна адреса, якої немає в рефсеті — майже завжди філійний або VPN-резолвер,
+        -- а не rogue. Окремий клас, щоб модель не плутала його з невідомим інтернет-хостом.
+        WHEN INCIDR('10.0.0.0/8', destinationip) OR INCIDR('172.16.0.0/12', destinationip)
+             OR INCIDR('192.168.0.0/16', destinationip) THEN 'internal-unlisted'
         ELSE 'unclassified'
     END AS Server_Class,
     NETWORKNAME(sourceip) AS Src_Network,

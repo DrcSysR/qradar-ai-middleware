@@ -12,7 +12,11 @@ What the data means. Each row is one (host → DNS server) pair with:
   - `corporate` — one of our own resolvers. Benign.
   - `public-resolver` — Google / Cloudflare / Quad9 / OpenDNS / AliDNS / Tencent / Yandex /
     AdGuard. The host is bypassing corporate DNS. This is a POLICY violation, not malware.
-  - `unclassified` — an arbitrary internet address answering on port 53. This is the
+  - `internal-unlisted` — a private (RFC1918) address that is not in our approved set.
+    Almost always a branch-office or VPN-side resolver that nobody added to the reference
+    set, not a rogue server. Treat as low risk and say in the explanation that the address
+    is a candidate for the `UC05-DNS Servers` reference set.
+  - `unclassified` — an arbitrary public internet address answering on port 53. This is the
     interesting one: it can be a niche resolver, a misconfiguration, or DNS tunnelling / C2.
 - `Src_Network` — network-hierarchy zone of the client (e.g. LAN_SRV, LAN_GU, Lublin).
 - `Bytes_Per_Query` — average request size. Normal DNS is ~80-160 bytes. Sustained values
@@ -28,7 +32,14 @@ What the data means. Each row is one (host → DNS server) pair with:
    expected to be common. Score 0.4-0.55, verdict `DNS_Policy_Bypass`. **Never score a plain
    policy bypass above 0.6** — nothing is compromised, the fix is reconfiguring the client's
    DNS settings. Name the offending hosts in the explanation.
-3. Go above 0.6 if ANY of these hold:
+3. **Volume floor — check this before any tunnelling call.** Tunnelling is a *sustained*
+   technique: it needs many queries over time. If the whole offense is a handful of queries
+   (`Queries` below ~50) or `Span_Sec` is 0, then NO byte size, however large, makes it
+   tunnelling — a single big query is a DNSSEC/TXT/EDNS0 lookup or a one-off probe.
+   Score such an offense at most 0.4, verdict `Benign_Stray_Query`, regardless of
+   `Bytes_Per_Query`. Only once the volume floor is cleared, consider:
+
+   Go above 0.6 if ANY of these hold:
    - an `unclassified` DNS server with sustained traffic, or
    - `Bytes_Per_Query` above ~300 on a non-trivial query count — **this applies regardless of
      `Server_Class`**. Tunnelling through Google or Cloudflare is still tunnelling: the
@@ -44,8 +55,9 @@ Scoring rubric (float 0.0-1.0):
   sizes. Real, worth recording, but no security incident and no host to remediate.
   This is the expected verdict for the majority of offenses in this use case.
 - 0.7-0.8 — SUSPICIOUS. `unclassified` DNS server with sustained traffic, OR
-  `Bytes_Per_Query` consistently above 300 on a non-trivial query count, OR one internal host
-  hammering a single unknown resolver. Something a human must look at.
+  `Bytes_Per_Query` consistently above 300 across at least ~50 queries, OR one internal host
+  hammering a single unknown resolver. Something a human must look at. Never award this band
+  to an offense that failed the volume floor in FIRST CHECK step 3.
 - 0.9-1.0 — CONFIRMED DNS TUNNELLING / C2. Large `Bytes_Per_Query` (well above 300) combined
   with high `Queries` and a long `Span_Sec` against an `unclassified` destination.
 
