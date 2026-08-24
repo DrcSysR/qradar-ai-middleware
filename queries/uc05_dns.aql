@@ -1,23 +1,32 @@
 SELECT
-    sourceip AS Source,
-    destinationip AS DNS_Server,
-    "Application" AS App,
-    QIDNAME(qid) AS Event,
+    sourceip AS Src_Host,
+    destinationip AS DNS_Dst,
+    -- Класифікуємо сервер, а НЕ відкидаємо його. Стара версія виключала публічні резолвери
+    -- як destination — і тим викидала рівно той сигнал, заради якого існує юзкейс:
+    -- клієнт в обхід корпоративного DNS. Рішення тепер ухвалює модель за Server_Class.
+    CASE
+        WHEN REFERENCESETCONTAINS('UC05-DNS Servers', destinationip) THEN 'corporate'
+        WHEN destinationip IN ('8.8.8.8','8.8.4.4','1.1.1.1','1.0.0.1','9.9.9.9','149.112.112.112',
+                               '208.67.222.222','208.67.220.220','223.5.5.5','223.6.6.6',
+                               '119.29.29.29','114.114.114.114','77.88.8.8','77.88.8.1',
+                               '94.140.14.14','94.140.15.15') THEN 'public-resolver'
+        ELSE 'unclassified'
+    END AS Server_Class,
+    NETWORKNAME(sourceip) AS Src_Network,
+    -- "Application" свідомо НЕ беремо: властивість заповнена не на всіх подіях, і групування
+    -- за нею розщеплювало кожну пару на два рядки, у порожньому з них Bytes_Per_Query=0.
     COUNT(*) AS Queries,
-    SUM("Bytes Sent") AS Bytes_Sent,
-    SUM("Bytes Received") AS Bytes_Received
+    -- Байти на запит лишаємо КОЛОНКОЮ, а не фільтром. Звичайний DNS ~80-160 Б; стабільно
+    -- 300+ на великому обсязі — підпис тунелювання. Як HAVING-фільтр це відсікало все інше.
+    SUM("Bytes Sent")/COUNT(*) AS Bytes_Per_Query,
+    (MAX(starttime) - MIN(starttime))/1000 AS Span_Sec
 FROM events
 WHERE
     INOFFENSE({offense_id})
-    -- Відсікаємо benign на рівні запиту: відомі публічні резолвери (Google/Cloudflare/Quad9/OpenDNS),
-    -- AWS Route53 (forwarder), і наші DNS-форвардери/DC (HQ + PL). Те, що лишилось, модель не побачить
-    -- як benign і не зможе нагалюцинувати "tunneling" на DC→Route53.
-    AND destinationip NOT IN ('8.8.8.8','8.8.4.4','1.1.1.1','1.0.0.1','9.9.9.9','149.112.112.112','208.67.222.222','208.67.220.220')
-    AND NOT INCIDR('205.251.192.0/23', destinationip)
-    AND sourceip NOT IN ('192.168.16.3','192.168.16.9','192.168.16.15','172.17.61.6','172.17.61.112','172.17.61.252')
-GROUP BY sourceip, destinationip, App, Event
--- Tunneling-сигнатура = великі байти на запит. Звичайний DNS ~50-150 байт; поріг 300 лишає тільки
--- аномально "товсті" запити. Порожній результат => весь трафік був benign => офенс не ескалюється.
-HAVING SUM("Bytes Sent") > 300 * COUNT(*)
+    AND destinationport = 53
+    -- Джерела-резолвери беремо з того самого рефсету, що й правило: набір змінюється в
+    -- одному місці, AQL і правило не розходяться. Наш DC, що форвардить нагору, — не порушник.
+    AND NOT REFERENCESETCONTAINS('UC05-DNS Servers', sourceip)
+GROUP BY Src_Host, DNS_Dst, Server_Class, Src_Network
 ORDER BY Queries DESC
 LIMIT {limit} {time_depth}
