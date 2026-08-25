@@ -7,12 +7,13 @@ import logging
 import fcntl
 import sys
 import sqlite3
+from concurrent.futures import ThreadPoolExecutor, as_completed
 
 from prompts_loader import get_rule_keys, offense_matches
 
 # --- НАЛАШТУВАННЯ ---
 LOOKBACK_TIME_MS = 48 * 60 * 60 * 1000  # 48 годин: страховка, щоб офенси, пропущені під час бурсту, не гинули поза вікном (deep/manual режим бере 7 днів через AQL time_depth)
-MAX_OFFENSES_PER_RUN = 100  # 100 x ~6.6с ≈ 11 хв на ран; таймер рахує від завершення, fcntl-лок не дасть накластися
+MAX_OFFENSES_PER_RUN = 100  # стеля на ран; таймер рахує від завершення, fcntl-лок не дасть накластися
 LOG_FILE = "/opt/qradar-middleware/poller.log"
 LOCK_FILE = "/opt/qradar-middleware/poller.lock"
 DB_PATH = "/opt/qradar-middleware/ai_state.db"
@@ -32,6 +33,9 @@ MIDDLEWARE_URL = "http://127.0.0.1:5000/universal-analysis"
 
 with open(CONFIG_FILE, "r", encoding="utf-8") as f:
     config = json.load(f)
+# Конкурентність = кількості воркерів gunicorn (3). Більше не прискорить: запити
+# просто стануть у чергу всередині сервісу, зате Ariel отримає зайвий тиск.
+POLLER_CONCURRENCY = int(config.get("poller_concurrency", 3))
 QRADAR_API = f"{config['qradar_url']}/api"
 HEADERS = {"SEC": config["qradar_token"], "Accept": "application/json"}
 
@@ -104,8 +108,10 @@ try:
         consecutive_conn_errors = 0
         MAX_CONSECUTIVE_CONN_ERRORS = 3  # Якщо middleware не відповідає N разів поспіль — припиняємо цикл, наступний фаєр спробує знову
 
+        # --- Відбір кандидатів (дешево: перевірка в SQLite, далі API-перевірка нотатки) ---
+        candidates = []
         for off in offenses:
-            if processed_count >= MAX_OFFENSES_PER_RUN:
+            if len(candidates) >= MAX_OFFENSES_PER_RUN:
                 logging.info(f"⚠️ Досягнуто ліміт ({MAX_OFFENSES_PER_RUN}).")
                 hit_limit = True
                 break
@@ -120,34 +126,56 @@ try:
 
             # 2. Перевірка за описом офенсу АБО назвою правила-учасника
             if offense_matches(target_rules, desc, rule_names):
-
                 # 3. Надійна перевірка через API (якщо в QRadar вже є нотатка, але БД була видалена)
                 if not has_ai_note(off_id):
-                    logging.info(f"[+] Новий офенс: {off_id}. Відправка на AI...")
-                    try:
-                        ai_resp = requests.post(MIDDLEWARE_URL, json={"offense_id": off_id, "is_manual": False}, timeout=600)
-                        if ai_resp.status_code == 200:
-                            logging.info(f"✅ Офенс {off_id} успішно оброблено. Middleware зберіг статус у БД.")
-                        else:
-                            logging.error(f"❌ Помилка Middleware: {ai_resp.status_code}")
-
-                        processed_count += 1
-                        consecutive_conn_errors = 0
-                    except requests.exceptions.Timeout:
-                        logging.error(f"⏳ Таймаут для {off_id}.")
-                        processed_count += 1
-                        consecutive_conn_errors = 0
-                    except requests.exceptions.ConnectionError as e:
-                        consecutive_conn_errors += 1
-                        logging.error(f"❌ Connection refused для {off_id} (поспіль {consecutive_conn_errors}/{MAX_CONSECUTIVE_CONN_ERRORS}): {e}")
-                        if consecutive_conn_errors >= MAX_CONSECUTIVE_CONN_ERRORS:
-                            logging.error(f"🛑 Middleware недоступний {consecutive_conn_errors} разів поспіль. Припиняю цикл, наступний фаєр поллера спробує знову.")
-                            break
-                    except Exception as e:
-                        logging.error(f"❌ Помилка з'єднання: {e}")
-                        consecutive_conn_errors = 0
+                    candidates.append(off_id)
                 else:
                     logging.info(f"ℹ️ Офенс {off_id} вже має нотатку від AI. Пропускаємо.")
+
+        # --- Обробка: паралельно ---
+        # Раніше офенси йшли строго по одному, і ран упирався в час інференсу: ~30 с на офенс
+        # = 120/год при ~200 нових/год, черга росла (1523 → 1712 за ранок 25.08). При цьому
+        # gunicorn має 3 воркери й уже їх чергував — використовувалась третина потужності.
+        # Конкурентність тримаємо на рівні кількості воркерів: більше не прискорить, лише
+        # створить чергу всередині gunicorn і зайве навантаження на Ariel.
+        if candidates:
+            logging.info(f"До обробки: {len(candidates)} офенсів, конкурентність {POLLER_CONCURRENCY}.")
+
+        conn_errors = 0
+
+        def process_one(off_id):
+            """Повертає ('ok'|'timeout'|'conn'|'err', off_id). Виняток не піднімає:
+            один невдалий офенс не має валити ран."""
+            try:
+                ai_resp = requests.post(MIDDLEWARE_URL, json={"offense_id": off_id, "is_manual": False}, timeout=600)
+                if ai_resp.status_code == 200:
+                    logging.info(f"✅ Офенс {off_id} успішно оброблено. Middleware зберіг статус у БД.")
+                else:
+                    logging.error(f"❌ Помилка Middleware для {off_id}: {ai_resp.status_code}")
+                return "ok", off_id
+            except requests.exceptions.Timeout:
+                logging.error(f"⏳ Таймаут для {off_id}.")
+                return "timeout", off_id
+            except requests.exceptions.ConnectionError as e:
+                logging.error(f"❌ Connection refused для {off_id}: {e}")
+                return "conn", off_id
+            except Exception as e:
+                logging.error(f"❌ Помилка з'єднання для {off_id}: {e}")
+                return "err", off_id
+
+        with ThreadPoolExecutor(max_workers=POLLER_CONCURRENCY) as pool:
+            futures = {pool.submit(process_one, oid): oid for oid in candidates}
+            for fut in as_completed(futures):
+                outcome, off_id = fut.result()
+                if outcome in ("ok", "timeout"):
+                    processed_count += 1
+                elif outcome == "conn":
+                    conn_errors += 1
+        # «Поспіль» при паралельній відправці не має сенсу — рахуємо загальну кількість
+        # відмов з'єднання за ран. Той самий намір: мідлваре лежить → не молотимо даремно.
+        if conn_errors >= MAX_CONSECUTIVE_CONN_ERRORS:
+            logging.error(f"🛑 Middleware недоступний ({conn_errors} відмов з'єднання за ран). Наступний фаєр поллера спробує знову.")
+            consecutive_conn_errors = conn_errors
 
         if not hit_limit and consecutive_conn_errors < MAX_CONSECUTIVE_CONN_ERRORS:
             logging.info("Черга порожня або повністю оброблена.")

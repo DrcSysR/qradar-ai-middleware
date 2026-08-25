@@ -8,35 +8,191 @@
         "Index 4 (close_on_empty)": "Для monitoring-юзкейсів, де benign відсіює сам AQL: порожній результат в авто-режимі = чисто, офенс закривається зі score 0.0 без звернення до AI. Ручний режим не чіпається.",
         "ПОРЯДОК КЛЮЧІВ МАЄ ЗНАЧЕННЯ": "Опис офенсу — це ланцюг правил, і в нього часто підпадає кілька ключів одразу. Виграє ПЕРШИЙ у порядку цього файлу, тому ключі мають іти від найсильнішого сигналу до найслабшого: cascade (компрометований хост) → multistage (запуск з Temp/шари) → окремі техніки (інжекція потоку). Приклад: офенс 1206489 'Process Created a Thread into System Process preceded by Detected a Successful Login From a Compromised Host' іде на compromised_host_cascade, а не на remote_thread_injection — і це правильно."
     },
-    "UC-ME-Admins-List authentication outside IT VLAN": [ "67500565.md", "sergii.legerko", "67500565.aql" ],
-    "UC-ME Service Admin List authentication" : [ "67503541.md", "sergii.legerko", "67503541.aql" ],
-    "UC-06-1 Потенційна атака на ресурси" : [ "67500653.md", "sergii.legerko", "67500653.aql" ],
-    "UC-02-1 Потенційне з'єднання з Botnet (IP)" : [ "uc02_botnet_ip.md", "sergii.legerko", "uc02_botnet_ip.aql", "", "close_on_empty" ],
-    "UC-03-1 Виявлення IOC в реальному часі (IP)" : [ "uc03_ioc_ip.md", "sergii.legerko", "uc03_ioc_ip.aql", "", "close_on_empty" ],
-    "UC-01-1 Перебір паролю до облікового запис" : [ "67500646.md", "sergii.legerko", "67500646.aql" ],
-    "UC-ME Network C2 Beaconing" : ["67503542.md", "sergii.legerko", "67503542.aql"],
-    "UC-ME-PA Threat categories monitoring R2L" : [ "67501443.md", "sergii.legerko", "67501443.aql" ],
-    "UC-ME Rogue software detected" : [ "67503539.md", "sergii.legerko", "67503539.aql"],
-    "UC-05-1 Використання нелегітимних DNS-серверів" : [ "uc05_dns.md", "sergii.legerko", "uc05_dns.aql", "", "close_on_empty" ],
-    "UC-07-1 Контроль використання ненадійних протоколів для передачі даних" : [ "uc07_protocols.md", "sergii.legerko", "uc07_protocols.aql", "", "close_on_empty" ],
-    "UC-ME SSH Block bruteforce" : [ "btnt_ssh.md", "sergii.legerko", "btnt_ip_review.aql", "ME-PA-Suspicious-IP-Addresses" ],
-    "UC-ME Block login bruteforce" : [ "btnt_winauth.md", "sergii.legerko", "btnt_ip_review.aql", "ME-PA-Suspicious-IP-Addresses" ],
-    "Bruteforce login detected to GlobalProtect portal" : [ "btnt_gp_portal.md", "sergii.legerko", "btnt_ip_review.aql", "ME-PA-Suspicious-IP-Addresses" ],
-    "UC-ME GP Portal non-email login" : [ "btnt_gp_plain_user.md", "sergii.legerko", "btnt_ip_review.aql", "ME-PA-Suspicious-IP-Addresses" ],
-    "UC-ME-22 SSH Scanning detected" : [ "btnt_port_scan.md", "sergii.legerko", "btnt_port_scan.aql", "ME-PA-Suspicious-IP-Addresses" ],
-    "Block bruteforce logins by syspicious list" : [ "btnt_susp_list.md", "sergii.legerko", "btnt_ip_review.aql", "ME-PA-Suspicious-IP-Addresses" ],
-    "UC-ME Deny continiously bruteforce from rogue IP" : [ "btnt_rogue_ip.md", "sergii.legerko", "btnt_ip_review.aql" ],
-    "UC-ME A large number of failed login attempts were detected under the same username" : [ "btnt_user_spray.md", "sergii.legerko", "btnt_user_review.aql" ],
-    "Kerberos Pre-Authentication" : [ "btnt_kerberos.md", "sergii.legerko", "btnt_kerberos_review.aql" ],
-    "Excessive Firewall Denies from Single Source" : [ "excessive_fw_denies.md", "sergii.legerko", "excessive_fw_denies.aql" ],
-    "Excessive Firewall Denies Across Multiple Hosts" : [ "excessive_fw_denies_chain.md", "sergii.legerko", "excessive_fw_denies_chain.aql" ],
-    "Excessive Firewall Denies Between Hosts" : [ "excessive_fw_denies_between_only.md", "sergii.legerko", "excessive_fw_denies_between_only.aql" ],
-    "Powershell Has Been Launched in a Compromised Host" : [ "compromised_host_cascade.md", "sergii.legerko", "compromised_host_cascade.aql" ],
-    "Detected a Successful Login From a Compromised Host" : [ "compromised_host_cascade.md", "sergii.legerko", "compromised_host_cascade.aql" ],
-    "Process Launched from a Shared Folder" : [ "multistage_temp_shared_chain.md", "sergii.legerko", "multistage_temp_shared_chain.aql" ],
-    "Process Launched from a Temp Directory" : [ "multistage_temp_shared_chain.md", "sergii.legerko", "multistage_temp_shared_chain.aql" ],
-    "Process Created a Thread into System Process" : [ "remote_thread_injection.md", "sergii.legerko", "remote_thread_injection.aql", "", "close_on_empty" ],
-    "Process Created a Thread into Another Process" : [ "remote_thread_injection.md", "sergii.legerko", "remote_thread_injection.aql", "", "close_on_empty" ],
-    "RunDLL32 Outbound Network Connection" : [ "rundll32_outbound.md", "sergii.legerko", "rundll32_outbound.aql" ],
-    "Default": [ "default.md", "", "default.aql" ]
+    "UC-ME-Admins-List authentication outside IT VLAN": [
+        "67500565.md",
+        "sergii.legerko",
+        "67500565.aql"
+    ],
+    "UC-ME Service Admin List authentication": [
+        "67503541.md",
+        "sergii.legerko",
+        "67503541.aql"
+    ],
+    "UC-06-1 Потенційна атака на ресурси": [
+        "67500653.md",
+        "sergii.legerko",
+        "67500653.aql"
+    ],
+    "UC-02-1 Потенційне з'єднання з Botnet (IP)": [
+        "uc02_botnet_ip.md",
+        "sergii.legerko",
+        "uc02_botnet_ip.aql",
+        "",
+        "close_on_empty"
+    ],
+    "UC-03-1 Виявлення IOC в реальному часі (IP)": [
+        "uc03_ioc_ip.md",
+        "sergii.legerko",
+        "uc03_ioc_ip.aql",
+        "",
+        "close_on_empty"
+    ],
+    "UC-01-1 Перебір паролю до облікового запис": [
+        "67500646.md",
+        "sergii.legerko",
+        "67500646.aql"
+    ],
+    "UC-ME Network C2 Beaconing": [
+        "67503542.md",
+        "sergii.legerko",
+        "67503542.aql"
+    ],
+    "UC-ME-PA Threat categories monitoring R2L": [
+        "67501443.md",
+        "sergii.legerko",
+        "67501443.aql"
+    ],
+    "UC-ME Rogue software detected": [
+        "67503539.md",
+        "sergii.legerko",
+        "67503539.aql"
+    ],
+    "UC-05-1 Використання нелегітимних DNS-серверів": [
+        "uc05_dns.md",
+        "sergii.legerko",
+        "uc05_dns.aql",
+        "",
+        "close_on_empty"
+    ],
+    "UC-07-1 Контроль використання ненадійних протоколів для передачі даних": [
+        "uc07_protocols.md",
+        "sergii.legerko",
+        "uc07_protocols.aql",
+        "",
+        "close_on_empty"
+    ],
+    "UC-ME SSH Block bruteforce": [
+        "btnt_ssh.md",
+        "sergii.legerko",
+        "btnt_ip_review.aql",
+        "ME-PA-Suspicious-IP-Addresses"
+    ],
+    "UC-ME Block login bruteforce": [
+        "btnt_winauth.md",
+        "sergii.legerko",
+        "btnt_ip_review.aql",
+        "ME-PA-Suspicious-IP-Addresses"
+    ],
+    "Bruteforce login detected to GlobalProtect portal": [
+        "btnt_gp_portal.md",
+        "sergii.legerko",
+        "btnt_ip_review.aql",
+        "ME-PA-Suspicious-IP-Addresses"
+    ],
+    "UC-ME GP Portal non-email login": [
+        "btnt_gp_plain_user.md",
+        "sergii.legerko",
+        "btnt_ip_review.aql",
+        "ME-PA-Suspicious-IP-Addresses"
+    ],
+    "UC-ME-22 SSH Scanning detected": [
+        "btnt_port_scan.md",
+        "sergii.legerko",
+        "btnt_port_scan.aql",
+        "ME-PA-Suspicious-IP-Addresses"
+    ],
+    "Block bruteforce logins by syspicious list": [
+        "btnt_susp_list.md",
+        "sergii.legerko",
+        "btnt_ip_review.aql",
+        "ME-PA-Suspicious-IP-Addresses"
+    ],
+    "UC-ME Deny continiously bruteforce from rogue IP": [
+        "btnt_rogue_ip.md",
+        "sergii.legerko",
+        "btnt_ip_review.aql"
+    ],
+    "UC-ME A large number of failed login attempts were detected under the same username": [
+        "btnt_user_spray.md",
+        "sergii.legerko",
+        "btnt_user_review.aql"
+    ],
+    "Kerberos Pre-Authentication": [
+        "btnt_kerberos.md",
+        "sergii.legerko",
+        "btnt_kerberos_review.aql"
+    ],
+    "Excessive Firewall Denies from Single Source": [
+        "excessive_fw_denies.md",
+        "sergii.legerko",
+        "excessive_fw_denies.aql"
+    ],
+    "Excessive Firewall Denies Across Multiple Hosts": [
+        "excessive_fw_denies_chain.md",
+        "sergii.legerko",
+        "excessive_fw_denies_chain.aql"
+    ],
+    "Excessive Firewall Denies Between Hosts": [
+        "excessive_fw_denies_between_only.md",
+        "sergii.legerko",
+        "excessive_fw_denies_between_only.aql"
+    ],
+    "Powershell Has Been Launched in a Compromised Host": [
+        "compromised_host_cascade.md",
+        "sergii.legerko",
+        "compromised_host_cascade.aql"
+    ],
+    "Detected a Successful Login From a Compromised Host": [
+        "compromised_host_cascade.md",
+        "sergii.legerko",
+        "compromised_host_cascade.aql"
+    ],
+    "Process Launched from a Shared Folder": [
+        "multistage_temp_shared_chain.md",
+        "sergii.legerko",
+        "multistage_temp_shared_chain.aql"
+    ],
+    "Process Launched from a Temp Directory": [
+        "multistage_temp_shared_chain.md",
+        "sergii.legerko",
+        "multistage_temp_shared_chain.aql"
+    ],
+    "Process Created a Thread into System Process": [
+        "remote_thread_injection.md",
+        "sergii.legerko",
+        "remote_thread_injection.aql",
+        "",
+        "close_on_empty"
+    ],
+    "Process Created a Thread into Another Process": [
+        "remote_thread_injection.md",
+        "sergii.legerko",
+        "remote_thread_injection.aql",
+        "",
+        "close_on_empty"
+    ],
+    "RunDLL32 Outbound Network Connection": [
+        "rundll32_outbound.md",
+        "sergii.legerko",
+        "rundll32_outbound.aql"
+    ],
+    "Potential Mailto Ransomware Behavior": [
+        "ransomware_behavior.md",
+        "sergii.legerko",
+        "ransomware_behavior.aql",
+        "",
+        "close_on_empty"
+    ],
+    "File Decode or Download followed by Suspicious Activity": [
+        "ransomware_behavior.md",
+        "sergii.legerko",
+        "ransomware_behavior.aql",
+        "",
+        "close_on_empty"
+    ],
+    "Default": [
+        "default.md",
+        "",
+        "default.aql"
+    ]
 }

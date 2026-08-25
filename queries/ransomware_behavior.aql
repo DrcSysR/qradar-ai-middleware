@@ -1,0 +1,35 @@
+SELECT
+    LOGSOURCENAME(logsourceid) AS Host,
+    "Process Name" AS Proc,
+    "Process Path" AS Proc_Path,
+    QIDNAME(qid) AS Activity,
+    username AS Acct,
+    COUNT(*) AS Events
+FROM events
+WHERE
+    INOFFENSE({offense_id})
+    -- BENIGN PRE-FILTER. Правило спрацьовує на будь-якому софті, що пише реєстр і створює
+    -- файли: оновлювачі, інсталятори, 1С, месенджери, сам EDR. Це 100% спостережуваного
+    -- обсягу (224 офенси за 12 год). Фільтруємо ЛИШЕ за парою «ім'я процесу + шлях»; там,
+    -- де Sysmon шлях не дав (RegistryEvent), приймаємо NULL — інакше відфільтрується все.
+    -- УВАГА: у шаблонах НЕ використовуємо зворотні слеші. AQL не екранує їх, тож '\\Microsoft\\'
+    -- шукає два слеші поспіль і не збігається ніколи — на цьому вже спіткнулись при написанні.
+    AND NOT ("Process Name" ILIKE 'OneDrive%'
+             AND ("Process Path" IS NULL OR "Process Path" ILIKE '%Microsoft%OneDrive%'))
+    AND NOT ("Process Name" ILIKE 'MicrosoftEdgeUpdate%'
+             AND ("Process Path" IS NULL OR "Process Path" ILIKE '%EdgeUpdate%'))
+    AND NOT ("Process Name" ILIKE 'msedge.exe'
+             AND ("Process Path" IS NULL OR "Process Path" ILIKE '%Microsoft%Edge%'))
+    AND NOT ("Process Name" ILIKE '%chrome_installer%'
+             AND ("Process Path" IS NULL OR "Process Path" ILIKE '%SystemTemp%'))
+    AND NOT ("Process Name" ILIKE '1cv8%'
+             AND ("Process Path" IS NULL OR "Process Path" ILIKE '%1cv8%'))
+    AND NOT ("Process Name" ILIKE 'Viber.exe'
+             AND ("Process Path" IS NULL OR "Process Path" ILIKE '%AppData%Viber%'))
+    AND NOT ("Process Name" ILIKE 'CSFalcon%'
+             AND ("Process Path" IS NULL OR "Process Path" ILIKE '%CrowdStrike%'))
+    AND NOT ("Process Name" ILIKE 'OCSInventory%'
+             AND ("Process Path" IS NULL OR "Process Path" ILIKE '%OCS Inventory%'))
+GROUP BY Host, Proc, Proc_Path, Activity, Acct
+ORDER BY Events DESC
+LIMIT {limit} {time_depth}
