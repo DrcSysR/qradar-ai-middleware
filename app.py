@@ -701,8 +701,15 @@ async def universal_analysis(payload: UniversalTrigger):
         # close_on_empty на композиті лишається лише якщо його мають УСІ лінзи: лінза без
         # прапорця означає, що для неї порожній результат — не «чисто», а «невідомо».
         # Одна лінза (≈92% трафіку) — поведінка не змінюється взагалі.
-        if len(aql_files) > 1:
-            close_on_empty = bool(lenses) and all(l["close_on_empty"] for l in lenses) and not truncated
+        #
+        # Рахуємо за кількістю ЗМАТЧЕНИХ лінз (len(lenses)), а НЕ за кількістю тих, що реально
+        # виконуємо (len(aql_files)): інакше max_aql_lenses_per_offense=1 обрізає список до
+        # одного, умова не спрацьовує, перерахунок не виконується — і close_on_empty лишається
+        # від лінзи №1. Композит тоді знову тихо закривається 0.0 з недослідженими шарами,
+        # тобто рівно той баг (офенс 1234628/mng180), який мульти-лінза й лікує. Безпека не
+        # має залежати від значення тюнінгового ключа.
+        if len(lenses) > 1:
+            close_on_empty = all(l["close_on_empty"] for l in lenses) and not truncated
 
         raw_events, failed_lenses = await fetch_events_multi_lens(
             client, payload.offense_id, time_depth, aql_files,
