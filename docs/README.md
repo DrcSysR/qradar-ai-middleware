@@ -12,6 +12,7 @@ AI-тріаж офенсів QRadar: сервіс читає офенс, під�
 
 | Дата | Запис |
 |---|---|
+| 2026-08-26 | [UC-06-1: FIRST CHECK проти хибних multi-stage compromise](changes/2026-08-26-uc06-firstcheck-fp.md) |
 | 2026-08-25 | [паралельний поллер + юзкейс ransomware/file-decode](changes/2026-08-25-b-propusk-poллера.md) |
 | 2026-08-25 | [close_on_empty більше не залежить від max_aql_lenses_per_offense](changes/2026-08-25-a-close-on-empty-ne-zalezhyt-vid-konfigu.md) |
 | 2026-08-24 | [стеля на розмах вікна AQL (max_aql_span_hours)](changes/2026-08-24-e-stelya-vikna-aql.md) |
