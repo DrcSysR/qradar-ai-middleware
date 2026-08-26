@@ -13,6 +13,15 @@
 - **`__PSScriptPolicyTest_*.ps1`** у Temp від `sdiagnhost.exe` — AMSI script-policy проба при старті PowerShell, не дроп скрипта.
 - Решта — `Explorer.EXE`/`svchost.exe` по кущу користувача (NotifyIconSettings, NetworkList, Compatibility Assistant, FileExts) і OneDrive protocol handler.
 
+## Решта 5 офенсів (сирі події, перевірено окремо)
+- **1254976 SKL05** — `powershell.exe` створює `czqzh2p3.dll` у Temp (артефакт .NET-компіляції) + оновлювач WPS Office (`ksolaunch /wpsupdate` зі svchost-таски).
+- **1253990 mng170** — OneDrive (updater→Sync.Service→Launcher, protocol handler), `Explorer.EXE`, `sdbinst`, `RUNDLL32` Workspaces Feeds, CSFalcon, Windows Terminal `OpenConsole`.
+- **1253743 REF12** — `__PSScriptPolicyTest_*.ps1` від powershell, AMD Radeon `cncmd.exe`, OneDrive protocol handler.
+- **1253534 MNG211** — AutoCAD LT 2027 `AcCoreConsole.exe` (8 записів у `appdatalow\Autodesk`) + `AcEventSync.exe`, OneDrive, `RUNDLL32` Feeds, Office `MSOSYNC`, CSFalcon.
+- **1249835 smq48** — OneDrive, `sdbinst`, `RUNDLL32` Feeds, `opera.exe` перезаписує власний Run-ключ, оновлювач Google Chrome із `C:\Windows\SystemTemp`, CSFalcon.
+
+Через це FIRST CHECK отримав ще дві форми: (4) PowerShell/.NET scratch-файли в Temp — `__PSScriptPolicyTest_*.ps1` і випадкові 8-символьні `*.dll`/`*.cmdline`/`*.cs`; (7) підписаний іменований застосунок, що перезаписує власний autostart (Opera, Google-апдейтер у SystemTemp, OneDrive-CLSID) — Run-ключ є знахідкою лише коли ціль непідписана, з випадковим імʼям або в Temp/Downloads/Public.
+
 ## Три системні причини хибних вердиктів
 1. **`Host` — це імʼя лог-сорсу, а не роль машини.** QRadar віддає `WindowsAuthServer @ mng170.modern.org`; модель читала префікс DSM і писала «Rundll32 execution on an authentication server is highly anomalous». mng170/SKL05 — звичайні робочі станції.
 2. **`Proc_Path` порожній майже для всіх RegistryEvent** — Sysmon не мапить цю властивість на записи в реєстр. Модель читала порожню колонку як «unknown path» → «rundll32 from an unknown path» → 0.75. Порожній шлях ≠ user-writable шлях.

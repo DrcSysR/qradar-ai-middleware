@@ -40,15 +40,23 @@ below, and do NOT let a second row in the same offense drag it up.
 3. **RemoteApp / Workspaces feed** — `RUNDLL32.exe` from `System32` writing
    `Software\Microsoft\Workspaces\Feeds\{...}\Publisher` = `Work Resources`. This is the
    RDS feed refresh, the single most common rundll32 row here. `Benign_System_Activity`.
-4. **PowerShell script-policy probe** — a file named `__PSScriptPolicyTest_*.ps1` created in
-   `\AppData\Local\Temp` by `powershell.exe`, `sdiagnhost.exe` or any .NET host. This is the
-   AMSI script-policy check, an artefact of PowerShell starting up, not a dropped script. On its
-   own it is NEVER a finding. `Benign_System_Activity`.
+4. **PowerShell / .NET scratch files in Temp** — `powershell.exe`, `sdiagnhost.exe` or
+   `csc.exe` creating in `\AppData\Local\Temp` either `__PSScriptPolicyTest_*.ps1` (the AMSI
+   script-policy check that fires every time PowerShell starts) or a random 8-character
+   `*.dll` / `*.cmdline` / `*.cs` / `*.err` / `*.out` (the on-the-fly .NET compilation the
+   PowerShell host does for its own modules). Both are start-up artefacts, not dropped
+   payloads. On their own they are NEVER a finding. `Benign_System_Activity`.
 5. **Shell and profile bookkeeping** — `Explorer.EXE` or `svchost.exe` writing user-hive keys:
    `NotifyIconSettings`, `NetworkList\Profiles`, `AppCompatFlags\Compatibility Assistant`,
    `FileExts`, `SpotlightClick`. `Benign_System_Activity`.
 6. **OneDrive protocol handler** — `OneDrive.Sync.Service.exe` re-registering
    `msonedrivesyncserviceclient\shell\open\command`. `Benign_Software_Maintenance`.
+7. **A named, signed application re-asserting its own autostart** — e.g. `opera.exe` writing
+   `...\CurrentVersion\Run\Opera Stable` pointing at its own install folder, the Google
+   updater unpacking into `C:\Windows\SystemTemp`, OneDrive re-registering its CLSID. A Run-key
+   write is a finding only when the target binary is unsigned, randomly named, or sits in
+   `Temp` / `Downloads` / `Users\Public` — not when a browser points the key at itself.
+   `Benign_Software_Maintenance`.
 
 Allowed benign verdict strings: `Benign_Software_Maintenance`, `Benign_System_Activity`.
 
