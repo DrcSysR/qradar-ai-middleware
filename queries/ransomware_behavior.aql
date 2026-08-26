@@ -30,6 +30,21 @@ WHERE
              AND ("Process Path" IS NULL OR "Process Path" ILIKE '%CrowdStrike%'))
     AND NOT ("Process Name" ILIKE 'OCSInventory%'
              AND ("Process Path" IS NULL OR "Process Path" ILIKE '%OCS Inventory%'))
+    -- SOLIDWORKS PDM: NetRegSrv/AddInRegSrv реєструють .NET-COM CLSID (InprocServer32 =
+    -- mscoree.dll) у кущі кожного користувача при логоні. Десятки RegistryEvent за раз,
+    -- на всіх конструкторських машинах. Підтверджено на cns130/CNS131 26.08.2026.
+    AND NOT ("Process Name" ILIKE 'NetRegSrv.exe'
+             AND ("Process Path" IS NULL OR "Process Path" ILIKE '%SOLIDWORKS%'))
+    AND NOT ("Process Name" ILIKE 'AddInRegSrv%'
+             AND ("Process Path" IS NULL OR "Process Path" ILIKE '%SOLIDWORKS%'))
+    -- Windows AppCompat: sdbinst пише FriendlyName для sysmain.sdb/msimain.sdb після
+    -- кумулятивного оновлення. Windows-maintenance таски дають погодинну каденцію.
+    AND NOT ("Process Name" ILIKE 'sdbinst.exe'
+             AND ("Process Path" IS NULL OR "Process Path" ILIKE '%System32%'))
+    AND NOT ("Process Name" ILIKE 'Microsoft.Data.UsageAndQualityInsights%'
+             AND ("Process Path" IS NULL OR "Process Path" ILIKE '%System32%'))
+    AND NOT ("Process Name" ILIKE 'CompatTelRunner.exe'
+             AND ("Process Path" IS NULL OR "Process Path" ILIKE '%System32%'))
 GROUP BY Host, Proc, Proc_Path, Activity, Acct
 ORDER BY Events DESC
 LIMIT {limit} {time_depth}
