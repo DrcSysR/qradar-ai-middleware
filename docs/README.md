@@ -15,6 +15,7 @@ AI-тріаж офенсів QRadar: сервіс читає офенс, під�
 | 2026-08-26 | [UC-06-1: FIRST CHECK проти хибних multi-stage compromise](changes/2026-08-26-uc06-firstcheck-fp.md) |
 | 2026-08-26 | [File Decode: FIRST CHECK, читання доказів і бенін-фільтр](changes/2026-08-26-file-decode-firstcheck.md) |
 | 2026-08-27 | [Спільний хедер «як читати докази» для всіх юзкейсів](changes/2026-08-27-header-chytannya-dokaziv.md) |
+| 2026-08-27 | [Пісочниця llm01: окремий чат-UI на мідлварі](changes/2026-08-27-pisochnytsya-llm01.md) |
 | 2026-08-25 | [паралельний поллер + юзкейс ransomware/file-decode](changes/2026-08-25-b-propusk-poллера.md) |
 | 2026-08-25 | [close_on_empty більше не залежить від max_aql_lenses_per_offense](changes/2026-08-25-a-close-on-empty-ne-zalezhyt-vid-konfigu.md) |
 | 2026-08-24 | [стеля на розмах вікна AQL (max_aql_span_hours)](changes/2026-08-24-e-stelya-vikna-aql.md) |

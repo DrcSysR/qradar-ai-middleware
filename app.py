@@ -1,5 +1,5 @@
 from fastapi import FastAPI, HTTPException
-from fastapi.responses import HTMLResponse
+from fastapi.responses import HTMLResponse, StreamingResponse
 from pydantic import BaseModel
 from google.oauth2 import service_account
 import google.auth.transport.requests
@@ -1021,6 +1021,347 @@ async def universal_analysis(payload: UniversalTrigger):
     logging.info(f"✅ Офенс {payload.offense_id} оброблено | Режим: {'Ручний' if payload.is_manual else 'Авто'} | Провайдер: {provider_label} | Вердикт: {verdict} | Score: {score} | Mitigated: {mitigated}")
     return {"status": "success", "offense_id": payload.offense_id, "verdict": verdict, "score": score, "explanation": explanation, "mitigated": mitigated, "provider": used_provider, "fallback": used_fallback, "escalated": escalated}
 
+
+CHAT_PAGE_HTML = r"""<!DOCTYPE html>
+<html lang="uk">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>llm01 — пісочниця</title>
+<style>
+  :root {
+    --bg:#f6f7f9; --panel:#ffffff; --ink:#1f2328; --muted:#6b7280; --line:#e5e7eb;
+    --accent:#005A9E; --user:#e8f0fe; --bot:#f3f4f6; --warn:#b45309; --err:#b91c1c;
+  }
+  @media (prefers-color-scheme: dark) {
+    :root { --bg:#16181d; --panel:#1e2128; --ink:#e6e8eb; --muted:#9aa1ab; --line:#2c3038;
+            --accent:#4a9eff; --user:#25344a; --bot:#252932; --warn:#e0a33e; --err:#ff7b72; }
+  }
+  * { box-sizing:border-box; }
+  body { margin:0; background:var(--bg); color:var(--ink); font:15px/1.55 -apple-system,Segoe UI,Roboto,Arial,sans-serif; }
+  header { display:flex; align-items:center; gap:12px; padding:12px 18px; border-bottom:1px solid var(--line); background:var(--panel); position:sticky; top:0; z-index:5; }
+  header h1 { font-size:16px; margin:0; font-weight:650; }
+  header .meta { color:var(--muted); font-size:12.5px; }
+  header a { color:var(--accent); text-decoration:none; font-size:13px; margin-left:auto; }
+  main { max-width:900px; margin:0 auto; padding:18px 18px 220px; }
+  .msg { display:flex; margin:14px 0; }
+  .msg .bubble { padding:10px 14px; border-radius:12px; white-space:pre-wrap; word-wrap:break-word; max-width:82%; }
+  .msg.user { justify-content:flex-end; }
+  .msg.user .bubble { background:var(--user); }
+  .msg.bot .bubble { background:var(--bot); }
+  .msg .who { font-size:11px; color:var(--muted); margin-bottom:4px; text-transform:uppercase; letter-spacing:.04em; }
+  .note { color:var(--warn); font-size:13px; margin:10px 0; }
+  .err { color:var(--err); font-size:13.5px; margin:10px 0; white-space:pre-wrap; }
+  .composer { position:fixed; left:0; right:0; bottom:0; background:var(--panel); border-top:1px solid var(--line); padding:12px 18px 14px; }
+  .composer .inner { max-width:900px; margin:0 auto; }
+  textarea { width:100%; resize:vertical; min-height:76px; padding:11px 12px; border:1px solid var(--line);
+             border-radius:10px; background:var(--bg); color:var(--ink); font:inherit; }
+  .row { display:flex; gap:10px; align-items:center; flex-wrap:wrap; margin-top:9px; }
+  .row label { font-size:12.5px; color:var(--muted); display:flex; align-items:center; gap:6px; }
+  select, input[type=number] { padding:6px 8px; border:1px solid var(--line); border-radius:8px;
+             background:var(--bg); color:var(--ink); font:inherit; font-size:13px; }
+  input[type=number] { width:82px; }
+  button { padding:9px 18px; border:0; border-radius:9px; background:var(--accent); color:#fff; font-size:14px; cursor:pointer; }
+  button.ghost { background:transparent; color:var(--muted); border:1px solid var(--line); }
+  button:disabled { opacity:.5; cursor:default; }
+  .spacer { flex:1 1 auto; }
+  details { margin-top:9px; }
+  summary { cursor:pointer; font-size:12.5px; color:var(--muted); }
+  details textarea { min-height:60px; margin-top:8px; }
+  .tokens { font-size:12px; color:var(--muted); }
+  .cursor::after { content:"▍"; opacity:.6; }
+</style>
+</head>
+<body>
+<header>
+  <h1>🧪 llm01 — пісочниця</h1>
+  <span class="meta" id="meta">…</span>
+  <a href="/">← аналіз офенсу</a>
+</header>
+
+<main id="log">
+  <div class="note">Прямий діалог із on-prem моделлю. Нічого не зберігається: історія живе лише у цій вкладці, оновлення сторінки її стирає. Промпти радара (prompts/*.md) цей екран не читає і не змінює.</div>
+</main>
+
+<div class="composer"><div class="inner">
+  <textarea id="input" placeholder="Промпт… (Enter — надіслати, Shift+Enter — новий рядок)"></textarea>
+  <details>
+    <summary>Системний промпт і параметри</summary>
+    <textarea id="system" placeholder="System prompt (необовʼязково)"></textarea>
+  </details>
+  <div class="row">
+    <label>модель <select id="model"></select></label>
+    <label>temp <input type="number" id="temp" value="0.7" min="0" max="2" step="0.1"></label>
+    <label>max tokens <input type="number" id="maxtok" value="512" min="16" max="4096" step="64"></label>
+    <span class="tokens" id="tokens"></span>
+    <span class="spacer"></span>
+    <button class="ghost" id="clear" type="button">Очистити</button>
+    <button id="send" type="button">Надіслати</button>
+    <button class="ghost" id="stop" type="button" style="display:none">Стоп</button>
+  </div>
+</div></div>
+
+<script>
+const log = document.getElementById('log');
+const input = document.getElementById('input');
+const sysBox = document.getElementById('system');
+const modelSel = document.getElementById('model');
+const sendBtn = document.getElementById('send');
+const stopBtn = document.getElementById('stop');
+const clearBtn = document.getElementById('clear');
+const tokensEl = document.getElementById('tokens');
+let history = [];   // тільки в памʼяті вкладки
+let ctrl = null;
+let ctxLimit = 8192;
+
+function esc(s) { const d = document.createElement('div'); d.textContent = s; return d.innerHTML; }
+
+function addMsg(role, text) {
+  const wrap = document.createElement('div');
+  wrap.className = 'msg ' + (role === 'user' ? 'user' : 'bot');
+  wrap.innerHTML = '<div><div class="who">' + (role === 'user' ? 'ти' : 'llm01') +
+                   '</div><div class="bubble"></div></div>';
+  wrap.querySelector('.bubble').textContent = text;
+  log.appendChild(wrap);
+  window.scrollTo(0, document.body.scrollHeight);
+  return wrap.querySelector('.bubble');
+}
+function addLine(cls, text) {
+  const d = document.createElement('div');
+  d.className = cls; d.textContent = text;
+  log.appendChild(d); window.scrollTo(0, document.body.scrollHeight);
+}
+function updTokens() {
+  const chars = history.reduce((n, m) => n + m.content.length, 0) + sysBox.value.length + input.value.length;
+  const est = Math.round(chars / 2);
+  tokensEl.textContent = '~' + est + ' / ' + ctxLimit + ' ток.' + (est > ctxLimit * 0.8 ? ' (скоро обріжеться)' : '');
+}
+input.addEventListener('input', updTokens);
+sysBox.addEventListener('input', updTokens);
+
+fetch('/chat/models').then(r => r.json()).then(j => {
+  document.getElementById('meta').textContent = j.base + (j.error ? ' — ' + j.error : '');
+  (j.models || []).forEach(m => {
+    const o = document.createElement('option');
+    o.value = m.id; o.textContent = m.id + (m.n_ctx ? ' (ctx ' + m.n_ctx + ')' : '');
+    if (m.n_ctx) o.dataset.ctx = m.n_ctx;
+    modelSel.appendChild(o);
+  });
+  if (!modelSel.options.length && j.default) {
+    const o = document.createElement('option'); o.value = j.default; o.textContent = j.default;
+    modelSel.appendChild(o);
+  }
+  ctxLimit = parseInt(modelSel.selectedOptions[0]?.dataset.ctx || '8192', 10);
+  updTokens();
+});
+modelSel.addEventListener('change', () => {
+  ctxLimit = parseInt(modelSel.selectedOptions[0]?.dataset.ctx || '8192', 10); updTokens();
+});
+
+clearBtn.onclick = () => {
+  history = [];
+  log.querySelectorAll('.msg, .err, .note.run').forEach(n => n.remove());
+  updTokens();
+};
+
+input.addEventListener('keydown', e => {
+  if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); send(); }
+});
+sendBtn.onclick = send;
+stopBtn.onclick = () => { if (ctrl) ctrl.abort(); };
+
+async function send() {
+  const text = input.value.trim();
+  if (!text || ctrl) return;
+  input.value = '';
+  addMsg('user', text);
+  history.push({role: 'user', content: text});
+  updTokens();
+
+  const bubble = addMsg('assistant', '');
+  bubble.classList.add('cursor');
+  sendBtn.disabled = true; stopBtn.style.display = '';
+  ctrl = new AbortController();
+  let acc = '';
+
+  try {
+    const resp = await fetch('/chat/send', {
+      method: 'POST', headers: {'Content-Type': 'application/json'}, signal: ctrl.signal,
+      body: JSON.stringify({
+        messages: history, model: modelSel.value, system: sysBox.value,
+        temperature: parseFloat(document.getElementById('temp').value) || 0.7,
+        max_tokens: parseInt(document.getElementById('maxtok').value, 10) || 512
+      })
+    });
+    if (!resp.ok) throw new Error('HTTP ' + resp.status);
+    const reader = resp.body.getReader();
+    const dec = new TextDecoder();
+    let buf = '';
+    while (true) {
+      const {value, done} = await reader.read();
+      if (done) break;
+      buf += dec.decode(value, {stream: true});
+      const parts = buf.split('\n\n');
+      buf = parts.pop();
+      for (const part of parts) {
+        const line = part.split('\n').find(l => l.startsWith('data:'));
+        if (!line) continue;
+        const ev = JSON.parse(line.slice(5).trim());
+        if (ev.d) { acc += ev.d; bubble.textContent = acc; window.scrollTo(0, document.body.scrollHeight); }
+        else if (ev.note) addLine('note run', ev.note);
+        else if (ev.error) addLine('err', ev.error);
+      }
+    }
+  } catch (e) {
+    if (e.name !== 'AbortError') addLine('err', String(e));
+  } finally {
+    bubble.classList.remove('cursor');
+    if (acc) history.push({role: 'assistant', content: acc});
+    ctrl = null; sendBtn.disabled = false; stopBtn.style.display = 'none';
+    updTokens(); input.focus();
+  }
+}
+input.focus();
+</script>
+</body>
+</html>"""
+
+
+# --- ПІСОЧНИЦЯ llm01 (окремий чат-UI, /chat) ------------------------------------
+# Прямий діалог із on-prem llm01 (llama.cpp, OpenAI /v1) без жодної триаж-обгортки:
+# промпт користувача йде в модель як є. НІЧОГО не зберігається — ні на диску, ні в
+# ai_state.db, ні в логах: історія живе лише у вкладці браузера. Радар-промпти
+# (prompts/*.md) цей інтерфейс не читає і не пише.
+
+class ChatMessage(BaseModel):
+    role: str
+    content: str
+
+
+class ChatRequest(BaseModel):
+    messages: list[ChatMessage]
+    model: str = ""
+    system: str = ""
+    temperature: float = 0.7
+    max_tokens: int = 512
+
+
+def _chat_endpoint() -> tuple[str, dict]:
+    base = APP_CONFIG.get("openai_base", "http://127.0.0.1:8080/v1").rstrip("/")
+    headers = {"Content-Type": "application/json"}
+    api_key = APP_CONFIG.get("openai_api_key", "")
+    if api_key:
+        headers["Authorization"] = f"Bearer {api_key}"
+    return base, headers
+
+
+def _fit_history(messages: list[dict], model: str, max_tokens: int) -> tuple[list[dict], int]:
+    """Ріже історію під контекст llm01 (8192 на слот), лишаючи найсвіжіше.
+
+    Системне повідомлення тримаємо завжди. Оцінка та сама, що й у build_prompt:
+    ~2 символи на токен — консервативно, краще недобрати, ніж отримати
+    500 'Context size has been exceeded' від llama.cpp."""
+    ctx = MODELS_MAX_CTX.get(model, 8192)
+    budget_chars = max(500, int((ctx - max_tokens - 256) * 2.0))
+    system = [m for m in messages if m["role"] == "system"]
+    rest = [m for m in messages if m["role"] != "system"]
+    used = sum(len(m["content"]) for m in system)
+    kept: list[dict] = []
+    for m in reversed(rest):
+        if used + len(m["content"]) > budget_chars and kept:
+            break
+        used += len(m["content"])
+        kept.append(m)
+    kept.reverse()
+    dropped = len(rest) - len(kept)
+    return system + kept, dropped
+
+
+@app.get("/chat/models")
+async def chat_models():
+    """Список моделей, які llm01 реально віддає (llama.cpp /v1/models)."""
+    base, headers = _chat_endpoint()
+    try:
+        async with httpx.AsyncClient(verify=False, timeout=15.0) as client:
+            r = await client.get(f"{base}/models", headers=headers)
+            r.raise_for_status()
+            data = r.json().get("data") or []
+            out = []
+            for m in data:
+                out.append({"id": m.get("id"), "n_ctx": (m.get("meta") or {}).get("n_ctx")})
+            return {"models": out, "base": base,
+                    "default": APP_CONFIG.get("fast_model", "")}
+    except Exception as e:
+        return {"models": [], "base": base, "error": str(e)[:200],
+                "default": APP_CONFIG.get("fast_model", "")}
+
+
+@app.post("/chat/send")
+async def chat_send(req: ChatRequest):
+    """Стрімить відповідь llm01 у браузер (SSE). Тіло запиту ніде не осідає."""
+    base, headers = _chat_endpoint()
+    model = req.model or APP_CONFIG.get("fast_model", "qwen2.5-coder-3b")
+    max_tokens = max(16, min(int(req.max_tokens or 512), 4096))
+
+    msgs = []
+    if (req.system or "").strip():
+        msgs.append({"role": "system", "content": req.system.strip()})
+    for m in req.messages:
+        if m.role in ("user", "assistant") and (m.content or "").strip():
+            msgs.append({"role": m.role, "content": m.content})
+    if not msgs:
+        raise HTTPException(status_code=400, detail="Порожній запит")
+
+    msgs, dropped = _fit_history(msgs, model, max_tokens)
+
+    payload = {
+        "model": model,
+        "messages": msgs,
+        "temperature": max(0.0, min(float(req.temperature), 2.0)),
+        "max_tokens": max_tokens,
+        "stream": True,
+    }
+    timeout = float(APP_CONFIG.get("openai_timeout_seconds", 300))
+
+    async def event_stream():
+        if dropped:
+            yield "data: " + json.dumps({"note": f"Найстаріші {dropped} повідомлень обрізано під контекст моделі"}) + "\n\n"
+        try:
+            async with httpx.AsyncClient(verify=False, timeout=timeout) as client:
+                async with client.stream("POST", f"{base}/chat/completions",
+                                         headers=headers, json=payload) as resp:
+                    if resp.status_code >= 400:
+                        body = (await resp.aread()).decode("utf-8", "replace")[:400]
+                        # Один слот на llama.cpp: поки поллер тріажить офенс, чат
+                        # отримує 500 'Context size has been exceeded'. Кажемо прямо.
+                        hint = " — llm01 зараз зайнятий тріажем офенсів, спробуй ще раз" if resp.status_code >= 500 else ""
+                        yield "data: " + json.dumps({"error": f"llm01 {resp.status_code}: {body}{hint}"}) + "\n\n"
+                        return
+                    async for line in resp.aiter_lines():
+                        if not line or not line.startswith("data:"):
+                            continue
+                        chunk = line[5:].strip()
+                        if chunk == "[DONE]":
+                            break
+                        try:
+                            delta = json.loads(chunk)["choices"][0].get("delta", {}).get("content")
+                        except Exception:
+                            continue
+                        if delta:
+                            yield "data: " + json.dumps({"d": delta}) + "\n\n"
+        except Exception as e:
+            yield "data: " + json.dumps({"error": f"{type(e).__name__}: {str(e)[:200]}"}) + "\n\n"
+        yield "data: " + json.dumps({"done": True}) + "\n\n"
+
+    return StreamingResponse(event_stream(), media_type="text/event-stream",
+                             headers={"Cache-Control": "no-store", "X-Accel-Buffering": "no"})
+
+
+@app.get("/chat", response_class=HTMLResponse)
+async def chat_ui():
+    return CHAT_PAGE_HTML
+
+
 @app.get("/", response_class=HTMLResponse)
 async def get_web_ui():
     html_content = """
@@ -1053,6 +1394,7 @@ async def get_web_ui():
 
                 <button type="button" onclick="runAnalysis()" id="submitBtn">🚀 Запустити аналітику</button>
             </form>
+            <div class="hint" style="margin-top:18px"><a href="/chat" style="color:#005A9E">🧪 Пісочниця llm01</a> — прямий діалог з моделлю, без тріаж-обгортки</div>
             
             <div id="result"></div>
         </div>
