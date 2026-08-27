@@ -1132,8 +1132,9 @@ function addLine(cls, text) {
   log.appendChild(d); window.scrollTo(0, document.body.scrollHeight);
 }
 function updTokens() {
-  const chars = history.reduce((n, m) => n + m.content.length, 0) + sysBox.value.length + input.value.length;
-  const est = Math.round(chars / 2);
+  const all = history.map(m => m.content).join('') + sysBox.value + input.value;
+  const nonAscii = (all.match(/[^\x00-\x7F]/g) || []).length;
+  const est = Math.round(all.length / (nonAscii * 3 > all.length ? 1.7 : 4.0));
   tokensEl.textContent = '~' + est + ' / ' + ctxLimit + ' ток.' + (est > ctxLimit * 0.8 ? ' (скоро обріжеться)' : '');
 }
 input.addEventListener('input', updTokens);
@@ -1255,26 +1256,60 @@ def _chat_endpoint() -> tuple[str, dict]:
     return base, headers
 
 
-def _fit_history(messages: list[dict], model: str, max_tokens: int) -> tuple[list[dict], int]:
+def _tokenize_root() -> str:
+    """llama.cpp тримає /tokenize у корені сервера, а не під /v1."""
+    base = APP_CONFIG.get("openai_base", "http://127.0.0.1:8080/v1").rstrip("/")
+    return base[:-3].rstrip("/") if base.endswith("/v1") else base
+
+
+def _rough_tokens(text: str) -> int:
+    """Запасна оцінка, коли /tokenize недоступний. Кирилиця токенізується
+    приблизно 1.7 символа на токен, латиниця — близько 4.5, тож рахуємо за
+    часткою не-ASCII і навмисно з запасом у бік БІЛЬШОЇ кількості токенів."""
+    if not text:
+        return 0
+    non_ascii = sum(1 for ch in text if ord(ch) > 127)
+    ratio = 1.5 if non_ascii * 3 > len(text) else 3.0
+    return int(len(text) / ratio) + 1
+
+
+async def _count_tokens(client: httpx.AsyncClient, text: str) -> int:
+    """Точна кількість токенів від самої моделі; при будь-якій осічці — оцінка."""
+    if not text:
+        return 0
+    try:
+        r = await client.post(f"{_tokenize_root()}/tokenize", json={"content": text}, timeout=15.0)
+        r.raise_for_status()
+        return len(r.json().get("tokens") or [])
+    except Exception:
+        return _rough_tokens(text)
+
+
+async def _fit_history(client: httpx.AsyncClient, messages: list[dict], model: str,
+                       max_tokens: int) -> tuple[list[dict], int]:
     """Ріже історію під контекст llm01 (8192 на слот), лишаючи найсвіжіше.
 
-    Системне повідомлення тримаємо завжди. Оцінка та сама, що й у build_prompt:
-    ~2 символи на токен — консервативно, краще недобрати, ніж отримати
-    500 'Context size has been exceeded' від llama.cpp."""
+    Рахуємо токени самою моделлю (/tokenize), бо оцінка «2 символи на токен»
+    з build_prompt працює лише на латинських логах: україномовний діалог — це
+    ~1.7 символа на токен, і на ньому обрізання лишало вдвічі більше, ніж влазить."""
     ctx = MODELS_MAX_CTX.get(model, 8192)
-    budget_chars = max(500, int((ctx - max_tokens - 256) * 2.0))
+    budget = max(256, ctx - max_tokens - 256)   # 256 — запас на службові токени шаблону чату
     system = [m for m in messages if m["role"] == "system"]
     rest = [m for m in messages if m["role"] != "system"]
-    used = sum(len(m["content"]) for m in system)
+
+    counts = await asyncio.gather(*[_count_tokens(client, m["content"]) for m in system + rest])
+    sys_cost = sum(counts[:len(system)])
+    rest_costs = counts[len(system):]
+
+    used = sys_cost
     kept: list[dict] = []
-    for m in reversed(rest):
-        if used + len(m["content"]) > budget_chars and kept:
+    for m, cost in zip(reversed(rest), reversed(rest_costs)):
+        if used + cost > budget and kept:
             break
-        used += len(m["content"])
+        used += cost
         kept.append(m)
     kept.reverse()
-    dropped = len(rest) - len(kept)
-    return system + kept, dropped
+    return system + kept, len(rest) - len(kept)
 
 
 @app.get("/chat/models")
@@ -1312,7 +1347,8 @@ async def chat_send(req: ChatRequest):
     if not msgs:
         raise HTTPException(status_code=400, detail="Порожній запит")
 
-    msgs, dropped = _fit_history(msgs, model, max_tokens)
+    async with httpx.AsyncClient(verify=False) as counter:
+        msgs, dropped = await _fit_history(counter, msgs, model, max_tokens)
 
     payload = {
         "model": model,
