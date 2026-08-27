@@ -764,6 +764,73 @@ async def universal_analysis(payload: UniversalTrigger):
         # контексту (llm01 ctx 8192 vs Vertex 2 млн), тож при ескалації на tier-2 промпт
         # треба перезібрати, а не переслати нарізаний під llm01.
         def build_prompt(p: str, model: str, events, assets: str) -> str:
+            # Хедер із двох правил читання доказів має дві версії: повна для провайдерів із
+            # великим контекстом і стисла для llm01 (ctx 8192) — там кожні 700 символів
+            # відбираються в логів, а на трьох найдовших юзкейсах бюджет і так нульовий.
+            EVIDENCE_HEADER_FULL = (
+                "HOW TO READ THE EVIDENCE (applies to every use case):\n"
+                "1. A column that carries a QRadar log-source name — `Host`, `Hostname`, `LogSource`, `Src_Host` — "
+                "has the form `<DSM name> @ <machine>`: `WindowsAuthServer @ mng170.modern.org`, "
+                "`LinuxServer @ nginx2`, `Bind @ 172.17.61.157`. The prefix names the PARSER that read the log, "
+                "NOT the machine's role — `WindowsAuthServer` is the DSM on every Windows box in the estate, "
+                "ordinary workstations included. Never conclude that a machine is a domain controller, an "
+                "authentication server, a DNS server or 'critical infrastructure' from that prefix, and never "
+                "raise the score because of it; establish the role from the events themselves.\n"
+                "2. An empty field means 'not mapped by the parser', never 'unknown' and never 'suspicious'. "
+                "Sysmon does not populate Process Path on registry events, and QRadar leaves username, path or "
+                "port blank for many event types. A blank path is NOT a user-writable path and NOT an unknown "
+                "path — never raise the score because a column is empty.\n\n"
+            )
+            EVIDENCE_HEADER_SHORT = (
+                "HOW TO READ THE EVIDENCE: a `Host`/`Hostname`/`LogSource` value is a QRadar log-source name "
+                "(`<DSM> @ <machine>`, e.g. `WindowsAuthServer @ mng170` on an ordinary workstation) — the prefix "
+                "names the parser, NOT the machine's role, so never call a host a DC, an auth server or critical "
+                "infrastructure because of it. An empty column means 'not mapped by the parser', never 'unknown' "
+                "and never 'user-writable' — never raise the score for a blank field.\n\n"
+            )
+
+            def render(logs_text: str, header: str) -> str:
+                return (
+                    "You are an expert Tier-2 SOC analyst. "
+                    f"Context: QRadar triggered an offense named '{details['offense_name']}'. "
+                    "However, SIEM rules often generate False Positives due to normal administrative tasks, "
+                    "misconfigurations, or routine network traffic. Your primary job is to act as a filter.\n\n"
+                    f"{header}"
+                    f"Task: {instruction}\n\n"
+                    f"{assets}"
+                    f"--- START OF LOGS ---\n{logs_text}\n--- END OF LOGS ---\n\n"
+                    "Based ONLY on the logs above, return a valid JSON object with keys "
+                    "'score', 'verdict', 'explanation', and optionally 'mitigated'.\n\n"
+                    "CRITICAL RULES FOR JSON:\n"
+                    "1. 'score' must be a float between 0.0 and 1.0 based on the rubric below.\n"
+                    "2. 'verdict' must be a short category string.\n"
+                    "3. 'explanation' MUST BE EXTREMELY CONCISE. Strictly 1 short sentence, maximum 15 words. Do not write long paragraphs.\n"
+                    "4. 'mitigated' (boolean, default false): set TRUE for a real/suspicious action that was FULLY BLOCKED, "
+                    "DENIED, DROPPED or FAILED with NO successful outcome and no sign of an already-compromised internal asset "
+                    "(e.g. an external IP whose scan or brute-force the firewall denied, or repeated auth failures with ZERO "
+                    "successes). A true value CLOSES the offense while KEEPING any existing block in place (it does NOT unblock "
+                    "the source). This is the correct, expected outcome for the high-volume 'real but already-stopped' case — "
+                    "PREFER mitigated:true over a 0.7+ score whenever the threat was contained and no internal host needs action. "
+                    "Leave it false ONLY when there is a successful/allowed connection, a real un-blocked consequence, or an "
+                    "internal host that itself needs remediation.\n\n"
+                    "CRITICAL SCORING RUBRIC for 'score' (float 0.0 to 1.0):\n"
+                    "- 0.0 to 0.3: CLEAR FALSE POSITIVE. Routine administrative behavior, benign traffic, or no evidence of successful malicious action.\n"
+                    "- 0.4 to 0.6: SUSPICIOUS BUT INCONCLUSIVE. Anomalous behavior without clear evidence of intent or impact.\n"
+                    "- 0.7 to 0.8: HIGHLY SUSPICIOUS with a REAL, UN-BLOCKED consequence (a successful/allowed connection, lateral "
+                    "movement, data egress). If the suspicious activity was blocked/denied/failed, it does NOT belong here — use "
+                    "mitigated:true instead.\n"
+                    "- 0.9 to 1.0: CONFIRMED COMPROMISE. Clear evidence of successful attack, data exfiltration, or unauthorized access.\n\n"
+                    "ANTI-DEFAULT RULE: a score of 0.7+ pages a human analyst. Do NOT pick 0.7-0.8 because you are uncertain — "
+                    "uncertainty WITHOUT a concrete un-blocked consequence is the 0.4-0.6 band (auto-closes) or, if the threat was "
+                    "contained, mitigated:true. Use the EXACT verdict string defined in the TASK above; never emit a generic band "
+                    "name such as 'Highly Suspicious' as the verdict.\n\n"
+                    "If INTERNAL ASSET CONTEXT is provided above, weigh it: traffic matching an asset's expected role "
+                    "(e.g., LDAP traffic to a 'LDAP Servers' IP) lowers the score; out-of-role behavior "
+                    "(e.g., a 'Database Servers' IP making outbound web traffic) raises it.\n\n"
+                    "Do NOT default to a high score just because an offense was triggered. Be highly skeptical. "
+                    "Output ONLY the JSON object."
+                )
+
             if p == "openai":
                 # llm01 (llama.cpp) має лише ctx 8192, а лог/IP-текст токенізується щільно (~2.1 симв/токен).
                 # Різати треба ВЕСЬ промпт, не лише логи: окрім виводу резервуємо фіксовану частину
@@ -772,53 +839,20 @@ async def universal_analysis(payload: UniversalTrigger):
                 ctx = MODELS_MAX_CTX.get(model, 8192)
                 CHARS_PER_TOK = 2.0        # консервативно (реально ~2.1 на логах) — краще недобрати, ніж 400
                 OUTPUT_RESERVE_TOK = 1024  # короткий JSON-вердикт; із запасом
-                fixed_chars = len(instruction) + len(assets) + 3200  # 3200 ≈ константна рубрика/boilerplate промпту
-                max_chars = max(500, int((ctx - OUTPUT_RESERVE_TOK) * CHARS_PER_TOK) - fixed_chars)
+                # Розмір усього промпту без логів міряємо точно — порожнім рендером,
+                # а не магічною константою: хедер і рубрика правляться, константа дрейфує
+                # і тихо з'їдає бюджет логів (або віддає llama.cpp 400 exceed_context_size_error).
+                header = EVIDENCE_HEADER_SHORT
+                overhead = len(render("", header))
+                max_chars = max(500, int((ctx - OUTPUT_RESERVE_TOK) * CHARS_PER_TOK) - overhead)
             elif p == "ollama":
+                header = EVIDENCE_HEADER_FULL
                 max_chars = int((MODELS_MAX_CTX.get(model, 32768) - 4096) * 3.5)
             else:
+                header = EVIDENCE_HEADER_FULL
                 max_chars = 2000000
-            logs_text = str(events)[:max_chars]
+            return render(str(events)[:max_chars], header)
 
-            return (
-                "You are an expert Tier-2 SOC analyst. "
-                f"Context: QRadar triggered an offense named '{details['offense_name']}'. "
-                "However, SIEM rules often generate False Positives due to normal administrative tasks, "
-                "misconfigurations, or routine network traffic. Your primary job is to act as a filter.\n\n"
-                f"Task: {instruction}\n\n"
-                f"{assets}"
-                f"--- START OF LOGS ---\n{logs_text}\n--- END OF LOGS ---\n\n"
-                "Based ONLY on the logs above, return a valid JSON object with keys "
-                "'score', 'verdict', 'explanation', and optionally 'mitigated'.\n\n"
-                "CRITICAL RULES FOR JSON:\n"
-                "1. 'score' must be a float between 0.0 and 1.0 based on the rubric below.\n"
-                "2. 'verdict' must be a short category string.\n"
-                "3. 'explanation' MUST BE EXTREMELY CONCISE. Strictly 1 short sentence, maximum 15 words. Do not write long paragraphs.\n"
-                "4. 'mitigated' (boolean, default false): set TRUE for a real/suspicious action that was FULLY BLOCKED, "
-                "DENIED, DROPPED or FAILED with NO successful outcome and no sign of an already-compromised internal asset "
-                "(e.g. an external IP whose scan or brute-force the firewall denied, or repeated auth failures with ZERO "
-                "successes). A true value CLOSES the offense while KEEPING any existing block in place (it does NOT unblock "
-                "the source). This is the correct, expected outcome for the high-volume 'real but already-stopped' case — "
-                "PREFER mitigated:true over a 0.7+ score whenever the threat was contained and no internal host needs action. "
-                "Leave it false ONLY when there is a successful/allowed connection, a real un-blocked consequence, or an "
-                "internal host that itself needs remediation.\n\n"
-                "CRITICAL SCORING RUBRIC for 'score' (float 0.0 to 1.0):\n"
-                "- 0.0 to 0.3: CLEAR FALSE POSITIVE. Routine administrative behavior, benign traffic, or no evidence of successful malicious action.\n"
-                "- 0.4 to 0.6: SUSPICIOUS BUT INCONCLUSIVE. Anomalous behavior without clear evidence of intent or impact.\n"
-                "- 0.7 to 0.8: HIGHLY SUSPICIOUS with a REAL, UN-BLOCKED consequence (a successful/allowed connection, lateral "
-                "movement, data egress). If the suspicious activity was blocked/denied/failed, it does NOT belong here — use "
-                "mitigated:true instead.\n"
-                "- 0.9 to 1.0: CONFIRMED COMPROMISE. Clear evidence of successful attack, data exfiltration, or unauthorized access.\n\n"
-                "ANTI-DEFAULT RULE: a score of 0.7+ pages a human analyst. Do NOT pick 0.7-0.8 because you are uncertain — "
-                "uncertainty WITHOUT a concrete un-blocked consequence is the 0.4-0.6 band (auto-closes) or, if the threat was "
-                "contained, mitigated:true. Use the EXACT verdict string defined in the TASK above; never emit a generic band "
-                "name such as 'Highly Suspicious' as the verdict.\n\n"
-                "If INTERNAL ASSET CONTEXT is provided above, weigh it: traffic matching an asset's expected role "
-                "(e.g., LDAP traffic to a 'LDAP Servers' IP) lowers the score; out-of-role behavior "
-                "(e.g., a 'Database Servers' IP making outbound web traffic) raises it.\n\n"
-                "Do NOT default to a high score just because an offense was triggered. Be highly skeptical. "
-                "Output ONLY the JSON object."
-            )
 
         prompt = build_prompt(provider, active_model, raw_events, asset_block)
 

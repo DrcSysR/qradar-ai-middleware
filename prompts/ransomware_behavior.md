@@ -14,17 +14,9 @@ filter, so do not re-argue those; judge only what is in front of you.
 Each row: `Host` (workstation), `Proc` + `Proc_Path` (what acted), `Activity`
 (Process Create / FileCreate / RegistryEvent), `Acct`, `Events` (volume).
 
-**How to read the evidence — two traps that have already produced wrong verdicts:**
-- `Host` is the QRadar **log-source name**, not the machine's role. It usually looks like
-  `WindowsAuthServer @ cns130.modern.org` — `WindowsAuthServer` is the name of the DSM that
-  parses Windows events on EVERY Windows box in the estate. It does NOT mean the machine is a
-  domain controller or an authentication server. Never write "on an authentication server" or
-  "on critical infrastructure" because of that prefix; the machine is a workstation unless the
-  events themselves prove otherwise.
-- `Proc_Path` is **empty for almost every RegistryEvent row** — Sysmon does not populate that
-  property for registry writes. An empty path is NOT "an unknown path" and NOT "a user-writable
-  path". Never escalate because the path column is blank; when it is blank, judge by process
-  name and by what was written.
+Here every `Host` is an ordinary workstation, and `Proc_Path` is empty on virtually every
+RegistryEvent row — see HOW TO READ THE EVIDENCE above. When the path is blank, judge by the
+process name and by what was written.
 
 **FIRST CHECK — is this one of the named benign forms?** Go through this list BEFORE anything
 else. If the row matches ANY of these, it is benign: score 0.1-0.3, verdict from the whitelist
