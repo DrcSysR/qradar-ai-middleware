@@ -104,6 +104,24 @@ def offense_matches(rule_keys, description, rule_names=None) -> bool:
     return False
 
 
+def matched_rule_key(rule_keys, description, rule_names=None) -> str | None:
+    """Перший зматчений ключ (у пріоритеті опис → назви правил-учасників) або None.
+
+    Те саме рішення, що й offense_matches, але повертає САМ ключ — поллеру він потрібен
+    як «юзкейс, до якого належить офенс», щоб роздавати квоту рану по юзкейсах, а не
+    брати перші N підряд. Порядок перебору ключів усередині одного тексту збігається з
+    _match_all_configs (порядок prompts.json), тож поллер і app.py вважають головним
+    один і той самий юзкейс."""
+    for text in _iter_match_texts(description, rule_names):
+        tl = (text or "").lower()
+        if not tl:
+            continue
+        for key in rule_keys:
+            if key.lower() in tl:
+                return key
+    return None
+
+
 def _resolve_config(config) -> tuple[str, str | None, str, str | None]:
     """Розпарсити елемент мапінгу: рядок або список
     [filename, assignee, aql_file, refset_cleanup, close_on_empty].

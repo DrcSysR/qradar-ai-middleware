@@ -9,7 +9,7 @@ import sys
 import sqlite3
 from concurrent.futures import ThreadPoolExecutor, as_completed
 
-from prompts_loader import get_rule_keys, offense_matches
+from prompts_loader import get_rule_keys, matched_rule_key
 
 # --- НАЛАШТУВАННЯ ---
 LOOKBACK_TIME_MS = 48 * 60 * 60 * 1000  # 48 годин: страховка, щоб офенси, пропущені під час бурсту, не гинули поза вікном (deep/manual режим бере 7 днів через AQL time_depth)
@@ -93,7 +93,8 @@ logging.info(f"Шукаємо офенси за останні 24 години (
 
 # Запитуємо тільки відкриті інциденти, створені після search_start_time
 # fields=...,rules — потрібні назви правил-учасників для матчингу за іменем правила
-url = f"{QRADAR_API}/siem/offenses?fields=id,description,rules&filter=status%3D%22OPEN%22%20and%20start_time%3E{search_start_time}"
+# fields=...,start_time — потрібен для сортування «найстаріші вперед» усередині юзкейсу
+url = f"{QRADAR_API}/siem/offenses?fields=id,description,rules,start_time&filter=status%3D%22OPEN%22%20and%20start_time%3E{search_start_time}"
 
 rules_map = get_rules_map()
 
@@ -108,14 +109,28 @@ try:
         consecutive_conn_errors = 0
         MAX_CONSECUTIVE_CONN_ERRORS = 3  # Якщо middleware не відповідає N разів поспіль — припиняємо цикл, наступний фаєр спробує знову
 
-        # --- Відбір кандидатів (дешево: перевірка в SQLite, далі API-перевірка нотатки) ---
-        candidates = []
+        # --- Відбір кандидатів: квота рану по юзкейсах ---
+        #
+        # Було: «перші MAX_OFFENSES_PER_RUN, що зматчились». QRadar віддає офенси
+        # НАЙНОВІШИМИ ВПЕРЕД, тож при насиченні це LIFO — поллер щоразу перемелює голову
+        # списку, а хвіст доживає до краю 48-год вікна й гине нерозібраним. Виміряно
+        # 27.08.2026: 847 офенсів у вікні, ліміт вибирався за 8 с на позиції 101, а перший
+        # офенс юзкейсу «Endpoint Administration» стояв на позиції 162 — тобто 125 офенсів
+        # цього типу не могли потрапити в обробку в принципі, скільки б ранів не пройшло.
+        # Один генератор обсягу (rogue-IP bruteforce) забирав 34 місця зі 100.
+        #
+        # Стало, два правила:
+        #   1) КРУГОВА РОЗДАЧА по юзкейсах — беремо по одному офенсу з кожного зматченого
+        #      ключа по колу. Жоден гучний юзкейс не з'їдає ран; фіксованої квоти на ключ
+        #      не задаємо — частка сама масштабується від кількості присутніх юзкейсів.
+        #   2) УСЕРЕДИНІ ЮЗКЕЙСУ — НАЙСТАРІШІ ВПЕРЕД. 48-год вікно це дедлайн, а не
+        #      уподобання: свіжий офенс буде у вікні й наступного рану, старий — ні.
+        #      Тому черга сортується за наближенням до вильоту з вікна.
+        #
+        # has_ai_note — це API-виклик на офенс, тому робимо його ЛИШЕ на момент, коли
+        # офенс реально беруть у ран (як і раніше), а не на всі 800 кандидатів.
+        buckets = {}
         for off in offenses:
-            if len(candidates) >= MAX_OFFENSES_PER_RUN:
-                logging.info(f"⚠️ Досягнуто ліміт ({MAX_OFFENSES_PER_RUN}).")
-                hit_limit = True
-                break
-
             off_id = int(off["id"])
             desc = off.get("description", "")
             rule_names = [rules_map.get(r.get("id"), "") for r in off.get("rules", [])]
@@ -124,13 +139,53 @@ try:
             if is_processed_in_db(off_id):
                 continue
 
-            # 2. Перевірка за описом офенсу АБО назвою правила-учасника
-            if offense_matches(target_rules, desc, rule_names):
-                # 3. Надійна перевірка через API (якщо в QRadar вже є нотатка, але БД була видалена)
-                if not has_ai_note(off_id):
+            # 2. Матчинг за описом офенсу АБО назвою правила-учасника
+            key = matched_rule_key(target_rules, desc, rule_names)
+            if key is None:
+                continue
+            buckets.setdefault(key, []).append((off.get("start_time") or 0, off_id))
+
+        for key in buckets:
+            buckets[key].sort()  # найстаріші вперед: у них найменше часу до вильоту з вікна
+
+        candidates = []
+        skipped_noted = 0
+        # Порядок обходу — від найбільшого юзкейсу до найменшого, лише щоб він був
+        # детермінований; на саму частку це не впливає, роздача все одно кругова.
+        order = sorted(buckets, key=lambda k: (-len(buckets[k]), k))
+        pos = {k: 0 for k in buckets}
+        taken = {k: 0 for k in buckets}
+
+        while len(candidates) < MAX_OFFENSES_PER_RUN:
+            took_any = False
+            for key in order:
+                if len(candidates) >= MAX_OFFENSES_PER_RUN:
+                    break
+                lst = buckets[key]
+                i = pos[key]
+                while i < len(lst):
+                    off_id = lst[i][1]
+                    i += 1
+                    # 3. Надійна перевірка через API (якщо в QRadar вже є нотатка, але БД була видалена)
+                    if has_ai_note(off_id):
+                        skipped_noted += 1
+                        continue
                     candidates.append(off_id)
-                else:
-                    logging.info(f"ℹ️ Офенс {off_id} вже має нотатку від AI. Пропускаємо.")
+                    taken[key] += 1
+                    took_any = True
+                    break
+                pos[key] = i
+            if not took_any:
+                break  # усі черги вичерпані
+
+        if skipped_noted:
+            logging.info(f"ℹ️ Пропущено {skipped_noted} офенсів — уже мають нотатку від AI.")
+        if len(candidates) >= MAX_OFFENSES_PER_RUN:
+            hit_limit = True
+            logging.info(f"⚠️ Досягнуто ліміт ({MAX_OFFENSES_PER_RUN}).")
+        if buckets:
+            shape = ", ".join(f"{k[:28]} {taken[k]}/{len(buckets[k])}" for k in order[:8])
+            logging.info(f"📊 Квота рану (взято/у вікні), топ-8 юзкейсів: {shape}")
 
         # --- Обробка: паралельно ---
         # Раніше офенси йшли строго по одному, і ран упирався в час інференсу: ~30 с на офенс
