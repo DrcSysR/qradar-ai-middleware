@@ -1,0 +1,96 @@
+SELECT
+    LOGSOURCENAME(logsourceid) AS Host,
+    "Process Name" AS Proc,
+    "Process Path" AS Proc_Path,
+    QIDNAME(qid) AS Activity,
+    username AS Acct,
+    COUNT(*) AS Events
+FROM events
+WHERE
+    INOFFENSE({offense_id})
+    -- Беремо ЛИШЕ події Custom Rule Engine: саме вони несуть "Process Name" + "Process Path"
+    -- процесу, на якому правило зійшлося. Сирі Sysmon-події офенсу (Process Create,
+    -- File Delete, RegistryEvent) дублюють той самий процес десятками рядків без нової
+    -- інформації і з'їдають бюджет промпта.
+    -- Свідомо НЕ звужуємо до самого 'Endpoint Administration': офенс часто композитний, і
+    -- поруч ідуть CRE-події інших правил ('Potential Exfiltration of Stored Credentials from
+    -- Browsers' — 30 офенсів, 'Potential Initial Access Task' — 14). Ті правила ще не мають
+    -- власного юзкейсу, тож якби ми лишили тільки свою подію, close_on_empty закрив би офенс,
+    -- а їхні докази не побачила б жодна модель. Беремо всі CRE — фільтр шляхів нижче
+    -- однаково відсіє бенін.
+    AND LOGSOURCETYPENAME(devicetype) = 'Custom Rule Engine'
+    -- ФІЛЬТР БЕНІН-ФОРМ. Правило IBM «Suspicious Activity Followed by Endpoint Administration
+    -- Task» — поведінкове й спрацьовує на будь-якому софті, що робить «адміністративну» дію
+    -- після «підозрілої». Виміряно 27.08.2026: 641 відкритий офенс, рівно ОДИН на хост,
+    -- по всьому парку — OneDrive, WPS Office, 1С, Chrome/Opera, AMD Radeon, HP Support
+    -- Assistant, Xerox/Epson, Autodesk, SOLIDWORKS PDM, Adobe, CrowdStrike, Cortex XDR,
+    -- сервісні таски System32. Жодного істинного спрацювання не знайдено.
+    --
+    -- Тому інвертуємо логіку: не перелічуємо сотні легітимних застосунків (хвіст надто
+    -- довгий), а лишаємо рядок, тільки якщо він справді вартий погляду —
+    --   (a) LOLBin за іменем, АБО
+    --   (b) процес НЕ з довіреного місця встановленого софту.
+    --
+    -- Рядки з порожнім "Process Path" знімаємо цілком, ДО обох гілок. Виміряно: це майже
+    -- весь залишок (cmd.exe / powershell.exe без шляху), і в них нема ЖОДНОГО доказу —
+    -- ні звідки стартував процес, ні командного рядка. Справжні LOLBin-сценарії ловлять
+    -- профільні юзкейси (remote_thread_injection, rundll32_outbound, ransomware_behavior,
+    -- compromised_host_cascade) на своїй, повноцінній телеметрії.
+    -- УВАГА: у патернах НЕ використовуємо зворотні слеші — AQL їх не екранує.
+    AND "Process Path" IS NOT NULL
+    AND (
+        -- (a) LOLBin / adminware, але ТІЛЬКИ поза своєю штатною домівкою. rundll32 і
+        -- powershell із System32 — це нормальний стан речей і найгучніший рядок у вибірці
+        -- (їхні реальні сценарії веде rundll32_outbound / compromised_host_cascade).
+        -- Цінне тут інше: системний бінар, СКОПІЙОВАНИЙ у папку застосунку. Такий шлях
+        -- часто «довірений» за гілкою (b), тож без цієї гілки маскарад пройшов би повз.
+        (
+        NOT ("Process Path" ILIKE '%Windows%System32%'
+             OR "Process Path" ILIKE '%Windows%SysWOW64%'
+             OR "Process Path" ILIKE '%Program Files%PowerShell%')
+        AND (
+        "Process Name" ILIKE 'powershell.exe' OR "Process Name" ILIKE 'pwsh.exe'
+        OR "Process Name" ILIKE 'cmd.exe' OR "Process Name" ILIKE 'wscript.exe'
+        OR "Process Name" ILIKE 'cscript.exe' OR "Process Name" ILIKE 'mshta.exe'
+        OR "Process Name" ILIKE 'rundll32.exe' OR "Process Name" ILIKE 'regsvr32.exe'
+        OR "Process Name" ILIKE 'certutil.exe' OR "Process Name" ILIKE 'bitsadmin.exe'
+        OR "Process Name" ILIKE 'schtasks.exe' OR "Process Name" ILIKE 'sc.exe'
+        OR "Process Name" ILIKE 'net.exe' OR "Process Name" ILIKE 'net1.exe'
+        OR "Process Name" ILIKE 'wmic.exe' OR "Process Name" ILIKE 'at.exe'
+        OR "Process Name" ILIKE 'reg.exe' OR "Process Name" ILIKE 'psexec%'
+        OR "Process Name" ILIKE 'vssadmin.exe' OR "Process Name" ILIKE 'wbadmin.exe'
+        OR "Process Name" ILIKE 'bcdedit.exe' OR "Process Name" ILIKE 'msbuild.exe'
+        OR "Process Name" ILIKE 'installutil.exe' OR "Process Name" ILIKE 'odbcconf.exe'
+        OR "Process Name" ILIKE 'mofcomp.exe'
+        )
+        )
+        -- (b) поза довіреними місцями
+        OR NOT (
+            "Process Path" ILIKE '%Program Files%'
+            OR "Process Path" ILIKE '%PROGRA~%'   -- 8.3-скорочення Program Files, SOLIDWORKS пише саме так
+            OR "Process Path" ILIKE '%WindowsApps%'
+            OR "Process Path" ILIKE '%Windows%SystemApps%'
+            OR "Process Path" ILIKE '%Windows%System32%'
+            OR "Process Path" ILIKE '%Windows%SysWOW64%'
+            OR "Process Path" ILIKE '%Windows%servicing%'
+            OR "Process Path" ILIKE '%Windows%SystemTemp%'
+            OR "Process Path" ILIKE '%Microsoft.NET%'
+            -- per-user інсталяції штатного парку софту
+            OR "Process Path" ILIKE '%AppData%Local%Microsoft%OneDrive%'
+            OR "Process Path" ILIKE '%AppData%Local%Microsoft%Edge%'
+            OR "Process Path" ILIKE '%AppData%Local%Microsoft%Teams%'
+            OR "Process Path" ILIKE '%AppData%Local%Google%'
+            OR "Process Path" ILIKE '%AppData%Local%Programs%Opera%'
+            OR "Process Path" ILIKE '%AppData%Local%Viber%'
+            OR "Process Path" ILIKE '%kingsoft%'
+            OR "Process Path" ILIKE '%AppData%Local%Packages%'
+            OR "Process Path" ILIKE '%AppData%Local%Programs%'
+            OR "Process Path" ILIKE '%AnthropicClaude%'
+            OR "Process Path" ILIKE '%anthropic%claude-code%'
+            OR "Process Path" ILIKE '%Users%.local%bin%claude.exe%'
+            OR "Process Path" ILIKE '%node_modules%'
+        )
+    )
+GROUP BY Host, Proc, Proc_Path, Activity, Acct
+ORDER BY Events DESC
+LIMIT {limit} {time_depth}

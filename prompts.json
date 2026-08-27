@@ -45,7 +45,9 @@
     "UC-ME Network C2 Beaconing": [
         "67503542.md",
         "sergii.legerko",
-        "67503542.aql"
+        "67503542.aql",
+        "",
+        "close_on_empty"
     ],
     "UC-ME-PA Threat categories monitoring R2L": [
         "67501443.md",
@@ -187,6 +189,13 @@
         "ransomware_behavior.md",
         "sergii.legerko",
         "ransomware_behavior.aql",
+        "",
+        "close_on_empty"
+    ],
+    "Suspicious Activity Followed by Endpoint Administration": [
+        "endpoint_admin_task.md",
+        "sergii.legerko",
+        "endpoint_admin_task.aql",
         "",
         "close_on_empty"
     ],

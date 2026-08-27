@@ -45,6 +45,22 @@ WHERE
              AND ("Process Path" IS NULL OR "Process Path" ILIKE '%System32%'))
     AND NOT ("Process Name" ILIKE 'CompatTelRunner.exe'
              AND ("Process Path" IS NULL OR "Process Path" ILIKE '%System32%'))
+    -- Claude (десктоп-застосунок і Claude Code CLI): ~20 робочих станцій, кожен інстанс
+    -- per-user. Подія-тригер тут — «A process changed a file creation time», і саме на ній
+    -- Sysmon шляху НЕ дає, тому NULL приймаємо (як в OneDrive вище). Виміряно 27.08.2026:
+    -- чотири форми встановлення, усі під профілем користувача. Підроблений claude.exe із
+    -- Temp/ProgramData має непорожній шлях, під жоден патерн не підпадає і лишається видимим.
+    AND NOT ("Process Name" ILIKE 'claude.exe'
+             AND ("Process Path" IS NULL
+                  OR "Process Path" ILIKE '%AnthropicClaude%'          -- десктоп-застосунок
+                  OR "Process Path" ILIKE '%anthropic-ai%claude-code%' -- npm / nvm
+                  OR "Process Path" ILIKE '%anthropic.claude-code%'    -- розширення VS Code
+                  OR "Process Path" ILIKE '%Claude%claude-code%'       -- AppData Roaming Claude і MS Store
+                  OR "Process Path" ILIKE '%Users%.local%bin%claude.exe%'))
+    -- Squirrel-апдейтер десктопного Claude. Ім'я Update.exe носять десятки застосунків і
+    -- чимало малварі, тож NULL тут НЕ приймаємо — тільки явний шлях під AnthropicClaude.
+    AND NOT ("Process Name" ILIKE 'Update.exe'
+             AND "Process Path" ILIKE '%AnthropicClaude%')
 GROUP BY Host, Proc, Proc_Path, Activity, Acct
 ORDER BY Events DESC
 LIMIT {limit} {time_depth}

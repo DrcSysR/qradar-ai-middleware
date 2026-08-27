@@ -8,8 +8,9 @@ proves nothing.
 
 The AQL has ALREADY removed the known-benign maintenance software by process+path pair:
 OneDrive sync/setup, Microsoft Edge and EdgeUpdate, the Chrome updater in SystemTemp,
-1C (1cv8), Viber, CrowdStrike Falcon, OCS Inventory. Anything you are shown survived that
-filter, so do not re-argue those; judge only what is in front of you.
+1C (1cv8), Viber, CrowdStrike Falcon, OCS Inventory, Claude desktop and Claude Code.
+Anything you are shown survived that filter, so do not re-argue those; judge only what is in
+front of you.
 
 Each row: `Host` (workstation), `Proc` + `Proc_Path` (what acted), `Activity`
 (Process Create / FileCreate / RegistryEvent), `Acct`, `Events` (volume).
@@ -49,6 +50,18 @@ below, and do NOT let a second row in the same offense drag it up.
    write is a finding only when the target binary is unsigned, randomly named, or sits in
    `Temp` / `Downloads` / `Users\Public` — not when a browser points the key at itself.
    `Benign_Software_Maintenance`.
+
+8. **Claude desktop / Claude Code** — `claude.exe` changing file creation times, creating files
+   or writing registry values. It is deployed per-user on ~20 workstations and installs into
+   the user profile by design; the four legitimate shapes are
+   `AppData\Local\AnthropicClaude\app-<ver>\claude.exe` (desktop, with its `Update.exe`),
+   `...\node_modules\@anthropic-ai\claude-code\bin\claude.exe` (npm/nvm),
+   `...\.vscode\extensions\anthropic.claude-code-*\resources\native-binary\claude.exe`, and
+   `AppData\Roaming\Claude\claude-code\<ver>\claude.exe`. A user-profile path is NORMAL for
+   this tool and is not "execution from a user-writable path" in the sense of the escalation
+   list below. `Benign_Software_Maintenance`. This stops applying the moment `claude.exe` runs
+   from `Temp`, `Downloads`, `ProgramData`, `Users\Public` or a System32-adjacent path — a
+   binary borrowing the name from somewhere else is exactly what masquerading looks like.
 
 Allowed benign verdict strings: `Benign_Software_Maintenance`, `Benign_System_Activity`.
 

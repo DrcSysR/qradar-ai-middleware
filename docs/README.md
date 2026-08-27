@@ -12,6 +12,9 @@ AI-тріаж офенсів QRadar: сервіс читає офенс, під�
 
 | Дата | Запис |
 |---|---|
+| 2026-08-27 | [юзкейс «Suspicious Activity Followed by Endpoint Administration Task»](changes/2026-08-27-endpoint-admin-task-usecase.md) |
+| 2026-08-27 | [FP у черзі: claude.exe і «C2-беконінг» відеоспостереження](changes/2026-08-27-fp-claude-exe-ta-cctv-c2.md) |
+| 2026-08-27 | [лід по DRT07 закрито — бенін](changes/2026-08-27-drt07-lead-zakryto.md) |
 | 2026-08-26 | [UC-06-1: FIRST CHECK проти хибних multi-stage compromise](changes/2026-08-26-uc06-firstcheck-fp.md) |
 | 2026-08-26 | [File Decode: FIRST CHECK, читання доказів і бенін-фільтр](changes/2026-08-26-file-decode-firstcheck.md) |
 | 2026-08-27 | [Спільний хедер «як читати докази» для всіх юзкейсів](changes/2026-08-27-header-chytannya-dokaziv.md) |

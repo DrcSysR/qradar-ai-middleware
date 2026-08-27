@@ -1,6 +1,7 @@
-SELECT 
-    destinationip AS Target_IP, 
-    destinationport AS Port, 
+SELECT
+    sourceip AS Src_IP,
+    destinationip AS Target_IP,
+    destinationport AS Port,
     "Application" AS App, 
     "Web Category" AS Category, 
     COUNT(*) AS Beacon_Count,
@@ -18,8 +19,18 @@ WHERE
         'ms-update','dns-base','dns-over-https','dns-over-tls','ntp-base','quic-base',
         'ping','teredo','telegram-base','whatsapp-base','whatsapp-web','facebook-base',
         'instagram-base','tiktok-base','icloud-base','crowdstrike',
-        'traps-management-service','zabbix'
+        'traps-management-service','zabbix',
+        -- Моніторинг і відеоспостереження. Виміряно 27.08.2026: SNMP-полінг віддалених
+        -- майданчиків із 172.17.61.230 і Hikvision-потоки з NVR/пультів охорони давали
+        -- 'Active_C2_Beaconing' 0.95. Це той самий клас шуму, що ping/zabbix вище.
+        -- 'insufficient-data' СВІДОМО не виключаємо — там же живе і справжній C2,
+        -- відео-шаблон розбирає FIRST CHECK у промпті.
+        'hikvision-svr','rtsp','rtp-base','rtcp'
     )
-GROUP BY destinationip, destinationport, "Application", "Web Category"
+    -- SNMP через IN не ловиться: PA дає щонайменше snmpv2-get-request і
+    -- snmpv2-get-bulk-request, плюс trap/v1/v3. Перевірено на офенсі 1255873 — точний
+    -- перелік пропустив саме bulk-варіант. Тому префіксом.
+    AND NOT ("Application" ILIKE 'snmp%')
+GROUP BY sourceip, destinationip, destinationport, "Application", "Web Category"
 ORDER BY Beacon_Count DESC
 LIMIT {limit} {time_depth}
