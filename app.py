@@ -474,6 +474,25 @@ async def ask_ollama(client: httpx.AsyncClient, model: str, prompt: str, timeout
         _to_bool(parsed_json.get("mitigated", False))
     )
 
+def describe_provider_error(e: Exception) -> str:
+    """Текст помилки провайдера РАЗОМ із тілом відповіді.
+
+    `httpx.HTTPStatusError.__str__` дає лише рядок статусу й URL. Через це помилка
+    llm01 `500 {"message":"Context size has been exceeded."}` три доби писалась у лог
+    як безлике «Server error '500 Internal Server Error'», масовий fallback на Vertex
+    виглядав штатним — і причина знайшлась лише тоді, коли запит відтворили руками.
+    Тіло відповіді тут — єдине, що відрізняє «провайдер зламаний» від «промпт завеликий».
+    """
+    body = ""
+    resp = getattr(e, "response", None)
+    if resp is not None:
+        try:
+            body = " ".join(resp.text.split())[:300]
+        except Exception:
+            body = ""
+    return f"{type(e).__name__}: {e}" + (f" | відповідь: {body}" if body else "")
+
+
 async def ask_openai(client: httpx.AsyncClient, model: str, prompt: str, timeout: float = 600.0) -> tuple[float, str, str, bool]:
     # llm01 (llama.cpp, OpenAI-сумісний /v1). response_format=json_object → строгий JSON.
     # Слово "json" уже присутнє у промпті (вимога OpenAI-формату), тож режим спрацьовує.
@@ -873,27 +892,44 @@ async def universal_analysis(payload: UniversalTrigger):
 
         used_provider = provider
         used_fallback = False
-        try:
-            score, verdict, explanation, mitigated = await call_provider(provider, active_model, prompt)
-        except Exception as primary_err:
+        # Повтор на ТОМУ Ж провайдері перед тим, як віддавати офенс кудись іще. Частина
+        # відмов tier-1 транзитна (усі слоти llm01 зайняті сусідніми запитами поллера), і
+        # раніше кожна така дрібниця одразу оплачувалась запитом у Vertex. Пауза між
+        # спробами дає слоту звільнитись.
+        attempts = 1 + max(0, int(APP_CONFIG.get("provider_retries", 1)))
+        primary_err = None
+        for attempt in range(1, attempts + 1):
+            try:
+                score, verdict, explanation, mitigated = await call_provider(provider, active_model, prompt)
+                primary_err = None
+                break
+            except Exception as err:
+                primary_err = err
+                if attempt < attempts:
+                    logging.warning(
+                        f"↻ Provider {provider} ({active_model}) спроба {attempt}/{attempts} "
+                        f"невдала для офенсу {payload.offense_id}: {describe_provider_error(err)}"
+                    )
+                    await asyncio.sleep(float(APP_CONFIG.get("provider_retry_delay_seconds", 3)))
+        if primary_err is not None:
             if fallback_active:
                 fb_model = model_for(fallback_provider)
-                logging.warning(f"⚠️ Provider {provider} ({active_model}) failed for offense {payload.offense_id}: {primary_err}. Fallback → {fallback_provider} ({fb_model}).")
+                logging.warning(f"⚠️ Provider {provider} ({active_model}) failed for offense {payload.offense_id}: {describe_provider_error(primary_err)}. Fallback → {fallback_provider} ({fb_model}).")
                 try:
                     fb_prompt = build_prompt(fallback_provider, fb_model, raw_events, asset_block)
                     score, verdict, explanation, mitigated = await call_provider(fallback_provider, fb_model, fb_prompt)
                     used_provider = fallback_provider
                     used_fallback = True
                 except Exception as fb_err:
-                    logging.error(f"AI fallback ({fallback_provider}) also failed: {fb_err}")
+                    logging.error(f"AI fallback ({fallback_provider}) also failed: {describe_provider_error(fb_err)}")
                     with sqlite3.connect(DB_PATH) as conn:
                         conn.execute("UPDATE offenses SET status = 'AI_ERROR', last_updated = CURRENT_TIMESTAMP WHERE offense_id = ?", (payload.offense_id,))
-                    return {"status": "error", "message": f"AI failed: primary={provider}:{primary_err}; fallback={fallback_provider}:{fb_err}"}
+                    return {"status": "error", "message": f"AI failed: primary={provider}:{describe_provider_error(primary_err)}; fallback={fallback_provider}:{describe_provider_error(fb_err)}"}
             else:
-                logging.error(f"AI Provider ({provider}) error: {primary_err}")
+                logging.error(f"❌ Провайдер {provider} ({active_model}) не відповів після {attempts} спроб для офенсу {payload.offense_id}: {describe_provider_error(primary_err)}. Fallback вимкнено — офенс лишається відкритим, поллер перезабере його наступного рану.")
                 with sqlite3.connect(DB_PATH) as conn:
                     conn.execute("UPDATE offenses SET status = 'AI_ERROR', last_updated = CURRENT_TIMESTAMP WHERE offense_id = ?", (payload.offense_id,))
-                return {"status": "error", "message": f"AI analysis failed: {str(primary_err)}"}
+                return {"status": "error", "message": f"AI analysis failed: {describe_provider_error(primary_err)}"}
 
         provider_label = f"{used_provider.upper()} [fallback]" if used_fallback else used_provider.upper()
 

@@ -12,6 +12,7 @@ AI-тріаж офенсів QRadar: сервіс читає офенс, під�
 
 | Дата | Запис |
 |---|---|
+| 2026-08-28 | [Vertex лише на ескалації: повтор tier-1 + видиме тіло помилки](changes/2026-08-28-b-vertex-lyshe-na-eskalatsiyi.md) |
 | 2026-08-28 | [llm01: спільний KV-кеш зʼїдав tier-1 (83% відмов) + конкурентність поллера](changes/2026-08-28-llm01-kontekst-ta-konkurentnist.md) |
 | 2026-08-27 | [квота рану поллера по юзкейсах](changes/2026-08-27-kvota-ranu-pollera.md) |
 | 2026-08-27 | [юзкейс «Suspicious Activity Followed by Endpoint Administration Task»](changes/2026-08-27-endpoint-admin-task-usecase.md) |

@@ -53,6 +53,11 @@ SCHEMA = {
     "timeout_seconds":                (NUM,  600),
     "ollama_timeout_seconds":         (NUM,  600),
     "openai_timeout_seconds":         (NUM,  600),
+    # Повтори на ТОМУ Ж провайдері перед тим, як віддавати офенс у fallback або лишати
+    # його з AI_ERROR. Транзитні відмови tier-1 (зайняті слоти llm01) інакше одразу
+    # оплачуються запитом у Vertex — саме так у серпні 2026 назбирався рахунок.
+    "provider_retries":               (int,  1),
+    "provider_retry_delay_seconds":   (NUM,  3),
     # Дедлайн полінгу Ariel. Пошук, що не встиг, скасовується → AQL_ERROR → офенс
     # лишається відкритим і буде переаналізований, а воркер не висить.
     "aql_poll_timeout_seconds":       (NUM,  180),

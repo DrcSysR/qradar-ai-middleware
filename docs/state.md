@@ -43,7 +43,8 @@ QRadar offenses API ──► poller.py (кожні 10 хв, вікно 48 го�
                           ├─ порожній без прапорця → NO_EVENTS, офенс лишається відкритим
                           ├─ AQL не виконався → AQL_ERROR, офенс лишається відкритим
                           ▼
-             tier-1 (llm01) ──score > escalate_threshold──► tier-2 (Vertex, вікно 168 год)
+             tier-1 (llm01, повтор provider_retries) ──score > escalate_threshold──► tier-2 (Vertex, 168 год)
+             tier-1 не відповів → AI_ERROR, офенс лишається відкритим (Vertex НЕ підхоплює)
                           ▼
      вердикт → нотатка в офенс + одне з: close / assign / залишити відкритим
                           └─ FP + налаштований refset → DELETE IP із блок-листа
@@ -170,6 +171,7 @@ health, при провалі відкатує. Негайно — `./deploy.sh`
 
 ## 8. Історія змін
 
+- [2026-08-28 — Vertex лише на ескалації: повтор tier-1 + видиме тіло помилки](changes/2026-08-28-b-vertex-lyshe-na-eskalatsiyi.md)
 - [2026-08-28 — llm01: спільний KV-кеш зʼїдав tier-1 + конкурентність поллера](changes/2026-08-28-llm01-kontekst-ta-konkurentnist.md)
 - [2026-08-27 — квота рану поллера по юзкейсах](changes/2026-08-27-kvota-ranu-pollera.md)
 - [2026-08-27 — юзкейс «Suspicious Activity Followed by Endpoint Administration Task»](changes/2026-08-27-endpoint-admin-task-usecase.md)
