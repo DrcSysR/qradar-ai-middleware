@@ -5,9 +5,20 @@ __pycache__/
 
 # Логи та файли стану (Runtime)
 *.log
+*.log.[0-9]
+*.log.[0-9].gz
 *.lock
 processed_offenses.txt
 last_run_time.txt
+# SQLite-стан на проді. Без цього ротовані логи й БД лишались нетрекованими, і
+# ./deploy.sh (він відмовляється деплоїти з брудним деревом) на mdlwr01 не працював —
+# доводилось чекати cron-autoupdate. Виявлено 2026-08-28.
+ai_state.db
+ai_state.db-shm
+ai_state.db-wal
+# Бекапи конфігу: *.json уже ігнорується, але .bak-суфікс виводить їх з-під шаблону
+config.json.bak*
+config.json.bad
 
 # Секретні ключі та конфігурації з токенами
 *.json
