@@ -821,14 +821,27 @@ async def universal_analysis(payload: UniversalTrigger):
                 "2. An empty field means 'not mapped by the parser', never 'unknown' and never 'suspicious'. "
                 "Sysmon does not populate Process Path on registry events, and QRadar leaves username, path or "
                 "port blank for many event types. A blank path is NOT a user-writable path and NOT an unknown "
-                "path — never raise the score because a column is empty.\n\n"
+                "path — never raise the score because a column is empty.\n"
+                "3. Byte counts decide DIRECTION, and direction decides whether a transfer can be exfiltration "
+                "at all. `Bytes_Sent` is what OUR host pushed out; `Bytes_Received` is what it pulled in. "
+                "`Bytes_Received` clearly exceeding `Bytes_Sent` is a DOWNLOAD — a vendor data feed, an update, "
+                "a file fetched from a supplier — and a download is NEVER exfiltration, however cleartext the "
+                "protocol (FTP, HTTP, TFTP) or however unfamiliar the peer. Exfiltration is upload-heavy by "
+                "definition. State which way the bytes went before you use the word.\n"
+                "4. A composite offense carries rows from SEVERAL contributing rules, so you will see evidence "
+                "outside your use case — process rows in a network case, network rows in an endpoint case. Judge "
+                "such a row on its own merits by these same rules; and never treat the NAME of a contributing "
+                "rule (a feed match, a filename pattern, an IOC list) as evidence on its own — the events are "
+                "the evidence.\n\n"
             )
             EVIDENCE_HEADER_SHORT = (
                 "HOW TO READ THE EVIDENCE: a `Host`/`Hostname`/`LogSource` value is a QRadar log-source name "
                 "(`<DSM> @ <machine>`, e.g. `WindowsAuthServer @ mng170` on an ordinary workstation) — the prefix "
                 "names the parser, NOT the machine's role, so never call a host a DC, an auth server or critical "
                 "infrastructure because of it. An empty column means 'not mapped by the parser', never 'unknown' "
-                "and never 'user-writable' — never raise the score for a blank field.\n\n"
+                "and never 'user-writable' — never raise the score for a blank field. `Bytes_Received` clearly "
+                "exceeding `Bytes_Sent` is a DOWNLOAD, and a download is never exfiltration. The name of a "
+                "contributing rule is not evidence — the events are.\n\n"
             )
 
             def render(logs_text: str, header: str) -> str:
