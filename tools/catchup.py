@@ -28,6 +28,12 @@ start/end самого офенсу, тому вік офенсу ролі не 
     python3 /opt/qradar-middleware/tools/catchup.py --only-retry
     nohup python3 /opt/qradar-middleware/tools/catchup.py --concurrency 2 &
 
+Окремий режим — прогін конкретних ID через ПОТОЧНИЙ пайплайн (після правки промпта чи
+AQL старі офенси ніхто не переоцінює: `PROCESSED` більше не беруть ні поллер, ні цей
+прохід). Свій lock-файл, тож не чекає фонового проходу:
+
+    python3 /opt/qradar-middleware/tools/catchup.py --offenses 1253238,1266116 --manual
+
 Свій lock-файл (`catchup.lock`) і свій лог (`catchup.log`) — з поллером не конфліктує,
 але за замовчуванням тримається від його вікна подалі (`--min-age-hours 48`), щоб не
 дублювати роботу. Конкурентність за замовчуванням 2, бо llm01 має 3 слоти й поллер уже
@@ -84,6 +90,13 @@ def parse_args():
                    help="стеля на РОЗМАХ вікна AQL. Головний параметр проходу: у застряглих "
                         "офенсів дефолтні 192 год не встигають за aql_poll_timeout_seconds "
                         "(180 с) і повтор падає в той самий AQL_ERROR. 0 = дефолт мідлваря")
+    p.add_argument("--offenses", default="",
+                   help="прогнати саме ці ID (через кому), без класифікації. Для переоцінки "
+                        "вже протріажованих офенсів після правки промпта чи AQL")
+    p.add_argument("--manual", action="store_true",
+                   help="is_manual: true — обходить перевірку «вже оброблено», бере deep-модель "
+                        "і manual_window_hours. Автоматично НІЧОГО не закриває: на виході лише "
+                        "свіжа нотатка з вердиктом, рішення за аналітиком")
     p.add_argument("--dry-run", action="store_true", help="показати план і вийти")
     p.add_argument("--stats", action="store_true", help="лише розклад відкритих офенсів по бакетах")
     return p.parse_args()
@@ -97,8 +110,8 @@ def setup_logging():
     )
 
 
-def take_lock():
-    handle = open(LOCK_FILE, "w")
+def take_lock(path=LOCK_FILE):
+    handle = open(path, "w")
     try:
         fcntl.flock(handle, fcntl.LOCK_EX | fcntl.LOCK_NB)
     except IOError:
@@ -229,53 +242,10 @@ def order_candidates(candidates, limit):
             return out
 
 
-def main():
-    args = parse_args()
-    setup_logging()
-
-    with open(CONFIG_FILE, "r", encoding="utf-8") as f:
-        config = json.load(f)
-    api = f"{config['qradar_url']}/api"
-    headers = {"SEC": config["qradar_token"], "Accept": "application/json"}
-
-    retry_statuses = set()
-    if args.retry.lower() not in ("none", ""):
-        retry_statuses = {s.strip().upper() for s in args.retry.split(",") if s.strip()}
-        unknown = retry_statuses - set(RETRYABLE)
-        if unknown:
-            sys.exit(f"--retry: невідомі статуси {sorted(unknown)}; допустимі {list(RETRYABLE)}")
-
-    rule_keys = get_rule_keys(PROMPTS_FILE)
-    offenses = fetch_open_offenses(api, headers)
-    rules_map = get_rules_map(api, headers)
-    state = load_state()
-
-    candidates, buckets = classify(
-        offenses, rules_map, rule_keys, state,
-        int(args.min_age_hours * 3600 * 1000), retry_statuses,
-        args.only_retry, args.include_unmatched,
-    )
-
-    logging.info(f"--- Догінний прохід: відкритих офенсів {len(offenses)} ---")
-    for name, count in buckets.most_common():
-        logging.info(f"   {count:6d}  {name}")
-
-    if args.stats:
-        return
-
-    queue = order_candidates(candidates, args.limit)
-    shape = Counter(reason for _, _, _, reason in queue)
-    logging.info(f"Кандидатів: {len(candidates)}, у прохід беремо {len(queue)} — {dict(shape)}")
-    top = Counter(key for key, _, _, _ in queue).most_common(8)
-    logging.info("Топ юзкейсів у проході: " + ", ".join(f"{k[:34]} {v}" for k, v in top))
-
-    if args.dry_run:
-        logging.info("--dry-run: нічого не відправляю.")
-        for key, mag, off_id, reason in queue[:20]:
-            logging.info(f"   план: {off_id} mag={mag} [{reason}] {key[:50]}")
-        return
-
-    lock = take_lock()  # лок беремо лише перед реальною роботою, щоб --stats/--dry-run не блокувались
+def run_queue(args, api, headers, queue, lock_path=LOCK_FILE):
+    """Відправляє чергу в мідлварь. Спільне для обох режимів — і класифікованого
+    проходу, і прогону за явним списком ID."""
+    lock = take_lock(lock_path)  # лок беремо лише перед реальною роботою, щоб --stats/--dry-run не блокувались
 
     # Нотатку перевіряємо ЛИШЕ для «не бачених»: наявність реального вердикту означає,
     # що офенс уже розібрали (напр. вручну через веб-форму) і БД просто чистили.
@@ -297,7 +267,7 @@ def main():
             return "skipped_noted", off_id
         try:
             r = requests.post(MIDDLEWARE_URL,
-                              json={"offense_id": off_id, "is_manual": False, **body_extra},
+                              json={"offense_id": off_id, "is_manual": args.manual, **body_extra},
                               timeout=600)
             if r.status_code == 200:
                 body = r.json() if r.headers.get("content-type", "").startswith("application/json") else {}
@@ -345,6 +315,68 @@ def main():
                 f"SELECT status FROM offenses WHERE offense_id IN ({marks})", ids))
         logging.info(f"Статуси в БД після проходу: {dict(after)}")
     lock.close()
+
+
+def main():
+    args = parse_args()
+    setup_logging()
+
+    with open(CONFIG_FILE, "r", encoding="utf-8") as f:
+        config = json.load(f)
+    api = f"{config['qradar_url']}/api"
+    headers = {"SEC": config["qradar_token"], "Accept": "application/json"}
+
+    retry_statuses = set()
+    if args.retry.lower() not in ("none", ""):
+        retry_statuses = {s.strip().upper() for s in args.retry.split(",") if s.strip()}
+        unknown = retry_statuses - set(RETRYABLE)
+        if unknown:
+            sys.exit(f"--retry: невідомі статуси {sorted(unknown)}; допустимі {list(RETRYABLE)}")
+
+    # Режим явного списку: класифікацію не робимо взагалі — аналітик уже сказав, що саме
+    # прогнати. Свій lock-файл, щоб не чекати довгого фонового проходу.
+    if args.offenses:
+        ids = [int(x) for x in args.offenses.replace(" ", "").split(",") if x]
+        queue = [("explicit", 0, off_id, "EXPLICIT") for off_id in ids]
+        logging.info(f"--- Прогон за списком: {len(queue)} офенсів, "
+                     f"режим {'manual (deep, без авто-закриття)' if args.manual else 'auto'} ---")
+        if args.dry_run:
+            logging.info("--dry-run: " + ", ".join(str(i) for i in ids))
+            return
+        run_queue(args, api, headers, queue, lock_path=LOCK_FILE.replace(".lock", "_ids.lock"))
+        return
+
+    rule_keys = get_rule_keys(PROMPTS_FILE)
+    offenses = fetch_open_offenses(api, headers)
+    rules_map = get_rules_map(api, headers)
+    state = load_state()
+
+    candidates, buckets = classify(
+        offenses, rules_map, rule_keys, state,
+        int(args.min_age_hours * 3600 * 1000), retry_statuses,
+        args.only_retry, args.include_unmatched,
+    )
+
+    logging.info(f"--- Догінний прохід: відкритих офенсів {len(offenses)} ---")
+    for name, count in buckets.most_common():
+        logging.info(f"   {count:6d}  {name}")
+
+    if args.stats:
+        return
+
+    queue = order_candidates(candidates, args.limit)
+    shape = Counter(reason for _, _, _, reason in queue)
+    logging.info(f"Кандидатів: {len(candidates)}, у прохід беремо {len(queue)} — {dict(shape)}")
+    top = Counter(key for key, _, _, _ in queue).most_common(8)
+    logging.info("Топ юзкейсів у проході: " + ", ".join(f"{k[:34]} {v}" for k, v in top))
+
+    if args.dry_run:
+        logging.info("--dry-run: нічого не відправляю.")
+        for key, mag, off_id, reason in queue[:20]:
+            logging.info(f"   план: {off_id} mag={mag} [{reason}] {key[:50]}")
+        return
+
+    run_queue(args, api, headers, queue)
 
 
 if __name__ == "__main__":
