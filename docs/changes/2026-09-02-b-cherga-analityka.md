@@ -131,6 +131,22 @@ chain-промпт — ні, бо не мав про мережеві рядки
 Другий пункт закриває той самий клас, що й «MOVEit» на `1249411` і «Turla» на
 `raw.githubusercontent.com`.
 
+**`1264785` — «Suspicious_LOLBin_Relocated» 0.8 на `MKT12` → FP через КОЛІЗІЮ ІМЕН.**
+Модель побачила `certutil.exe` у `AppData\Roaming\UniCryptH\` і назвала це перенесеним
+системним бінарем. Але командний рядок показує інше:
+`-A -n "ca.pem" -i "…\ca.pem" -t "TCu,TCu,TCu" -d "sql:…\Mozilla/Firefox…"` — це ключі
+**certutil із Mozilla NSS**, іншої програми з таким самим іменем файлу. Її кладе поруч
+`UniCryptH.exe` (Company `Intellect-Soft`, українське ПЗ ЕЦП), щоб додати власний CA у
+NSS-сховище Firefox користувача. Порожні `Company`/`Product`/`OriginalFileName` тут теж
+норма: NSS-збірки не несуть version resource.
+
+Анкер додано у `prompts/endpoint_admin_task.md` так, щоб **не притупити** наявну — і
+правильну — позицію промпта «не вір вендорській назві теки». Розрізнення йде за
+СИНТАКСИСОМ КЛЮЧІВ, який є в доказах: NSS (`-A`/`-L`/`-N`, `-n`, `-t "TCu,…"`, `-i *.pem`,
+і головне `-d sql:` на NSS-базу) → 0.1-0.2 бенін; Microsoft (`-urlcache`, `-decode`,
+`-encode`, `-addstore`, `-split`, `-f` з URL) → SECOND CHECK #1 діє на повну силу, і
+вендорська тека не означає нічого.
+
 ## Нові FP-форми, які варто знати
 
 - `adm01` (Veeam/керування) — сканерна форма WinRM по фермі `172.17.61.0/24`;
@@ -141,4 +157,6 @@ chain-промпт — ні, бо не мав про мережеві рядки
 - `176.111.61.59` = `mdoffice.com.ua` — клартекст-FTP **завантаження**;
 - `ksomisc.exe -regwpscompresspv` → `regsvr32 /s` на addon Kingsoft — WPS Office;
 - правило «Detection of Turla URL Host IOC» стріляє на `raw.githubusercontent.com` —
-  фідовий FP по всій флотилії, тюнінг у консолі QRadar.
+  фідовий FP по всій флотилії, тюнінг у консолі QRadar;
+- `AppData\Roaming\UniCryptH\certutil.exe` — це certutil із **Mozilla NSS**, не
+  Microsoft; розрізняти за синтаксисом ключів (`-d sql:` = NSS), не за текою.

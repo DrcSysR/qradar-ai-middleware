@@ -47,6 +47,22 @@ an unusual path" in the threat sense. If the row matches this shape, it is benig
 - A batch/automation binary on a mapped or shared drive running under a service account (e.g.
   `ncftpput.exe` from `K:\Work\cmd\...` as `SQLSERVERAGENT`) — a scheduled data-transfer job.
   Note it in the explanation, do not escalate on it alone.
+- **`certutil.exe` that is NOT the Microsoft one — a name collision, not a relocation.**
+  Mozilla NSS ships its own tool called `certutil.exe`, and crypto/e-signature products bundle
+  it to install their CA certificate into a Firefox NSS store. Decide by the SWITCH SYNTAX,
+  which is in the evidence — never by the folder name:
+  - **NSS syntax** = `-A` / `-L` / `-N` / `-D` with `-n <nickname>`, `-t "TCu,TCu,TCu"`,
+    `-i <file>.pem` and above all `-d sql:<path>` pointing at an NSS database (a Firefox
+    profile, `cert9.db`). That is a certificate-store import, NOT a LOLBin. Score 0.1-0.2,
+    verdict `Benign_Software_Maintenance`.
+  - **Microsoft syntax** = `-urlcache`, `-decode`, `-encode`, `-addstore`, `-split`,
+    `-verifyctl`, `-f` with a URL. Then SECOND CHECK #1 below applies at FULL strength — that
+    is the download/decode LOLBin and the vendor-looking folder means nothing.
+  Seen here: `AppData\Roaming\UniCryptH\certutil.exe` launched by `UniCryptH.exe`
+  (Company `Intellect-Soft`) from the same folder, adding `ca.pem` to the user's Firefox NSS
+  DB. The NSS build carries no version resource, so `Company`, `Product` and
+  `OriginalFileName` are all `-` — for THIS tool an empty vendor field is normal and is not
+  evidence of tampering (rule 2 of HOW TO READ THE EVIDENCE).
 
 **SECOND CHECK — the masquerade and staging shapes.** Only if nothing above matched:
 1. **A Windows system binary running from OUTSIDE `System32`** — `certutil.exe`,
