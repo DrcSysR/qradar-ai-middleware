@@ -93,6 +93,10 @@ def parse_args():
     p.add_argument("--offenses", default="",
                    help="прогнати саме ці ID (через кому), без класифікації. Для переоцінки "
                         "вже протріажованих офенсів після правки промпта чи AQL")
+    p.add_argument("--force", action="store_true",
+                   help="переоцінити вже оброблені офенси в АВТО-режимі: обходить перевірку "
+                        "«вже оброблено», але лишає авто-дії — score ≤ 0.6 закриє офенс. "
+                        "Саме цим завершують цикл після правки промпта")
     p.add_argument("--manual", action="store_true",
                    help="is_manual: true — обходить перевірку «вже оброблено», бере deep-модель "
                         "і manual_window_hours. Автоматично НІЧОГО не закриває: на виході лише "
@@ -258,6 +262,8 @@ def run_queue(args, api, headers, queue, lock_path=LOCK_FILE):
         body_extra["window_hours"] = args.window_hours
     if args.max_span_hours:
         body_extra["max_span_hours"] = args.max_span_hours
+    if args.force:
+        body_extra["force"] = True
     if body_extra:
         logging.info(f"Вікно AQL для проходу: {body_extra}")
 
@@ -339,7 +345,8 @@ def main():
         ids = [int(x) for x in args.offenses.replace(" ", "").split(",") if x]
         queue = [("explicit", 0, off_id, "EXPLICIT") for off_id in ids]
         logging.info(f"--- Прогон за списком: {len(queue)} офенсів, "
-                     f"режим {'manual (deep, без авто-закриття)' if args.manual else 'auto'} ---")
+                     f"режим {'manual (deep, без авто-закриття)' if args.manual else 'auto'}"
+                     f"{' + force (обхід «вже оброблено», авто-дії увімкнені)' if args.force else ''} ---")
         if args.dry_run:
             logging.info("--dry-run: " + ", ".join(str(i) for i in ids))
             return

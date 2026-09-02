@@ -158,6 +158,11 @@ class UniversalTrigger(BaseModel):
     # None = поводимось як раніше (значення з config.json). Поллер їх не шле.
     window_hours: float | None = None
     max_span_hours: float | None = None
+    # Переоцінка вже обробленого офенсу в АВТО-режимі: обходить перевірку «вже оброблено»,
+    # але лишає авто-модель і авто-дії (закриття при score ≤ 0.6, призначення вище).
+    # Потрібно після правки промпта/AQL: manual-режим дає свіжий вердикт, але нічого не
+    # закриває, а auto без цього прапорця такий офенс просто пропускає. Поллер не шле.
+    force: bool = False
 
 def get_dynamic_prompt(rule_name, rule_names=None):
     return _get_dynamic_prompt(rule_name, PROMPTS_FILE, PROMPTS_DIR, rule_names=rule_names)
@@ -612,7 +617,7 @@ async def universal_analysis(payload: UniversalTrigger):
         )
         row = cursor.fetchone()
 
-        if row and not payload.is_manual:
+        if row and not payload.is_manual and not payload.force:
             status, age_min = row[0], row[1] or 0
             if status == 'PROCESSED':
                 logging.debug(f"⏭️ Офенс {payload.offense_id} вже оброблено раніше. Пропуск.")
