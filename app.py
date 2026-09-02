@@ -152,6 +152,12 @@ app = FastAPI(title="QRadar AI Middleware")
 class UniversalTrigger(BaseModel):
     offense_id: int
     is_manual: bool = False
+    # Перевизначення вікна AQL на один запит. Потрібне догінному проходу
+    # (`tools/catchup.py`): у застряглих AQL_ERROR-офенсів розмах 192 год не встигає
+    # за aql_poll_timeout_seconds, тож повтор із дефолтами падає рівно так само.
+    # None = поводимось як раніше (значення з config.json). Поллер їх не шле.
+    window_hours: float | None = None
+    max_span_hours: float | None = None
 
 def get_dynamic_prompt(rule_name, rule_names=None):
     return _get_dynamic_prompt(rule_name, PROMPTS_FILE, PROMPTS_DIR, rule_names=rule_names)
@@ -660,7 +666,8 @@ async def universal_analysis(payload: UniversalTrigger):
         # manual_window_hours / auto_window_hours. Хочеш назад 7 днів — постав 168 у config.json.
         manual_hours = float(APP_CONFIG.get("manual_window_hours", 24))
         auto_hours = float(APP_CONFIG.get("auto_window_hours", 4))
-        window_ms = int((manual_hours if payload.is_manual else auto_hours) * 60 * 60 * 1000)
+        default_hours = manual_hours if payload.is_manual else auto_hours
+        window_ms = int((payload.window_hours or default_hours) * 60 * 60 * 1000)
         offense_start = details.get("start_time")
         offense_end = details.get("last_updated_time") or offense_start
 
@@ -675,7 +682,9 @@ async def universal_analysis(payload: UniversalTrigger):
         # Для auto (4 год) це офенси, старші за ~8 діб; при ескалації (168 год) — старші за
         # ~добу, і тоді вона зрізає найдавнішу частину передісторії. Це свідомо: для
         # багатоденного офенсу найсвіжіші 8 діб і є правильними даними для тріажу.
-        max_span_ms = int(float(APP_CONFIG.get("max_aql_span_hours", 192)) * 60 * 60 * 1000)
+        # payload.max_span_hours (догінний прохід) звужує стелю на один запит — і тим самим
+        # обмежує й вікно ескалації, яка перераховує time_depth через цю ж max_span_ms.
+        max_span_ms = int(float(payload.max_span_hours or APP_CONFIG.get("max_aql_span_hours", 192)) * 60 * 60 * 1000)
 
         def compute_time_depth(win_ms: int) -> str:
             if offense_start:
