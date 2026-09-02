@@ -34,11 +34,22 @@ below, and do NOT let a second row in the same offense drag it up.
    `Software\Microsoft\Workspaces\Feeds\{...}\Publisher` = `Work Resources`. This is the
    RDS feed refresh, the single most common rundll32 row here. `Benign_System_Activity`.
 4. **PowerShell / .NET scratch files in Temp** — `powershell.exe`, `sdiagnhost.exe` or
-   `csc.exe` creating in `\AppData\Local\Temp` either `__PSScriptPolicyTest_*.ps1` (the AMSI
+   `csc.exe` creating either `__PSScriptPolicyTest_*.ps1` (the AMSI
    script-policy check that fires every time PowerShell starts) or a random 8-character
    `*.dll` / `*.cmdline` / `*.cs` / `*.err` / `*.out` (the on-the-fly .NET compilation the
    PowerShell host does for its own modules). Both are start-up artefacts, not dropped
    payloads. On their own they are NEVER a finding. `Benign_System_Activity`.
+   **The path is BOTH `\AppData\Local\Temp` AND `C:\Windows\Temp`** — PowerShell running as
+   SYSTEM (a scheduled task, an agent, a GPO script) has `C:\Windows\Temp` as its temp
+   directory, and the `Add-Type` compile lands in the nested form
+   `C:\Windows\Temp\<rand8>\<rand8>.dll` — random directory, same random name for the DLL.
+   That nesting is the compiler's own convention, not obfuscation.
+   **This shape is what trips the QRadar rule «MOVEit Transfer Vuln», which is a FILENAME
+   pattern rule.** A contributing rule name is not evidence — the `TargetFilename` is. Before
+   calling MOVEit exploitation, require a real MOVEit surface: the host must actually run
+   MOVEit Transfer (a web/transfer server, not a user workstation), and the created file must
+   sit in the MOVEit web root, not in a temp directory. Random name + `Windows\Temp` +
+   `powershell.exe`/`csc.exe` as SYSTEM = compiler artefact, score 0.1-0.2.
 5. **Shell and profile bookkeeping** — `Explorer.EXE` or `svchost.exe` writing user-hive keys:
    `NotifyIconSettings`, `NetworkList\Profiles`, `AppCompatFlags\Compatibility Assistant`,
    `FileExts`, `SpotlightClick`. `Benign_System_Activity`.
@@ -62,6 +73,12 @@ below, and do NOT let a second row in the same offense drag it up.
    list below. `Benign_Software_Maintenance`. This stops applying the moment `claude.exe` runs
    from `Temp`, `Downloads`, `ProgramData`, `Users\Public` or a System32-adjacent path — a
    binary borrowing the name from somewhere else is exactly what masquerading looks like.
+
+9. **OCS Inventory agent** — `OCSInventory.exe` from
+   `C:\Program Files (x86)\OCS Inventory Agent\`, and `C:\ProgramData\Scripts\ocs_install.ps1`
+   created or run by PowerShell. This is our own asset-inventory agent, deployed fleet-wide by
+   GPO; it inventories the host and reports over the network on a schedule.
+   `Benign_Software_Maintenance`.
 
 Allowed benign verdict strings: `Benign_Software_Maintenance`, `Benign_System_Activity`.
 
