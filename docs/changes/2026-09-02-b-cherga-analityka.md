@@ -91,6 +91,17 @@ Tencent `119.29.29.29`, Alibaba `8.209.76.238`/`47.91.74.38` — та сама �
 Akamai, Google. Сигнал вичерпаний, але сам факт proxy-avoidance-егресу з робочої станції
 варто подивитись окремо.
 
+**`1263178` — «Regsvr32 Outbound Network Connection» 0.75 на `SKL05` → FP.** Це
+**WPS Office** реєструє власний компонент: `ksomisc.exe -regwpscompresspv` (із
+`AppData\Local\Kingsoft\WPS Office\<ver>\office6\`, під `NT AUTHORITY\SYSTEM`) викликає
+`regsvr32.exe /s` на DLL під
+`AppData\Roaming\Kingsoft\wps_intl\addons\pool\win-x64\wpscompresspv_<ver>\`. Модель
+бачила «LOLBin із user-writable шляху» — але WPS за дизайном ставиться в профіль
+користувача, а батько тут її власний підписаний бінар. Додано анкер №10 у
+`prompts/ransomware_behavior.md` (разом із рештою відомих форм WPS: `applypatch.exe` із
+`Temp\wps\~*\`, `pintaskbar.exe → explorer.exe`, телеметрія на AliDNS/Tencent/Alibaba).
+Виняток лишено: `regsvr32` на DLL поза деревом Kingsoft — справжня знахідка.
+
 ## Нові FP-форми, які варто знати
 
 - `adm01` (Veeam/керування) — сканерна форма WinRM по фермі `172.17.61.0/24`;
@@ -98,4 +109,7 @@ Akamai, Google. Сигнал вичерпаний, але сам факт proxy-
 - `C:\Windows\Temp\DPTF\esif_assist_64.exe` — Intel DPTF;
 - `C:\Windows\Temp\<rand8>\<rand8>.dll` під SYSTEM — компілятор .NET, трипить
   «MOVEit Transfer Vuln»;
-- `176.111.61.59` = `mdoffice.com.ua` — клартекст-FTP **завантаження**.
+- `176.111.61.59` = `mdoffice.com.ua` — клартекст-FTP **завантаження**;
+- `ksomisc.exe -regwpscompresspv` → `regsvr32 /s` на addon Kingsoft — WPS Office;
+- правило «Detection of Turla URL Host IOC» стріляє на `raw.githubusercontent.com` —
+  фідовий FP по всій флотилії, тюнінг у консолі QRadar.

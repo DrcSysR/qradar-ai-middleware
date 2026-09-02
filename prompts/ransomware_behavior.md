@@ -80,6 +80,21 @@ below, and do NOT let a second row in the same offense drag it up.
    GPO; it inventories the host and reports over the network on a schedule.
    `Benign_Software_Maintenance`.
 
+10. **WPS Office registering its own components** — `regsvr32.exe /s` pointed at a DLL under
+   `AppData\Roaming\Kingsoft\wps_intl\addons\pool\win-x64\<component>_<ver>\`, with
+   `ksomisc.exe` (from `AppData\Local\Kingsoft\WPS Office\<ver>\office6\`) as the parent —
+   typically `ksomisc.exe -regwpscompresspv`, run as `NT AUTHORITY\SYSTEM` by the WPS updater.
+   This is WPS re-registering its own shell/preview handler after an update, and it is what
+   trips the rule «Regsvr32 Outbound Network Connection». WPS installs into the user profile
+   by design, so the AppData path is NOT the "LOLBin from a user-writable path" case below —
+   the parent is WPS's own signed component and the target DLL is WPS's own addon.
+   Other WPS shapes seen here: `applypatch.exe` from `AppData\Local\Temp\wps\~*\`
+   (auto-updater), `pintaskbar.exe` injecting into `explorer.exe` (taskbar integration), and
+   heavy telemetry to AliDNS `223.5.5.5`/`223.6.6.6`, Tencent `119.29.29.29` and Alibaba
+   `8.209.76.238`/`47.91.74.38` (which trips the botnet/C2 rules). `Benign_Software_Maintenance`.
+   The exception is the usual one: `regsvr32` pointed at a DLL that is NOT under the Kingsoft
+   addon tree, or a parent that is not a signed WPS binary, is a real finding.
+
 Allowed benign verdict strings: `Benign_Software_Maintenance`, `Benign_System_Activity`.
 
 **SECOND CHECK — where does the process live?** Only if nothing above matched:
