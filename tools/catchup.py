@@ -93,6 +93,12 @@ def parse_args():
     p.add_argument("--offenses", default="",
                    help="прогнати саме ці ID (через кому), без класифікації. Для переоцінки "
                         "вже протріажованих офенсів після правки промпта чи AQL")
+    p.add_argument("--aql-timeout", type=float, default=0.0,
+                   help="дедлайн полінгу Ariel на офенс, с (0 = дефолт мідлваря, 180). "
+                        "INOFFENSE() не індексована умова: Ariel сканує все вікно навіть на "
+                        "офенсі з двома подіями, тож частині офенсів 180 с не вистачає. "
+                        "Фоновий прохід може чекати довше — але тримай --concurrency 1, "
+                        "інакше довгі запити з'їдять воркери gunicorn у живого поллера")
     p.add_argument("--force", action="store_true",
                    help="переоцінити вже оброблені офенси в АВТО-режимі: обходить перевірку "
                         "«вже оброблено», але лишає авто-дії — score ≤ 0.6 закриє офенс. "
@@ -264,6 +270,8 @@ def run_queue(args, api, headers, queue, lock_path=LOCK_FILE):
         body_extra["max_span_hours"] = args.max_span_hours
     if args.force:
         body_extra["force"] = True
+    if args.aql_timeout:
+        body_extra["aql_timeout_seconds"] = args.aql_timeout
     if body_extra:
         logging.info(f"Вікно AQL для проходу: {body_extra}")
 

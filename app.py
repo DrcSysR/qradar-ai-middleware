@@ -163,6 +163,11 @@ class UniversalTrigger(BaseModel):
     # Потрібно після правки промпта/AQL: manual-режим дає свіжий вердикт, але нічого не
     # закриває, а auto без цього прапорця такий офенс просто пропускає. Поллер не шле.
     force: bool = False
+    # Дедлайн полінгу Ariel на один запит. Догінний прохід може дозволити собі чекати
+    # довше за живий шлях: `INOFFENSE()` — НЕ індексована умова, тож навіть на офенсі з
+    # двома подіями Ariel сканує все вікно, і 180 с не вистачає (переміряно 02.09).
+    # None = значення з config.json (aql_poll_timeout_seconds, дефолт 180).
+    aql_timeout_seconds: float | None = None
 
 def get_dynamic_prompt(rule_name, rule_names=None):
     return _get_dynamic_prompt(rule_name, PROMPTS_FILE, PROMPTS_DIR, rule_names=rule_names)
@@ -256,7 +261,8 @@ async def _delete_ariel_search(client: httpx.AsyncClient, search_id: str) -> Non
 
 
 async def fetch_events_multi_lens(client: httpx.AsyncClient, offense_id: int, time_depth: str,
-                                  aql_files: list, entity_value: str = "", entity_type: str = "") -> tuple:
+                                  aql_files: list, entity_value: str = "", entity_type: str = "",
+                                  aql_timeout_seconds: float | None = None) -> tuple:
     """Виконати AQL кожної лінзи й склеїти події. Повертає (events, failed_aql_files).
 
     events = None лише коли впали ВСІ лінзи (тоді вище по стеку — AQL_ERROR і офенс
@@ -269,6 +275,7 @@ async def fetch_events_multi_lens(client: httpx.AsyncClient, offense_id: int, ti
         part = await fetch_data_from_qradar(
             client, offense_id, time_depth, aql_file,
             entity_value=entity_value, entity_type=entity_type,
+            aql_timeout_seconds=aql_timeout_seconds,
         )
         if part is None:
             failed.append(aql_file)
@@ -282,7 +289,7 @@ async def fetch_events_multi_lens(client: httpx.AsyncClient, offense_id: int, ti
     return events, failed
 
 
-async def fetch_data_from_qradar(client: httpx.AsyncClient, offense_id: int, time_depth: str, aql_filename: str, entity_value: str = "", entity_type: str = ""):
+async def fetch_data_from_qradar(client: httpx.AsyncClient, offense_id: int, time_depth: str, aql_filename: str, entity_value: str = "", entity_type: str = "", aql_timeout_seconds: float | None = None):
     filepath = os.path.join(QUERIES_DIR, aql_filename)
 
     fallback_aql = (
@@ -328,11 +335,12 @@ async def fetch_data_from_qradar(client: httpx.AsyncClient, offense_id: int, tim
         # вікну на гучному лог-сорсі легко дає 300+ с (міряно: 26 ГБ, 41% за 281 с), і такий
         # пошук тримає воркер gunicorn до кінця httpx-таймауту. Дедлайн → None → статус
         # AQL_ERROR → офенс лишається ВІДКРИТИМ, поллер переаналізує наступного циклу.
-        deadline = time.monotonic() + float(APP_CONFIG.get("aql_poll_timeout_seconds", 180))
+        poll_timeout = float(aql_timeout_seconds or APP_CONFIG.get("aql_poll_timeout_seconds", 180))
+        deadline = time.monotonic() + poll_timeout
 
         while status != "COMPLETED":
             if time.monotonic() > deadline:
-                logging.error(f"AQL timeout: пошук {search_id} не завершився за {APP_CONFIG.get('aql_poll_timeout_seconds', 180)} с — скасовую, офенс лишається відкритим.")
+                logging.error(f"AQL timeout: пошук {search_id} не завершився за {poll_timeout:.0f} с — скасовую, офенс лишається відкритим.")
                 await _delete_ariel_search(client, search_id)
                 return None
             await asyncio.sleep(2)
@@ -748,6 +756,7 @@ async def universal_analysis(payload: UniversalTrigger):
             client, payload.offense_id, time_depth, aql_files,
             entity_value=str(details.get("entity_value", "")),
             entity_type=details.get("entity_type", ""),
+            aql_timeout_seconds=payload.aql_timeout_seconds,
         )
         if failed_lenses and raw_events is not None:
             close_on_empty = False           # частина шарів невідома → порожньо ≠ «чисто»
@@ -985,6 +994,7 @@ async def universal_analysis(payload: UniversalTrigger):
                     client, payload.offense_id, esc_time_depth, aql_files,
                     entity_value=str(details.get("entity_value", "")),
                     entity_type=details.get("entity_type", ""),
+                    aql_timeout_seconds=payload.aql_timeout_seconds,
                 )
                 # Ширша вибірка не вийшла (AQL впав або нічого не дав) — не привід гасити
                 # ескалацію: важка модель варта запуску і на подіях tier-1.
