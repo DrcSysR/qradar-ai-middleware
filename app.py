@@ -1036,13 +1036,24 @@ async def universal_analysis(payload: UniversalTrigger):
                 escalation_note = f" | Tier-2 escalation FAILED ({esc_provider}) — tier-1 verdict kept"
 
         # Refset cleanup: для правил-наповнювачів радар уже додав sourceip у block-list.
-        # Якщо AI визнав FP — знімаємо IP з refset, ефективно скасовуючи блок (PA-тег
+        # Якщо AI визнав IP БЕНІННИМ — знімаємо його з refset, скасовуючи блок (PA-тег
         # сам стече по таймауту). Працює лише якщо в prompts.json вказано refset_cleanup
         # і entity офенсу — IP-адреса (SourceIP/DestinationIP).
+        #
+        # ПОРІГ РОЗБЛОКУВАННЯ — ОКРЕМИЙ від порогу закриття, і це принципово.
+        # Раніше умовою було те саме `score <= 0.6`, що й для авто-закриття, і воно
+        # прирівнювало «атака не вдалася / підозріло, спостерігаємо» до «адреса бенінна,
+        # знімай блок». Виміряно 03.09.2026: tier-1 віддавав `Suspicious_Keep_Watching`
+        # 0.4 на іноземні SSH-сканери — і пайплайн знімав блок 63 рази за добу по 29
+        # адресах, одну з них тричі за 71 хвилину (радар додає → ми знімаємо → атака
+        # триває). Закриття офенсу й розблокування файрвола — різні за ціною помилки
+        # рішення, тож у них різні пороги: `refset_cleanup_max_score` (дефолт 0.3) вимагає
+        # саме бенінного бенду, а не просто «не компроміс».
         refset_action_note = ""
+        cleanup_max_score = float(APP_CONFIG.get("refset_cleanup_max_score", 0.3))
         if (
             refset_cleanup
-            and score <= 0.6
+            and score <= cleanup_max_score
             and not mitigated
             and details.get("entity_type") in ("SourceIP", "DestinationIP")
             and IPV4_RE.fullmatch(str(details.get("entity_value", "")).strip())
@@ -1055,6 +1066,22 @@ async def universal_analysis(payload: UniversalTrigger):
             else:
                 logging.error(f"⚠️ FP cleanup failed for {ip_to_clean} from {refset_cleanup}: {msg}")
                 refset_action_note = f" | Action: refset cleanup FAILED ({msg})"
+        elif (
+            refset_cleanup
+            and cleanup_max_score < score <= 0.6
+            and not mitigated
+            and details.get("entity_type") in ("SourceIP", "DestinationIP")
+        ):
+            # Офенс закриється, але блок лишається — і це має бути видно в нотатці,
+            # інакше «закрито» читається як «розблоковано».
+            logging.info(
+                f"🔒 Офенс {payload.offense_id}: score {score} > {cleanup_max_score} — "
+                f"блок {details.get('entity_value')} у {refset_cleanup} ЛИШАЄТЬСЯ."
+            )
+            refset_action_note = (
+                f" | Action: block on {details.get('entity_value')} KEPT in {refset_cleanup} "
+                f"(score {score} above unblock threshold {cleanup_max_score})"
+            )
 
         mitigated_note = " | Mitigated: blocked, no consequence — closed, block retained" if (mitigated and not payload.is_manual) else ""
         note_text = f"AI Analysis ({provider_label}) | Verdict: {verdict} | Score: {score} | Reason: {explanation}{refset_action_note}{mitigated_note}{guard_note}{escalation_note}"

@@ -83,6 +83,12 @@ SCHEMA = {
     "escalate_provider":              (str,  "vertex"),
     "escalate_model":                 (str,  ""),
     "escalate_threshold":             (NUM,  0.6),
+
+    # Поріг РОЗБЛОКУВАННЯ (зняття IP із refset на FP-вердикті) — свідомо окремий і
+    # нижчий за поріг авто-закриття 0.6. Закрити офенс і розблокувати файрвол мають
+    # різну ціну помилки: 03.09.2026 спільний поріг давав 63 розблокування на добу
+    # активних SSH-сканерів на вердикті `Suspicious_Keep_Watching` 0.4.
+    "refset_cleanup_max_score":       (NUM,  0.3),
     "escalate_window_hours":          (NUM,  168),
 
     # --- загальне ---
