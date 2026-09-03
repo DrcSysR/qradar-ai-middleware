@@ -987,11 +987,29 @@ async def universal_analysis(payload: UniversalTrigger):
         escalated = False
         escalation_note = ""
         esc_provider = APP_CONFIG.get("escalate_provider", "vertex")
+
+        # Розблокування вимагає ВАЖКОЇ моделі. Каскад досі ескалював лише хвіст >0.6 —
+        # тобто рішення «розблокувати» (низький бенд) ухвалював tier-1 одноосібно, і саме
+        # він 03.09.2026 знімав блок з активних сканерів на вигаданому «recognized
+        # employee». Ціна помилки тут асиметрична: зайвий блок на підозрілій адресі коштує
+        # мало, зняття блоку з активного атакувальника — багато. Тому кандидат на
+        # розблокування тепер теж є тригером ескалації, незалежно від того, що score НИЗЬКИЙ.
+        cleanup_max_score = float(APP_CONFIG.get("refset_cleanup_max_score", 0.3))
+        requires_tier2 = bool(APP_CONFIG.get("refset_cleanup_requires_tier2", True))
+        cleanup_candidate = bool(
+            refset_cleanup
+            and not payload.is_manual
+            and details.get("entity_type") in ("SourceIP", "DestinationIP")
+            and IPV4_RE.fullmatch(str(details.get("entity_value", "")).strip())
+        )
+        unblock_review_needed = (
+            cleanup_candidate and requires_tier2 and score <= cleanup_max_score and not mitigated
+        )
         if (
             APP_CONFIG.get("escalate_enabled", False)
             and not payload.is_manual
             and not mitigated
-            and score > float(APP_CONFIG.get("escalate_threshold", 0.6))
+            and (score > float(APP_CONFIG.get("escalate_threshold", 0.6)) or unblock_review_needed)
             and esc_provider != used_provider  # tier-1 уже відпрацював на цьому провайдері (напр. пішов туди fallback-ом)
         ):
             esc_model = APP_CONFIG.get("escalate_model") or APP_CONFIG.get("vertex_deep", "gemini-1.5-pro")
@@ -999,7 +1017,9 @@ async def universal_analysis(payload: UniversalTrigger):
             try:
                 esc_window_ms = int(float(APP_CONFIG.get("escalate_window_hours", 168)) * 60 * 60 * 1000)
                 esc_time_depth = compute_time_depth(esc_window_ms)
-                logging.info(f"⬆️ Офенс {payload.offense_id}: tier-1 {used_provider} дав score {t1_score} → ескалація на {esc_provider} ({esc_model}), вікно {esc_time_depth}")
+                esc_reason = ("перегляд РОЗБЛОКУВАННЯ" if unblock_review_needed
+                              and t1_score <= cleanup_max_score else f"score {t1_score}")
+                logging.info(f"⬆️ Офенс {payload.offense_id}: tier-1 {used_provider} — {esc_reason} → ескалація на {esc_provider} ({esc_model}), вікно {esc_time_depth}")
 
                 # Ті самі лінзи, що й на tier-1: вердикт tier-2 повністю заміщає tier-1,
                 # тож дати важкій моделі вужчу вибірку — значить втратити шари доказів.
@@ -1050,13 +1070,16 @@ async def universal_analysis(payload: UniversalTrigger):
         # рішення, тож у них різні пороги: `refset_cleanup_max_score` (дефолт 0.3) вимагає
         # саме бенінного бенду, а не просто «не компроміс».
         refset_action_note = ""
-        cleanup_max_score = float(APP_CONFIG.get("refset_cleanup_max_score", 0.3))
+        # Вердикт уже від важкої моделі: або каскад відпрацював, або tier-1 сам пішов на
+        # esc_provider (fallback). Провал ескалації сюди НЕ проходить — escalated лишається
+        # False, тож блок залишається. Це свідомий fail-safe: немає перегляду — немає зняття.
+        heavy_reviewed = escalated or used_provider == esc_provider
+        unblock_allowed = heavy_reviewed or not requires_tier2
         if (
-            refset_cleanup
+            cleanup_candidate
             and score <= cleanup_max_score
             and not mitigated
-            and details.get("entity_type") in ("SourceIP", "DestinationIP")
-            and IPV4_RE.fullmatch(str(details.get("entity_value", "")).strip())
+            and unblock_allowed
         ):
             ip_to_clean = str(details["entity_value"]).strip()
             ok, msg = await remove_ip_from_refset(client, refset_cleanup, ip_to_clean)
@@ -1066,11 +1089,22 @@ async def universal_analysis(payload: UniversalTrigger):
             else:
                 logging.error(f"⚠️ FP cleanup failed for {ip_to_clean} from {refset_cleanup}: {msg}")
                 refset_action_note = f" | Action: refset cleanup FAILED ({msg})"
+        elif cleanup_candidate and score <= cleanup_max_score and not mitigated:
+            # Низький бенд, але важка модель офенс не бачила (каскад вимкнений, впав, або
+            # esc_provider == tier-1). Блок лишається, і в нотатці видно чому.
+            logging.warning(
+                f"🔒 Офенс {payload.offense_id}: score {score} дозволяв би зняти блок, але "
+                f"перегляду tier-2 не було — блок {details.get('entity_value')} у "
+                f"{refset_cleanup} ЛИШАЄТЬСЯ."
+            )
+            refset_action_note = (
+                f" | Action: block on {details.get('entity_value')} KEPT in {refset_cleanup} "
+                f"(unblock requires tier-2 review; none happened)"
+            )
         elif (
-            refset_cleanup
+            cleanup_candidate
             and cleanup_max_score < score <= 0.6
             and not mitigated
-            and details.get("entity_type") in ("SourceIP", "DestinationIP")
         ):
             # Офенс закриється, але блок лишається — і це має бути видно в нотатці,
             # інакше «закрито» читається як «розблоковано».
