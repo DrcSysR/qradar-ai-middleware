@@ -40,7 +40,8 @@ QRadar offenses API ──► poller.py (кожні 10 хв, вікно 48 го�
                           │  промпт/assignee/refset — від лінзи №1, події — з AQL усіх (cap 3)
                           ├─ AQL: POST /ariel/searches → полінг (дедлайн) → results → DELETE
                           ├─ порожній результат + close_on_empty → авто-закриття score 0.0
-                          ├─ порожній без прапорця → NO_EVENTS, офенс лишається відкритим
+                          ├─ порожній без прапорця → фолбек на default.aql (сирі події);
+                          │                            якщо і там пусто → NO_EVENTS, офенс відкритий
                           ├─ AQL не виконався → AQL_ERROR, офенс лишається відкритим
                           ▼
              tier-1 (llm01, повтор provider_retries) ──score > escalate_threshold──► tier-2 (Vertex, 168 год)
@@ -191,6 +192,7 @@ health, при провалі відкатує. Негайно — `./deploy.sh`
 
 ## 8. Історія змін
 
+- [2026-09-03 — NO_EVENTS: фолбек на генеричний AQL замість тиші](changes/2026-09-03-b-fallback-genericnyi-aql.md)
 - [2026-09-03 — окремий поріг розблокування: пайплайн знімав блок з активних сканерів](changes/2026-09-03-porih-rozblokuvannya.md)
 - [2026-09-02 — розбір черги аналітика: переоцінка 29 офенсів через поточний пайплайн](changes/2026-09-02-b-cherga-analityka.md)
 - [2026-09-02 — догінний прохід: офенси, яких поллер не бачить у принципі](changes/2026-09-02-dohinnyi-prokhid.md)

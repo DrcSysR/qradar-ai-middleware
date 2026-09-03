@@ -13,7 +13,7 @@ import os
 import sqlite3
 import time
 
-from prompts_loader import get_dynamic_prompt as _get_dynamic_prompt
+from prompts_loader import get_dynamic_prompt as _get_dynamic_prompt, DEFAULT_AQL_FILE
 from prompts_loader import get_matched_lenses
 import config_schema
 
@@ -775,6 +775,7 @@ async def universal_analysis(payload: UniversalTrigger):
                 conn.execute("UPDATE offenses SET status = 'AQL_ERROR', last_updated = CURRENT_TIMESTAMP WHERE offense_id = ?", (payload.offense_id,))
             return {"status": "error", "message": "AQL execution failed; offense left open"}
 
+        generic_evidence = False   # чи докази прийшли з генеричного AQL (фолбек нижче)
         if not raw_events:
             # close_on_empty: для monitoring-юзкейсів AQL сам відфільтровує benign, тож порожній
             # результат у auto-режимі = чисто => закриваємо як benign (score 0.0). Manual не чіпаємо
@@ -789,15 +790,60 @@ async def universal_analysis(payload: UniversalTrigger):
                     conn.execute("UPDATE offenses SET status = 'PROCESSED', last_updated = CURRENT_TIMESTAMP WHERE offense_id = ?", (payload.offense_id,))
                 return {"status": "closed", "message": "No risky events after benign-filter; auto-closed", "score": 0.0}
 
-            logging.warning(f"⚠️ Для офенсу {payload.offense_id} не знайдено подій.")
-            note_text = "AI Analysis (SKIPPED) | No events found by AQL. Events might be filtered out, aged out, or based on flows."
-            note_url = f"{QRADAR_API_URL}/siem/offenses/{payload.offense_id}/notes?note_text={urllib.parse.quote(note_text)}"
-            await client.post(note_url, headers=HEADERS)
+            # ФОЛБЕК НА ГЕНЕРИЧНИЙ AQL. «Порожньо» без close_on_empty — це не «чисто», а
+            # «невідомо», і саме тут раніше офенс зникав назавжди: статус NO_EVENTS +
+            # нотатка «AI Analysis (SKIPPED)», яку поллер відсіює через has_ai_note. Так
+            # накопичилось 133 відкритих офенси (замір 03.09.2026), серед них перевірені
+            # вручну справжні FP на кшталт 1266116.
+            # Причини порожнього результату різні за наслідками: (а) події вийшли з
+            # ретеншену або офенс на флоу — тоді нічого не вдієш; (б) AQL юзкейсу просто НЕ
+            # ПІДХОДИТЬ до цього офенсу (композит, інший шар подій, інші поля) — і тоді в
+            # офенсі події ЄСТЬ, просто запит їх не бачить. Другий випадок лікується:
+            # беремо default.aql (сирий INOFFENSE без бенін-фільтрів) і віддаємо моделі
+            # хоч якісь докази замість тишини. Модель попереджаємо, що вибірка генерична,
+            # інакше вона шукатиме колонки юзкейсу, яких там немає.
+            if (
+                APP_CONFIG.get("fallback_to_default_aql", True)
+                and DEFAULT_AQL_FILE not in aql_files
+            ):
+                logging.info(
+                    f"↩️ Офенс {payload.offense_id}: AQL юзкейсу ({aql_files}) без подій — "
+                    f"пробую генеричний {DEFAULT_AQL_FILE}."
+                )
+                fb_events = await fetch_data_from_qradar(
+                    client, payload.offense_id, time_depth, DEFAULT_AQL_FILE,
+                    entity_value=str(details.get("entity_value", "")),
+                    entity_type=details.get("entity_type", ""),
+                    aql_timeout_seconds=payload.aql_timeout_seconds,
+                )
+                if fb_events:
+                    raw_events = fb_events
+                    generic_evidence = True
+                    logging.info(
+                        f"✅ Офенс {payload.offense_id}: генеричний AQL дав {len(fb_events)} подій — "
+                        f"аналізуємо на них."
+                    )
+                    instruction = (
+                        instruction
+                        + "\n\nNOTE ON INPUT: the use-case AQL for this offense returned NOTHING, so the "
+                        "evidence below comes from the GENERIC query — raw offense events with no benign "
+                        "filtering and without this use case's derived columns. Do not expect the fields "
+                        "your instructions name, and do not treat their absence as suspicious; judge what "
+                        "is actually in the rows. Because the benign filters did NOT run, ordinary "
+                        "background traffic is present here — be correspondingly conservative before "
+                        "escalating."
+                    )
 
-            with sqlite3.connect(DB_PATH) as conn:
-                conn.execute("UPDATE offenses SET status = 'NO_EVENTS', last_updated = CURRENT_TIMESTAMP WHERE offense_id = ?", (payload.offense_id,))
+            if not raw_events:
+                logging.warning(f"⚠️ Для офенсу {payload.offense_id} не знайдено подій (і генеричний AQL теж порожній).")
+                note_text = "AI Analysis (SKIPPED) | No events found by AQL, and the generic fallback query also returned nothing — events likely aged out of Ariel retention, or the offense is flow-based."
+                note_url = f"{QRADAR_API_URL}/siem/offenses/{payload.offense_id}/notes?note_text={urllib.parse.quote(note_text)}"
+                await client.post(note_url, headers=HEADERS)
 
-            return {"status": "skipped", "message": "No events found"}
+                with sqlite3.connect(DB_PATH) as conn:
+                    conn.execute("UPDATE offenses SET status = 'NO_EVENTS', last_updated = CURRENT_TIMESTAMP WHERE offense_id = ?", (payload.offense_id,))
+
+                return {"status": "skipped", "message": "No events found"}
 
         refset_index = await get_refset_index(client)
         asset_block = build_asset_context_block(raw_events, refset_index)
@@ -1118,7 +1164,8 @@ async def universal_analysis(payload: UniversalTrigger):
             )
 
         mitigated_note = " | Mitigated: blocked, no consequence — closed, block retained" if (mitigated and not payload.is_manual) else ""
-        note_text = f"AI Analysis ({provider_label}) | Verdict: {verdict} | Score: {score} | Reason: {explanation}{refset_action_note}{mitigated_note}{guard_note}{escalation_note}"
+        generic_note = " | Evidence: GENERIC query (use-case AQL returned nothing, no benign filtering)" if generic_evidence else ""
+        note_text = f"AI Analysis ({provider_label}) | Verdict: {verdict} | Score: {score} | Reason: {explanation}{refset_action_note}{mitigated_note}{guard_note}{escalation_note}{generic_note}"
         note_url = f"{QRADAR_API_URL}/siem/offenses/{payload.offense_id}/notes?note_text={urllib.parse.quote(note_text)}"
         note_resp = await client.post(note_url, headers=HEADERS)
 
