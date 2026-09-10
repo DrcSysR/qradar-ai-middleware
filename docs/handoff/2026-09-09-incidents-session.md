@@ -244,3 +244,63 @@ SELECT destinationip, COUNT(*) FROM events
 лагало однаково по дроту і Wi-Fi, бо забитий був спільний аплінк у вікні тесту; мої «швидкі» заміри були після ~11:30, коли хвиля минула.
 Урок: перед глибоким розбором «повільно» — спершу крива утилізації аплінка за вказане вікно (одним запитом), а не шлях клієнта.
 Фікси §8 (DO/Connected Cache, stagger, QoS на LAN, KS-лінк) — відкриті рішення власника.
+
+## 9. ДОПОВНЕННЯ 10.09 — сканування sp.modern-expo.com: нічого не намацали; Redis відкритий для офісу
+
+**Запит власника:** розслідувати «прощупування вразливостей» на sp (приклад
+`/admin/modules/smss/vmblast/config.php`), з'ясувати, чи не знайшли чогось критичного.
+
+**Сканер:** `185.177.72.0/24` (6 IP), UA `curl/8.7.1`, лише GET.
+
+| Дата (UTC) | IP | Запитів | Що робив | Результат |
+|---|---|---|---|---|
+| 03.09 07:56 | .24 | 162 | розвідка | усі 404 |
+| 08.09 22:19–22:49 | .100, .67 | 748 | API-розвідка: POST на phpunit eval-stdin / Next.js → 405, `/api/*` → 401, `/auth/*` → 404, скачав JS-бандл фронту | нічого |
+| 09.09 15:03–15:41 | .29, .68, .49 | 12 004 | полювання на секрети: `.env` ×1555 варіантів, `config.*`, phpinfo, `.aws`, `.jenkins`, k8s/helm, ключі sendgrid/mailgun/smtp | нічого |
+
+Чому 9 972 відповіді «200» не є витоком: усі до байта однакові (`200 1181` = gzip
+`index.html` SPA, 3155 B), це `location /` nginx, який віддає фронт на будь-який шлях.
+Єдиний інший 200 (`884 B`) — статичний `/maintenance.html`. Бекенд (`/admin/*`, `/api/*`)
+відповідав 404/401. PHP-обробника в nginx немає, POST не приймався. Приклад власника →
+`404 62` і для сканера, і при повторі вручну.
+
+**SSH на sp (QRadar `LinuxServer @ 35.205.227.94`, 14 діб):** усі `Accepted publickey` —
+з офісу 188.163.216.98 (`admin`, `cust0dier`), один `denys_sy` через GCP IAP 26.08.
+`passwordauthentication no`, `permitrootlogin no`. Брут = «Invalid user» (839 IP/7 діб),
+офенси 1346830/1346808 — цей шум, mitigated by design.
+
+**Побічна знахідка (важлива):** на 0.0.0.0 слухають Redis ×6 (6379/6381/6382/6383/63792/63799,
+`protected-mode no`, без пароля), gunicorn :4000 (обхід nginx), RedisInsight :8021, otel :20201,
+fluent-bit :20202. Хост не фільтрує (iptables INPUT ACCEPT, DOCKER-USER RETURN). Рятує лише
+GCP-фаєрвол: правило `allow-portainer` (prio 1001) відкриває `tcp:1024-65535` з наших егресів
+82.207.23.25, 212.1.102.30, 188.163.216.96/28, 212.1.102.136/29, 212.1.103.128/28.
+Перевірено: з офісу `+PONG` на всіх шести; з 8 зовнішніх нод check-host.net порти
+6379/6381/4000/8021 — timeout, 443 — відповідає. Слідів чужих підключень немає (CLIENT LIST
+лише docker-bridge, 0 «SECURITY ATTACK» у логах контейнерів за 7 діб). Ризик: будь-який
+скомпрометований хост у LAN/PL/IC доходить до продакшн-Redis без пароля.
+Також застаріле `default-allow-rdp 0.0.0.0/0` (слухача немає, але правило зайве).
+
+**Рішення власника:** прибити Redis/gunicorn/8021 на 127.0.0.1 або docker-мережу, або звузити
+`allow-portainer` до адмін-хостів і реального порту Portainer; прибрати `default-allow-rdp`.
+Не застосовував.
+
+**Доступ:** `ssh -o IdentitiesOnly=yes -i ~/.ssh/sp.pem.pub admin@sp.modern-expo.com`
+(pubkey експортований з Bitwarden-агента; без цього «Too many authentication failures»).
+Скрипт аналізу логів лишився на sp у `/tmp/sp_scan.py`. gcloud: `bitrix-project-23416`.
+
+**Черга QRadar 10.09 (5 → 1):** закрито 1346830/1346808 (SSH-брут на sp, Non-Issue, mitigated),
+1345619 (fem16: профіль Opera + наш `Invoke-UptimeReboot.ps1`, FP), 1346106 (PL → AliDNS, WPS, FP).
+**1346180 відкритий на власника:** POCO-M5 у me_mobile (VLAN 104, MAC 96:93:76:bb:fc:fe рандомізований),
+одна TCP-сесія на 5.254.60.126:53 (Voxility, Прага), `unknown-tcp`, 347 КБ/424 КБ — тунель під портом 53.
+me_mobile = особисті телефони з робочим профілем, тому не FP. Власника з логів не дістати (PA без User-ID
+на VLAN 104, NPS MAC не бачив, WLC не логує) → шукати в Google Admin → Devices → Mobile за моделлю POCO M5.
+
+**Тюнінг:** Opera profile writes і `Invoke-UptimeReboot.ps1` (csc.exe/Add-Type) додати у бенін-фільтр
+`ransomware_behavior.aql`.
+
+**Google-бот tmp-inet/wan-block (форма → Apps Script → pa-vm.modern-expo.com/api/):** «не працює з 09.09»
+— fail2ban НЕ винен: егреси бота (34.116.28.x, 34.116.39.x, 107.178.203.x) не в банах і не в DAG, PA пускає
+їх на 443 («Allow WAN - NGINX0»), nginx2 `/api/` відповідає. Останній виклик дійшов 08.09 11:52 (200), далі
+запитів не було взагалі → ламається на боці Google (тригер / деплой Web App / Logger-гілки). Побічно:
+nginx2 логує повний URL із `key=` PA-ключа у QRadar (LEEF `request=`) — перевести бота на `X-PAN-KEY`
+або різати `key=` у `log_format qradar`; `SECURITY_TOKEN` бота перегенерувати.
