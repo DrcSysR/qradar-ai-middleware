@@ -61,6 +61,29 @@ WHERE
     -- чимало малварі, тож NULL тут НЕ приймаємо — тільки явний шлях під AnthropicClaude.
     AND NOT ("Process Name" ILIKE 'Update.exe'
              AND "Process Path" ILIKE '%AnthropicClaude%')
+    -- Opera (браузер): пише .tmp у свій профіль і чіпає час створення (T1099) → «File Decode
+    -- followed by Suspicious Activity». 165/172 подій офенса на fem16; повторюється PRP20/INS32.
+    -- Анкор на КАТАЛОГ Opera (профіль або Programs\Opera), НЕ на ім'я файлу — фейковий opera.exe
+    -- із Temp має шлях %Temp%opera.exe, під ці каталоги не підпадає і лишається видимим.
+    AND NOT ("Process Name" ILIKE 'opera.exe'
+             AND ("Process Path" IS NULL
+                  OR "Process Path" ILIKE '%Opera Software%'
+                  OR "Process Path" ILIKE '%Programs%Opera%'))
+    -- Opera Assistant installer — тільки зі свого розпакування %Temp%\.opera\ (NULL НЕ приймаємо).
+    AND NOT ("Process Name" ILIKE 'assistant_installer.exe'
+             AND "Process Path" ILIKE '%Temp%.opera%')
+    -- Telegram Desktop: оновлює jump-list у ...\Recent → «mass file creation time» (T1099). PEC27 15.09.
+    AND NOT ("Process Name" ILIKE 'Telegram.exe'
+             AND ("Process Path" IS NULL OR "Process Path" ILIKE '%Telegram Desktop%'))
+    -- Windows servicing (Modules Installer / DISM): TiWorker/DismHost/poqexec міняють ImagePath
+    -- служб і пишуть у Temp під час кумулятивних оновлень → тригерять Ransomware / Service Binary
+    -- Path Changed. Підтверджено на WIN-5II4TGNJIB9 та RDGW 13-14.09 (той самий Patch-цикл).
+    AND NOT ("Process Name" ILIKE 'TiWorker.exe'
+             AND ("Process Path" IS NULL OR "Process Path" ILIKE '%winsxs%' OR "Process Path" ILIKE '%servicing%'))
+    AND NOT ("Process Name" ILIKE 'DismHost.exe'
+             AND ("Process Path" IS NULL OR "Process Path" ILIKE '%Windows%Temp%' OR "Process Path" ILIKE '%System32%'))
+    AND NOT ("Process Name" ILIKE 'poqexec.exe'
+             AND ("Process Path" IS NULL OR "Process Path" ILIKE '%System32%'))
 GROUP BY Host, Proc, Proc_Path, Activity, Acct
 ORDER BY Events DESC
 LIMIT {limit} {time_depth}

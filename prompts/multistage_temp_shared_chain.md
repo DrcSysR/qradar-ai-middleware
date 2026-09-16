@@ -25,7 +25,8 @@ A) "Process Launched from a Temp Directory" sub-rule is benign when the Image pa
    - `C:\Users\<user>\AppData\Local\Temp\wps\…\applypatch.exe` or `…\install\…` with Company=`Zhuhai Kingsoft Office Software` — WPS Office auto-update extractor.
    - `…\Temp\…\OneDriveSetup.exe`, `…\Temp\…\TeamsSetup.exe`, `…\Temp\…\GoogleUpdate.exe`, `…\Temp\…\AcroRd*Setup`, `…\Temp\…\zoom_*.exe` — vendor auto-updaters.
    - ParentImage names a known updater binary (`diff_*.exe`, `*update*.exe`, `*Setup*.exe`) running as the same user.
-   - Image is signed (`Company` field populated with a known vendor: Microsoft, Adobe, Zoom, Kingsoft, Google, Slack, Dropbox, Mozilla).
+   - Image is signed (`Company` field populated with a known vendor: Microsoft, Adobe, Zoom, Kingsoft, Google, Slack, Dropbox, Mozilla, **Opera**).
+   - `…\Temp\.opera\…\assistant_installer.exe` with Description=`Opera Browser Assistant Installer` — Opera's self-updater unpacking into Temp. Benign.
 
 B) "Process Launched from a Shared Folder" sub-rule is benign when the Image UNC path is anywhere under the corporate IT software namespace `\\modern.org\soft\` (case-insensitive — the share appears as both `\\modern.org\SOFT\` and `\\modern.org\soft\`). This whole namespace is the IT-vetted software depot / deployment share; ANY subfolder counts as legitimate, e.g.:
    - `\\modern.org\SOFT\public\IT_Support\installs\` and `\\…\IT_Support\Driver\` — vetted installers and drivers (1C, BarCode, HP/printer drivers, Hikvision camera SW, MS Office, internal tools).
@@ -48,6 +49,8 @@ F) "Unusual Parent for a System Process" firing on `smss.exe` Process Create whe
 G) Heavy bursts of `Sysmon Network connection detected` from `C:\Users\<user>\AppData\Local\…` apps (OneDrive, Kingsoft WPS, Teams, Slack, Discord, browsers) — these trigger C2 Beaconing because the apps poll fixed CDN/telemetry IPs continuously. Not C2.
 
 H) X-Force Risky IP hits to `94.153.123.0/24` (Ukrtelecom/Datagroup) are frequently stale-positives — re-validate with fresh OSINT.
+
+I) "Detected a Service Binary Path Changed followed by a User or Group Added" chained with `A security-enabled local group was changed` / `A user account was changed`: benign when the Subject **Account Name ends with `$`** (a MACHINE account, e.g. `DRT34$`) and a `Group Security Policy Applied` event is present in the same window, AND no explicit new **member** is named in the group-change event. This is GPO / servicing refreshing local-group properties and the machine's own service ImagePath during policy application — NOT privilege escalation. Real escalation is performed by a NAMED USER account (`MODERN\someone`) adding a NAMED member to Administrators. Confirmed benign on DRT34 15.09 (the Temp process was a signed Opera Assistant installer). Do NOT emit "Confirmed compromise" on a machine-account ($) group-property touch.
 
 Real Red Flags — DO NOT Discount:
 

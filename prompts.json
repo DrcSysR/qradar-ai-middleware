@@ -176,7 +176,9 @@
     "RunDLL32 Outbound Network Connection": [
         "rundll32_outbound.md",
         "sergii.legerko",
-        "rundll32_outbound.aql"
+        "rundll32_outbound.aql",
+        "",
+        "close_on_empty"
     ],
     "Potential Mailto Ransomware Behavior": [
         "ransomware_behavior.md",
