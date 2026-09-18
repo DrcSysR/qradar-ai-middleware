@@ -24,14 +24,22 @@ What the data means. Each row is one (host → DNS server) pair with:
   into query names), NOT of ordinary lookups.
 - `Queries` and `Span_Sec` — volume and duration.
 
-**FIRST CHECK — do this before scoring anything.** Look at `Server_Class` across all rows:
+**FIRST CHECK — do this before scoring anything. These are HARD CEILINGS, not suggestions:
+the #1 failure mode of this use case is the model scoring an ordinary policy bypass 0.7
+"because the volume is high". VOLUME (a big `Queries` count) IS NOT A THREAT SIGNAL for a
+DNS resolver — a resolver is supposed to get many queries. The ONLY things that lift a row
+above 0.6 are (a) a large `Bytes_Per_Query` (>300 over ≥50 queries), or (b) an `unclassified`
+destination. Nothing else. Score the offense by its single worst row, not by total volume.**
 1. If EVERY row is `corporate` → the client used an approved resolver. False positive.
    Score 0.0-0.2, verdict `Benign_Corporate_DNS`. Stop.
-2. If rows are `public-resolver` and EVERY `Bytes_Per_Query` is normal (< 300) → this is a
-   misconfigured host bypassing corporate DNS. It is a real policy violation and it is
-   expected to be common. Score 0.4-0.55, verdict `DNS_Policy_Bypass`. **Never score a plain
-   policy bypass above 0.6** — nothing is compromised, the fix is reconfiguring the client's
-   DNS settings. Name the offending hosts in the explanation.
+2. Rows are `public-resolver` and every `Bytes_Per_Query` < 300 → misconfigured host bypassing
+   corporate DNS. Real policy violation, expected to be common. **Score MUST be ≤ 0.55**
+   (use 0.4-0.55), verdict `DNS_Policy_Bypass`. Nothing is compromised; the fix is
+   reconfiguring the client's DNS. High `Queries` does NOT change this — do not go above 0.55.
+   Name the offending hosts. **Stop here unless a row breaks the byte rule.**
+   - `internal-unlisted` rows with `Bytes_Per_Query` < 300 → even lower: **score MUST be ≤ 0.4**,
+     verdict `DNS_Unlisted_Resolver`. This is a branch/VPN resolver nobody added to the refset,
+     not a threat; say the address is a candidate for `UC05-DNS Servers`. Volume is irrelevant.
 3. **Volume floor — check this before any tunnelling call.** Tunnelling is a *sustained*
    technique: it needs many queries over time. If the whole offense is a handful of queries
    (`Queries` below ~50) or `Span_Sec` is 0, then NO byte size, however large, makes it
