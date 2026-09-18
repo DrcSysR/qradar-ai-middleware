@@ -19,6 +19,20 @@ Names like "Process Launched from Temp" and "Process from Shared Folder" sound m
 
 NOTE ON INPUT: raw Sysmon "Network connection detected" events are FILTERED OUT of your event feed (they are high-volume benign telemetry that used to bury the process-create events). You receive process-create, logon, brute-force, thread-injection, and CRE-derived alerts (X-Force Risky IP, C2 Beaconing). Judge network risk from those CRE alerts and their payloads, not from raw connection volume — and do NOT treat the absence of raw network-connection events as suspicious.
 
+**FIRST CHECK — the "service binary path changed + admin group changed" compromise trap.**
+Do this BEFORE scoring, because it is the single shape that keeps producing false "Confirmed
+compromise 0.9" verdicts (drt34 #1385189, 15-18.09). If ALL THREE hold, it is GPO/servicing,
+NOT privilege escalation → score 0.0-0.3, verdict `FP — GPO group-policy refresh`:
+  1. the group-change / user-change subject **Account Name ends with `$`** (a MACHINE account,
+     e.g. `DRT34$`) — NOT a named user (`MODERN\someone`);
+  2. a `Group Security Policy Applied` (SceCli) event is present in the same window;
+  3. the group-change event names **no explicit new member** (EventID 4735 "group changed" /
+     attribute touch, not 4732 "member added to Administrators").
+Real escalation is a NAMED USER account adding a NAMED member to Administrators — only then may
+this go to 0.7+. A machine-account `$` group-property touch during policy application is benign
+even when a "Process Launched from Temp" (e.g. the Opera updater below) fires in the same offense.
+Never emit "Confirmed compromise" on a `$`-account group-property touch.
+
 Known False-Positive Patterns — Strongly Discount Each Match:
 
 A) "Process Launched from a Temp Directory" sub-rule is benign when the Image path matches one of:
@@ -27,6 +41,7 @@ A) "Process Launched from a Temp Directory" sub-rule is benign when the Image pa
    - ParentImage names a known updater binary (`diff_*.exe`, `*update*.exe`, `*Setup*.exe`) running as the same user.
    - Image is signed (`Company` field populated with a known vendor: Microsoft, Adobe, Zoom, Kingsoft, Google, Slack, Dropbox, Mozilla, **Opera**).
    - `…\Temp\.opera\…\assistant_installer.exe` with Description=`Opera Browser Assistant Installer` — Opera's self-updater unpacking into Temp. Benign.
+   - `…\Temp\.opera\<rand>\installer.exe` (Description=`Opera Installer`, Company=`Opera Software`), parent `opera_autoupdate.exe --scheduledtask` — the same Opera silent updater, different stub. Benign. (This is the Temp process in the drt34 #1385189 FP.)
 
 B) "Process Launched from a Shared Folder" sub-rule is benign when the Image UNC path is anywhere under the corporate IT software namespace `\\modern.org\soft\` (case-insensitive — the share appears as both `\\modern.org\SOFT\` and `\\modern.org\soft\`). This whole namespace is the IT-vetted software depot / deployment share; ANY subfolder counts as legitimate, e.g.:
    - `\\modern.org\SOFT\public\IT_Support\installs\` and `\\…\IT_Support\Driver\` — vetted installers and drivers (1C, BarCode, HP/printer drivers, Hikvision camera SW, MS Office, internal tools).

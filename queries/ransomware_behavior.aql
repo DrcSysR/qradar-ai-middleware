@@ -84,6 +84,30 @@ WHERE
              AND ("Process Path" IS NULL OR "Process Path" ILIKE '%Windows%Temp%' OR "Process Path" ILIKE '%System32%'))
     AND NOT ("Process Name" ILIKE 'poqexec.exe'
              AND ("Process Path" IS NULL OR "Process Path" ILIKE '%System32%'))
+    -- Opera autoupdate: opera_autoupdate.exe запускає installer.exe із свого розпакування
+    -- %Temp%\.opera\<rand>\installer.exe (Description=Opera Installer, Company=Opera Software).
+    -- Наявний фільтр вище ловив лише opera.exe і assistant_installer.exe — а саме цей
+    -- installer.exe/opera_autoupdate.exe прослизали і давали «temp-dir process» на drt34 (#1385189)
+    -- та file-decode на SMQ/INS. Анкор на самозапаковку .opera (NULL для installer НЕ приймаємо).
+    AND NOT ("Process Name" ILIKE 'installer.exe'
+             AND "Process Path" ILIKE '%Temp%.opera%')
+    AND NOT ("Process Name" ILIKE 'opera_autoupdate.exe'
+             AND ("Process Path" IS NULL
+                  OR "Process Path" ILIKE '%Opera%'
+                  OR "Process Path" ILIKE '%Programs%Opera%'))
+    -- Chrome Platform Experience Helper: фоновий хелпер Chrome, запускається svchost -k netsvcs
+    -- Schedule. Підписаний Google, живе під Program Files\Google\Chrome. Давав «rundll32 C2»/
+    -- file-decode шум на REF12 (#1381044).
+    AND NOT ("Process Name" ILIKE 'platform_experience_helper.exe'
+             AND ("Process Path" IS NULL OR "Process Path" ILIKE '%Google%Chrome%'))
+    -- OneDrive launcher (окреме ім'я від OneDrive.exe вище): стартує інстанси по scheduled task.
+    AND NOT ("Process Name" ILIKE 'OneDriveLauncher.exe'
+             AND ("Process Path" IS NULL OR "Process Path" ILIKE '%OneDrive%'))
+    -- YourPhone / Phone Link: PhoneExperienceHost.exe із WindowsApps, запуск через DCOM.
+    AND NOT ("Process Name" ILIKE 'PhoneExperienceHost.exe'
+             AND ("Process Path" IS NULL
+                  OR "Process Path" ILIKE '%YourPhone%'
+                  OR "Process Path" ILIKE '%WindowsApps%'))
 GROUP BY Host, Proc, Proc_Path, Activity, Acct
 ORDER BY Events DESC
 LIMIT {limit} {time_depth}

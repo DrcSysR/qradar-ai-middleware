@@ -95,6 +95,27 @@ below, and do NOT let a second row in the same offense drag it up.
    The exception is the usual one: `regsvr32` pointed at a DLL that is NOT under the Kingsoft
    addon tree, or a parent that is not a signed WPS binary, is a real finding.
 
+11. **Opera autoupdate + Microsoft/Google background helpers** — all seen 17-18.09, all FP:
+   - `installer.exe` from `\AppData\Local\Temp\.opera\<rand>\` (Description `Opera Installer`,
+     Company `Opera Software`), parent `opera_autoupdate.exe --scheduledtask` — Opera's silent
+     updater. A temp path here is Opera's own unpack, not a dropped payload.
+   - `platform_experience_helper.exe` under `Program Files\Google\Chrome\...`, launched by
+     `svchost -k netsvcs Schedule` — Chrome background helper.
+   - `OneDriveLauncher.exe /startInstances`, and `PhoneExperienceHost.exe` (Phone Link, under
+     `WindowsApps\Microsoft.YourPhone_...`) launched by svchost/DCOM — signed MS background apps.
+   `Benign_Software_Maintenance`. (These are also filtered in the AQL now; if one still reaches
+   you, it is because it ran from a DIFFERENT path — judge that path, do not auto-benign the name.)
+
+**certutil nuance (do NOT treat every certutil as staging):** `certutil.exe` running from a
+user `AppData` folder is on the LOLBin escalation list below, BUT the **NSS** certutil (the
+Mozilla `certutil`, args `-A -n <name> -i <file> -t "..." -d sql:<certdb>`) shipped by
+e-signature / crypto clients (e.g. `UniCryptH.exe` as parent, in the same app folder) is adding
+a certificate to that app's own NSS trust store — routine for UA qualified-signature software.
+When the added cert is a **public CA** (GeoTrust, DigiCert, Sectigo, etc.) and the parent is the
+app's own signed binary → score 0.4-0.6 `Benign_Software_Maintenance`, NOT 0.9 staging. Keep it
+SUSPICIOUS only when the imported CA is unknown/self-named, or certutil is doing `-decode`/
+`-urlcache` file staging rather than a cert-DB import.
+
 Allowed benign verdict strings: `Benign_Software_Maintenance`, `Benign_System_Activity`.
 
 **SECOND CHECK — where does the process live?** Only if nothing above matched:
