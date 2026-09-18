@@ -108,6 +108,14 @@ WHERE
              AND ("Process Path" IS NULL
                   OR "Process Path" ILIKE '%YourPhone%'
                   OR "Process Path" ILIKE '%WindowsApps%'))
+    -- Autodesk AutoCAD «Activity Insights»: AcEventSync.exe (батько accoreconsole.exe) пише у
+    -- AppData\Local\Autodesk\ActivityInsights → «File Decode followed by Suspicious Activity».
+    -- Підписаний Autodesk, на конструкторських машинах (HRD79 #1392450 17.09).
+    AND NOT ("Process Name" ILIKE 'AcEventSync.exe'
+             AND ("Process Path" IS NULL OR "Process Path" ILIKE '%Autodesk%'))
+    -- Adobe Acrobat collaboration sync: AdobeCollabSync.exe із Program Files\Adobe\Acrobat.
+    AND NOT ("Process Name" ILIKE 'AdobeCollabSync.exe'
+             AND ("Process Path" IS NULL OR "Process Path" ILIKE '%Adobe%Acrobat%'))
 GROUP BY Host, Proc, Proc_Path, Activity, Acct
 ORDER BY Events DESC
 LIMIT {limit} {time_depth}
