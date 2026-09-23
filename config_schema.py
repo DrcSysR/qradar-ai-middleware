@@ -93,6 +93,12 @@ SCHEMA = {
     # /process-one віддав status "error" (AQL/AI впали) → рядок ERROR; поллер force-перекладе
     # його в QUEUED не раніше, ніж через стільки годин, якщо офенс досі OPEN у вікні.
     "queue_error_retry_hours":        (NUM,  6),
+    # Пріоритет пісочниці (/chat) над тріажем: на повідомлення app.py ставить hold на
+    # chat_hold_seconds — воркер не бере нових офенсів, поточний дороблює; чат чекає
+    # вільний слот llm01 до chat_wait_seconds; після відповіді hold ще chat_grace_seconds.
+    "chat_hold_seconds":              (NUM,  120),
+    "chat_grace_seconds":             (NUM,  45),
+    "chat_wait_seconds":              (NUM,  120),
 
     # --- каскадна тріаж (tier-2) ---
     "escalate_enabled":               (bool, False),

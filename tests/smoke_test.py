@@ -299,6 +299,14 @@ def check_queue_db():
         d = queue_db.depth(conn)
         chk(d["QUEUED"], 2, "depth QUEUED")  # 3 (requeued) і 11
         chk(d["IN_PROGRESS"], 3, "depth IN_PROGRESS")  # 4, 2, 1
+
+        # Hold пісочниці: активний до дедлайну, після — ні; повторний set перезаписує
+        chk(queue_db.hold_active(conn, "chat", now=T0), False, "hold без запису")
+        queue_db.set_hold(conn, "chat", 120, now=T0)
+        chk(queue_db.hold_active(conn, "chat", now="2026-09-23 10:01:59"), True, "hold активний до дедлайну")
+        chk(queue_db.hold_active(conn, "chat", now="2026-09-23 10:02:01"), False, "hold спливає")
+        queue_db.set_hold(conn, "chat", 45, now="2026-09-23 10:02:00")
+        chk(queue_db.hold_until(conn, "chat"), "2026-09-23 10:02:45", "hold перезаписано на grace")
     except Exception as e:
         fail(f"queue_db: виняток під час тесту — {type(e).__name__}: {e}")
 

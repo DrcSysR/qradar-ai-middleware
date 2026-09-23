@@ -50,6 +50,10 @@ CREATE TABLE IF NOT EXISTS work_queue (
     result       TEXT
 );
 CREATE INDEX IF NOT EXISTS wq_claim ON work_queue (status, magnitude DESC, enqueued_at);
+CREATE TABLE IF NOT EXISTS queue_control (
+    key    TEXT PRIMARY KEY,
+    value  TEXT
+);
 """
 
 
@@ -234,6 +238,29 @@ def depth(conn: sqlite3.Connection) -> dict:
                           "GROUP BY magnitude ORDER BY magnitude DESC"):
         out["by_magnitude"][int(r["magnitude"])] = r["c"]
     return out
+
+
+# --- hold: «не бери нових офенсів, llm01 потрібен людині» -------------------------------
+# У llama.cpp один слот. Коли аналітик пише в пісочницю (/chat), app.py ставить hold на
+# кілька десятків секунд; воркер перед кожним claim'ом дивиться сюди і, поки hold
+# активний, нових офенсів не бере — ті, що вже в /process-one, дороблюються, і наступний
+# слот дістається людині. Hold завжди з дедлайном, тож «застрягти» він не може.
+
+def set_hold(conn: sqlite3.Connection, key: str, seconds: float, now: str | None = None) -> str:
+    until = _plus(now or now_utc(), seconds)
+    conn.execute("INSERT INTO queue_control (key, value) VALUES (?, ?) "
+                 "ON CONFLICT(key) DO UPDATE SET value = excluded.value", (f"hold:{key}", until))
+    return until
+
+
+def hold_until(conn: sqlite3.Connection, key: str):
+    row = conn.execute("SELECT value FROM queue_control WHERE key = ?", (f"hold:{key}",)).fetchone()
+    return row["value"] if row else None
+
+
+def hold_active(conn: sqlite3.Connection, key: str, now: str | None = None) -> bool:
+    until = hold_until(conn, key)
+    return bool(until) and until > (now or now_utc())
 
 
 def sweep(conn: sqlite3.Connection, low_mag_max: int, ttl_days: float,

@@ -1617,34 +1617,64 @@ async def chat_send(req: ChatRequest):
     }
     timeout = float(APP_CONFIG.get("openai_timeout_seconds", 300))
 
+    # Пріоритет людини над тріажем. Один слот на llama.cpp: поки воркер крутить офенс, чат
+    # ловив 500. Тепер: (1) ставимо hold — worker.py бачить його перед кожним claim'ом і
+    # НОВИХ офенсів не бере (поточний дороблює); (2) на 5xx не здаємось, а чекаємо слот до
+    # chat_wait_seconds — щойно /process-one поточного офенсу закінчився, llm01 наш;
+    # (3) після відповіді лишаємо hold ще на chat_grace_seconds, щоб діалог із паузами не
+    # губив пріоритет. Пішов — воркер сам продовжить після спливу.
+    hold_seconds = float(APP_CONFIG.get("chat_hold_seconds", 120))
+    grace_seconds = float(APP_CONFIG.get("chat_grace_seconds", 45))
+    wait_seconds = float(APP_CONFIG.get("chat_wait_seconds", 120))
+    with queue_db.connect(DB_PATH) as qconn:
+        queue_db.set_hold(qconn, "chat", hold_seconds)
+
     async def event_stream():
         if dropped:
             yield "data: " + json.dumps({"note": f"Найстаріші {dropped} повідомлень обрізано під контекст моделі"}) + "\n\n"
+        started = time.time()
+        attempt = 0
         try:
             async with httpx.AsyncClient(verify=False, timeout=timeout) as client:
-                async with client.stream("POST", f"{base}/chat/completions",
-                                         headers=headers, json=payload) as resp:
-                    if resp.status_code >= 400:
-                        body = (await resp.aread()).decode("utf-8", "replace")[:400]
-                        # Один слот на llama.cpp: поки поллер тріажить офенс, чат
-                        # отримує 500 'Context size has been exceeded'. Кажемо прямо.
-                        hint = " — llm01 зараз зайнятий тріажем офенсів, спробуй ще раз" if resp.status_code >= 500 else ""
-                        yield "data: " + json.dumps({"error": f"llm01 {resp.status_code}: {body}{hint}"}) + "\n\n"
-                        return
-                    async for line in resp.aiter_lines():
-                        if not line or not line.startswith("data:"):
+                while True:
+                    attempt += 1
+                    async with client.stream("POST", f"{base}/chat/completions",
+                                             headers=headers, json=payload) as resp:
+                        if resp.status_code >= 500 and time.time() - started < wait_seconds:
+                            await resp.aread()
+                            if attempt == 1:
+                                yield "data: " + json.dumps({"note": "⏳ llm01 дороблює поточний офенс — воркер нових не бере, чекаю слот…"}) + "\n\n"
+                            # тримаємо hold свіжим, поки чекаємо
+                            with queue_db.connect(DB_PATH) as qconn:
+                                queue_db.set_hold(qconn, "chat", hold_seconds)
+                            await asyncio.sleep(2)
                             continue
-                        chunk = line[5:].strip()
-                        if chunk == "[DONE]":
-                            break
-                        try:
-                            delta = json.loads(chunk)["choices"][0].get("delta", {}).get("content")
-                        except Exception:
-                            continue
-                        if delta:
-                            yield "data: " + json.dumps({"d": delta}) + "\n\n"
+                        if resp.status_code >= 400:
+                            body = (await resp.aread()).decode("utf-8", "replace")[:400]
+                            hint = f" — llm01 не звільнився за {int(wait_seconds)} с, спробуй ще раз" if resp.status_code >= 500 else ""
+                            yield "data: " + json.dumps({"error": f"llm01 {resp.status_code}: {body}{hint}"}) + "\n\n"
+                            return
+                        if attempt > 1:
+                            yield "data: " + json.dumps({"note": f"✅ слот отримано через {int(time.time() - started)} с"}) + "\n\n"
+                        async for line in resp.aiter_lines():
+                            if not line or not line.startswith("data:"):
+                                continue
+                            chunk = line[5:].strip()
+                            if chunk == "[DONE]":
+                                break
+                            try:
+                                delta = json.loads(chunk)["choices"][0].get("delta", {}).get("content")
+                            except Exception:
+                                continue
+                            if delta:
+                                yield "data: " + json.dumps({"d": delta}) + "\n\n"
+                        break
         except Exception as e:
             yield "data: " + json.dumps({"error": f"{type(e).__name__}: {str(e)[:200]}"}) + "\n\n"
+        finally:
+            # Відповідь є (або зірвалась) — лишаємо llm01 людині ще на grace, далі воркер сам продовжить.
+            with queue_db.connect(DB_PATH) as qconn:
+                queue_db.set_hold(qconn, "chat", grace_seconds)
         yield "data: " + json.dumps({"done": True}) + "\n\n"
 
     return StreamingResponse(event_stream(), media_type="text/event-stream",

@@ -149,12 +149,35 @@ def main() -> None:
         with queue_db.connect(DB_PATH) as c:
             return queue_db.claim_next(c, LEASE_SECONDS)
 
+    hold_logged = [False]
+
+    def wait_for_chat_hold():
+        """Пісочниця (/chat) поставила hold → не беремо НОВИХ офенсів, поки він активний:
+        ті, що вже в /process-one, дороблюються, і наступний слот llm01 дістається людині.
+        Hold має дедлайн (chat_hold_seconds / chat_grace_seconds), тож чекання скінченне."""
+        while not stop:
+            with queue_db.connect(DB_PATH) as c:
+                until = queue_db.hold_until(c, "chat")
+                active = queue_db.hold_active(c, "chat")
+            if not active:
+                if hold_logged[0]:
+                    hold_logged[0] = False
+                    logging.info("▶️ Пісочниця звільнила llm01 — продовжуємо дренаж.")
+                return
+            if not hold_logged[0]:
+                hold_logged[0] = True
+                logging.info(f"⏸ Пісочниця активна (hold до {until} UTC) — нових офенсів не беремо, поточні дороблюємо.")
+            time.sleep(2)
+
     # Кожен потік сам claim'ить наступний рядок і обробляє його — так найважчі офенси не
     # блокують ті, що вже готові, а порядок claim'у гарантує БД, не пул.
     def loop():
         nonlocal conn_errors, taken, stop
         while not stop:
             if BATCH_PER_RUN and taken >= BATCH_PER_RUN:
+                return
+            wait_for_chat_hold()
+            if stop:
                 return
             claim = claim_one()
             if claim is None:
