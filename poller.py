@@ -36,8 +36,21 @@ with open(CONFIG_FILE, "r", encoding="utf-8") as f:
     config = json.load(f)
 QRADAR_API = f"{config['qradar_url']}/api"
 HEADERS = {"SEC": config["qradar_token"], "Accept": "application/json"}
+# ERROR-рядок черги (AQL/AI впали в /process-one) перекладаємо назад у QUEUED не раніше,
+# ніж через стільки годин: Ariel за хвилину не одужає, а AQL-файл лагодиться деплоєм.
+# Раніше поллер молотив AQL_ERROR кожні 10 хв усі 48 год — це і є та «зациклена трійка».
+ERROR_RETRY_HOURS = float(config.get("queue_error_retry_hours", 6))
 
 target_rules = get_rule_keys(PROMPTS_FILE)
+
+
+def age_hours(ts_utc: str) -> float:
+    """Вік рядка черги за enqueued_at (UTC 'YYYY-MM-DD HH:MM:SS', як пише queue_db)."""
+    import calendar
+    try:
+        return (time.time() - calendar.timegm(time.strptime(ts_utc, "%Y-%m-%d %H:%M:%S"))) / 3600
+    except (TypeError, ValueError):
+        return 0.0
 
 # --- ФУНКЦІЇ БАЗИ ДАНИХ ТА API ---
 def is_processed_in_db(offense_id):
@@ -116,7 +129,7 @@ try:
         #
         # has_ai_note — це API-виклик на офенс, тож робимо його ЛИШЕ для офенсів, яких у
         # черзі ще немає (перший раз бачимо). Рядок у черзі = has_ai_note вже пройдено.
-        counts = {"inserted": 0, "refreshed": 0, "skipped": 0}
+        counts = {"inserted": 0, "refreshed": 0, "requeued": 0, "skipped": 0}
         skipped_noted = 0
         skipped_processed = 0
         unmatched = 0
@@ -142,15 +155,22 @@ try:
 
                 # 3. Надійна перевірка через API — лише для нових у черзі (якщо в QRadar
                 #    вже є нотатка, але БД була видалена)
-                if queue_db.get_status(qconn, off_id) is None:
+                q_status = queue_db.get_status(qconn, off_id)
+                force = False
+                if q_status is None:
                     if counts["inserted"] >= MAX_ENQUEUE_PER_RUN:
                         hit_limit = True
                         continue
                     if has_ai_note(off_id):
                         skipped_noted += 1
                         continue
+                elif q_status == queue_db.ERROR:
+                    # 4. ERROR (AQL/AI впали) і офенс досі OPEN → повтор, але не частіше
+                    #    ніж раз на ERROR_RETRY_HOURS. Молодший ERROR лишаємо як є.
+                    row = queue_db.status_of(qconn, off_id) or {}
+                    force = age_hours(row.get("enqueued_at", "")) >= ERROR_RETRY_HOURS
 
-                outcome = queue_db.enqueue(qconn, off_id, int(off.get("magnitude") or 0), "auto", key)
+                outcome = queue_db.enqueue(qconn, off_id, int(off.get("magnitude") or 0), "auto", key, force=force)
                 counts[outcome] = counts.get(outcome, 0) + 1
                 if outcome == "inserted":
                     per_lens[key] = per_lens.get(key, 0) + 1
@@ -159,7 +179,8 @@ try:
 
         logging.info(
             f"📥 У чергу: нових {counts['inserted']}, оновлено магнітуду {counts['refreshed']}, "
-            f"без змін {counts['skipped']} · пропущено: PROCESSED {skipped_processed}, "
+            f"повторно після ERROR {counts['requeued']}, без змін {counts['skipped']} · "
+            f"пропущено: PROCESSED {skipped_processed}, "
             f"з нотаткою AI {skipped_noted}, без юзкейсу {unmatched}."
         )
         if per_lens:

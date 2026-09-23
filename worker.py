@@ -81,9 +81,30 @@ def process_claim(claim: dict) -> str:
                 res = r.json()
             except ValueError:
                 res = {"status": "ok", "raw": r.text[:500]}
+            body_status = res.get("status", "ok") if isinstance(res, dict) else "ok"
+            message = str(res.get("message", "")) if isinstance(res, dict) else ""
+
+            # HTTP 200 + status "error" = аналіз НЕ відбувся (AQL 422/ERROR/таймаут Ariel,
+            # обидва AI-провайдери впали). В offenses це AQL_ERROR/AI_ERROR ≠ PROCESSED,
+            # тобто офенс лишився відкритим і потребує повтору — але не миттєвого (Ariel
+            # впаде так само) і не вічного (старий поллер молотив такі кожні 10 хв 48 год).
+            # Ставимо ERROR: поллер force-перекладе рядок у чергу через
+            # queue_error_retry_hours, «щойно AQL виправлено» — а в /queue/depth це видно.
+            if body_status == "error":
+                queue_db.mark(conn, off_id, queue_db.ERROR, res)
+                logging.warning(f"⚠️ {tag} → error: {message[:160]} — ERROR, повтор поллером через retry_hours.")
+                return "app_error"
+
+            # «Currently processing» — той самий офенс зараз крутить інший запит (напр.
+            # ручний). Не позначаємо нічого: рядок лишається IN_PROGRESS, оренда спливе —
+            # claim повернеться. Це природний backoff замість busy-loop на /process-one.
+            if body_status == "skipped" and "processing" in message.lower():
+                logging.info(f"⏳ {tag} → {message} — лишаємо IN_PROGRESS до спливу оренди.")
+                return "busy"
+
             queue_db.mark(conn, off_id, queue_db.DONE, res)
             score = f" score {res['score']}" if isinstance(res, dict) and "score" in res else ""
-            logging.info(f"✅ {tag} → {res.get('status', 'ok') if isinstance(res, dict) else 'ok'}{score}")
+            logging.info(f"✅ {tag} → {body_status}{score}")
             return "ok"
         if 400 <= r.status_code < 500:
             queue_db.mark(conn, off_id, queue_db.ERROR, {"http": r.status_code, "body": r.text[:500]})

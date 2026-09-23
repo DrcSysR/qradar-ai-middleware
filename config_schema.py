@@ -90,6 +90,9 @@ SCHEMA = {
     "queue_sweep_ttl_days":           (NUM,  3),
     "queue_done_retention_days":      (NUM,  14),
     "queue_alert_depth":              (int,  1500),   # WARNING у worker.log при QUEUED ≥
+    # /process-one віддав status "error" (AQL/AI впали) → рядок ERROR; поллер force-перекладе
+    # його в QUEUED не раніше, ніж через стільки годин, якщо офенс досі OPEN у вікні.
+    "queue_error_retry_hours":        (NUM,  6),
 
     # --- каскадна тріаж (tier-2) ---
     "escalate_enabled":               (bool, False),
