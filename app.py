@@ -339,8 +339,12 @@ async def fetch_data_from_qradar(client: httpx.AsyncClient, offense_id: int, tim
         # «414 Request-URI Too Long» (HTML замість JSON, 282 такі відповіді за 3 доби).
         # Лінза «впала» → close_on_empty знято → generic AQL → 0.7–0.8 на сирих подіях
         # (KDR02 #1431150). У тілі ліміту на довжину запиту фактично немає.
+        # Content-Type задаємо ЯВНО: у HEADERS стоїть application/json для решти API, а
+        # form-тіло під JSON-заголовком Ariel відкидає з 422 (так упало 426 офенсів за
+        # хвилину після першого деплою цього фіксу, 23.09 12:30).
         search_url = f"{QRADAR_API_URL}/ariel/searches"
-        response = await client.post(search_url, headers=HEADERS, data={"query_expression": aql})
+        form_headers = {**HEADERS, "Content-Type": "application/x-www-form-urlencoded"}
+        response = await client.post(search_url, headers=form_headers, data={"query_expression": aql})
 
         if response.status_code not in (200, 201):
             logging.error(f"AQL Error ({aql_filename}, {len(aql)} chars, HTTP {response.status_code}): {response.text[:300]}")
