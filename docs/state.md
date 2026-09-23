@@ -18,7 +18,8 @@ reference set'ами.
 | Компонент | Хост / IP | Роль |
 |---|---|---|
 | `qradar-middleware.service` | mdlwr01 (172.17.61.225, **2 vCPU / 2 ГБ RAM**) | FastAPI+gunicorn, 4 воркери uvicorn, `0.0.0.0:5000` |
-| `qradar-poller.timer/.service` | mdlwr01 | oneshot кожні 10 хв (`OnUnitActiveSec=10min`) |
+| `qradar-poller.timer/.service` | mdlwr01 | oneshot кожні 10 хв (`OnUnitActiveSec=10min`) — продюсер черги |
+| `qradar-worker.timer/.service` | mdlwr01 | oneshot кожні 2 хв (`OnUnitActiveSec=2min`) — консюмер черги, дренаж до порожньої; fcntl-лок `worker.lock` не дає накластися |
 | QRadar (event collector, API) | 172.17.61.184 | джерело офенсів і подій, Ariel-пошуки |
 | llm01 (`openai` провайдер) | 172.17.61.251 (корп, SSH) / 10.2.10.1 (внутр., :8080) | tier-1 llama.cpp, qwen2.5-coder-3b, Quadro P620 2 ГБ; **3 слоти × 8192** |
 | Vertex AI | GCP | tier-2 ескалація + manual-режим |
@@ -37,8 +38,12 @@ QRadar offenses API ──► poller.py (кожні 10 хв, вікно 48 го�
               work_queue в ai_state.db (queue_db.py): offense_id · magnitude · source · lens
                           │ порядок claim'у: magnitude DESC → manual → найстаріші (2026-09-23)
                           ▼
-              worker.py (крок B, ще не викочено) ──► POST 127.0.0.1:5000/process-one
-                          │
+              worker.py (qradar-worker.timer, кожні 2 хв, дренаж до порожньої черги)
+                          │ claim_next(): BEGIN IMMEDIATE + оренда 900 с (crash-recovery)
+                          ▼
+              POST 127.0.0.1:5000/process-one {offense_id, is_manual, ...overrides}
+                          │ (веб-форма і tools/catchup.py → POST /universal-analysis = enqueue,
+                          │  далі полять GET /queue/status/{id}; GET /queue/depth — метрика)
    app.py: offense details ─► prompts.json: УСІ зматчені лінзи (опис + правила-учасники)
                           │  промпт/assignee/refset — від лінзи №1, події — з AQL усіх (cap 3)
                           ├─ AQL: POST /ariel/searches → полінг (дедлайн) → results → DELETE
@@ -78,7 +83,9 @@ Google Chat), `cdn_allowlist_update.py` (06:30, рефсет CDN-allowlist ~22 �
 | Шлях | Що робить |
 |---|---|
 | `app.py` | FastAPI: `POST /universal-analysis`, `GET /` (HTML-форма ручного запуску) |
-| `poller.py` | standalone-поллер під systemd timer |
+| `poller.py` | продюсер черги під systemd timer: discovery + матч → `work_queue` (нічого не обробляє) |
+| `queue_db.py` | таблиця `work_queue` в `ai_state.db`; єдиний `ORDER_BY` для claim/position; enqueue/claim_next/mark/sweep/depth |
+| `worker.py` | консюмер черги під systemd timer: claim → `POST /process-one` → DONE/ERROR; sweep low-mag хвоста |
 | `prompts.json` | мапа: ключ опису → `[prompt.md, assignee, query.aql, refset_cleanup?, close_on_empty?]` |
 | `prompts/*.md`, `queries/*.aql` | інструкція моделі та AQL під кожен юзкейс |
 | `prompts_loader.py` | резолв мапінгу + фолбек на `Default` |
@@ -102,7 +109,9 @@ Google Chat), `cdn_allowlist_update.py` (06:30, рефсет CDN-allowlist ~22 �
 ## 6. Операційні процедури
 
 ```bash
-systemctl status qradar-middleware qradar-poller.timer      # стан
+systemctl status qradar-middleware qradar-poller.timer qradar-worker.timer   # стан
+curl -s 127.0.0.1:5000/queue/depth                         # глибина черги за статусами/магнітудою
+tail -f /opt/qradar-middleware/worker.log                   # дренаж черги (що саме зараз обробляється)
 journalctl -u qradar-middleware -f                          # вердикти в реальному часі
 tail -f /opt/qradar-middleware/poller.log                   # черга поллера
 python3 tests/smoke_test.py                                 # перед комітом

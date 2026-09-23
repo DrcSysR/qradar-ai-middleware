@@ -16,10 +16,14 @@ start/end офенсу, тож розмах = тривалість офенсу,
 шле `max_span_hours: 12` — свіжий хвіст офенсу, а не вся його історія. Це і є той
 параметр, який робить повтор осмисленим.
 
-Цей скрипт добирає саме їх і шле у той самий `POST /universal-analysis`, що й поллер
+Цей скрипт добирає саме їх і шле у `POST /universal-analysis` — з 2026-09-23 це не
+аналіз, а постановка в чергу `work_queue` (`source: catchup`) з магнітудою офенсу;
+обробляє worker.py у порядку magnitude DESC → manual → найстаріші, тож догінний прохід
+не відтісняє ручні запуски аналітика. Оверайди вікна (`window_hours`, `max_span_hours`,
+`aql_timeout_seconds`, `force`) зберігаються в рядку черги й доїжджають до /process-one
 (`is_manual: false` — модель і вікно ті самі, що в авто-режимі; вікно AQL прив'язане до
 start/end самого офенсу, тому вік офенсу ролі не грає, а розмах обмежений
-`max_aql_span_hours`).
+`max_aql_span_hours`). Відповідь на POST — `queued`, не вердикт.
 
 Запуск на mdlwr01 (файл, не через stdin — потрібні аргументи):
 
@@ -281,7 +285,8 @@ def run_queue(args, api, headers, queue, lock_path=LOCK_FILE):
             return "skipped_noted", off_id
         try:
             r = requests.post(MIDDLEWARE_URL,
-                              json={"offense_id": off_id, "is_manual": args.manual, **body_extra},
+                              json={"offense_id": off_id, "is_manual": args.manual,
+                                    "source": "manual" if args.manual else "catchup", **body_extra},
                               timeout=600)
             if r.status_code == 200:
                 body = r.json() if r.headers.get("content-type", "").startswith("application/json") else {}

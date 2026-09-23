@@ -1,4 +1,4 @@
-# 2026-09-23 — черга офенсів із пріоритетом за магнітудою (крок A: поллер → продюсер)
+# 2026-09-23 — черга офенсів із пріоритетом за магнітудою (поллер → work_queue → worker)
 
 ## Як знайшлося
 
@@ -80,16 +80,49 @@ autoupdate відкотить.
 купуємо: **реальний сигнал ніколи не тоне під сплеском шуму**. І хвіст, що росте, — це
 low-mag, тобто саме те, що не шкода дропнути.
 
-## Крок B (наступний коміт)
+## Крок B (той самий день): дренаж
 
-`worker.py` — консюмер: `claim_next()` → `POST /process-one` → `mark()`. Поточне тіло
-`/universal-analysis` (`app.py:616`) перейменовується у внутрішній `/process-one` **без
-змін**; новий `/universal-analysis` лише кладе в чергу — тож і ручні запуски з веб-форми,
-і `tools/catchup.py` ідуть через ту саму чергу за тією ж магнітудою (`is_manual` більше не
-bypass, лише вибір deep-моделі). Форма стає асинхронною (полінг `/queue/status/{id}`).
-Нові ключі `worker_*`/`queue_*` у SCHEMA. На mdlwr01 — `qradar-worker.timer/.service`
-поруч із `qradar-poller.timer`.
+**`worker.py` — консюмер.** systemd oneshot `qradar-worker.timer` кожні 2 хв (юзер
+`qmiddleware`, venv — як у поллера), дренаж до порожньої черги, fcntl-лок `worker.lock`.
+`worker_concurrency` потоків, кожен сам `claim_next()` → `POST /process-one` → `mark()`:
+порядок гарантує БД, не пул, тож найважчий офенс не тримає готові. HTTP 200 → `DONE` з
+тілом відповіді; 4xx → `ERROR` одразу (детерміновано); 5xx/таймаут → рядок лишається
+`IN_PROGRESS` до спливу оренди (900 с > `timeout_seconds` 600), після `worker_max_attempts`
+→ `ERROR`; ≥3 відмов з'єднання за ран → стоп. На старті — `sweep()` і `📏 Глибина`,
+`WARNING` при `QUEUED ≥ queue_alert_depth` (1500).
 
-**Між A і B авто-тріаж стоїть**: поллер накидає, ніхто не дренажить. Це свідомо — один-два
-рани подивитись на `📏 Глибина черги` у `poller.log` і переконатись, що mag-7 нагорі,
-перш ніж вмикати дренаж.
+**`app.py`: розщеплення ендпоінта.** Тіло старого `/universal-analysis` перейменовано у
+внутрішній **`/process-one`** — без жодної зміни логіки. Новий **`/universal-analysis`**
+лише ставить у чергу: тягне `magnitude` (тепер у `get_offense_details`), матчить лінзу,
+`enqueue()`; відповідь — `{status:"queued", outcome, magnitude, position}`. Тобто **всі**
+запуски — авто (поллер), ручні (веб-форма), догінні (`tools/catchup.py`, `source:
+catchup`) — ідуть через одну чергу за однією магнітудою. `is_manual` більше не обхід
+черги: аналітик чекає за тим самим порядком (перед автоматом лише при рівній
+магнітуді), і далі вибирає deep-модель/вікно в `/process-one` та вмикає `force` (переоцінка
+вже `DONE`). Оверайди `window_hours` / `max_span_hours` / `aql_timeout_seconds` / `force`
+зберігаються в `overrides` рядка і доїжджають до `/process-one`. Нові `GET
+/queue/status/{id}` (стан + результат, полить форма кожні 3 с, до 45 хв) і `GET
+/queue/depth` (метрика). Веб-форма стала асинхронною — єдина видима зміна поведінки.
+
+Нові ключі в `config_schema.SCHEMA`: `worker_concurrency` 3, `worker_lease_seconds` 900,
+`worker_max_attempts` 3, `worker_batch_per_run` 0, `queue_sweep_low_mag_max` 3,
+`queue_sweep_ttl_days` 3, `queue_done_retention_days` 14, `queue_alert_depth` 1500.
+
+**Викатка.** Крок A пішов через autoupdate окремо (`6d7c966`): між A і B авто-тріаж стояв
+свідомо — подивитись на `📏 Глибина черги` у `poller.log`. Крок B — цей коміт; на mdlwr01
+руками: `qradar-worker.service/.timer`, `daemon-reload`, `enable --now`; прибрати
+`poller_concurrency` з `config.json` (інакше WARN «невідомий ключ»). Health-check
+autoupdate — `GET`, ендпоінтом черги не зачеплений.
+
+**Верифікація, яку варто зробити після першого рану воркера**: у `worker.log` першими
+мають піти саме mag-7 injection-офенси, і більшість — `closed` / `score 0.0` через
+`close_on_empty`. Це і є підтвердження, що черга робить те, заради чого писалась.
+
+## Чого не робили
+
+Не додавали aging до порядку (`magnitude + age/6`): при сталому high-mag припливі low-mag
+голодуватиме — але low-mag хвіст = шум за побудовою, і його тримає `sweep()`. Не тягли
+Redis/RabbitMQ: SQLite + WAL + короткі `BEGIN IMMEDIATE` на сотнях офенсів/добу і 3
+claim'ерах — не вузьке місце, а нова інфра на SIEM-хості — це те, чого репо свідомо
+уникає. Не чіпали `/process-one` всередині: увесь тріаж лишився як був, тож регресії
+логіки закриття/розблокування тут бути не може — лише порядку.

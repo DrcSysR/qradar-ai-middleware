@@ -16,6 +16,7 @@ import time
 from prompts_loader import get_dynamic_prompt as _get_dynamic_prompt, DEFAULT_AQL_FILE
 from prompts_loader import get_matched_lenses
 import config_schema
+import queue_db
 
 VERTEX_KEY_PATH = "/opt/qradar-middleware/me-vertex-ai-studio-666353d9e1df.json"
 CONFIG_FILE = "/opt/qradar-middleware/config.json"
@@ -144,6 +145,8 @@ def init_db():
         cols = {row[1] for row in conn.execute("PRAGMA table_info(offenses)")}
         if "escalated" not in cols:
             conn.execute("ALTER TABLE offenses ADD COLUMN escalated INTEGER DEFAULT 0")
+        # Черга офенсів (work_queue) живе в тій самій БД — див. queue_db.py
+        queue_db.init_schema(conn)
 init_db()
 
 app = FastAPI(title="QRadar AI Middleware")
@@ -168,6 +171,10 @@ class UniversalTrigger(BaseModel):
     # двома подіями Ariel сканує все вікно, і 180 с не вистачає (переміряно 02.09).
     # None = значення з config.json (aql_poll_timeout_seconds, дефолт 180).
     aql_timeout_seconds: float | None = None
+    # Джерело для черги: 'auto' | 'manual' | 'catchup'. None → 'manual', якщо is_manual,
+    # інакше 'auto'. Впливає лише на порядок у черзі (manual перед auto при рівній
+    # магнітуді) — модель/вікно й далі вибирає is_manual. Шле tools/catchup.py.
+    source: str | None = None
 
 def get_dynamic_prompt(rule_name, rule_names=None):
     return _get_dynamic_prompt(rule_name, PROMPTS_FILE, PROMPTS_DIR, rule_names=rule_names)
@@ -222,6 +229,7 @@ async def get_offense_details(client: httpx.AsyncClient, offense_id: int):
         "rules": data.get("rules", []),
         "start_time": data.get("start_time"),
         "last_updated_time": data.get("last_updated_time"),
+        "magnitude": int(data.get("magnitude") or 0),  # ключ пріоритету в work_queue
     }
 
 def _strip_aql_comments(aql: str) -> str:
@@ -613,8 +621,77 @@ async def ask_vertex(client: httpx.AsyncClient, model: str, prompt: str) -> tupl
         
 PROCESSING_STALE_MINUTES = 60  # PROCESSING старший за стільки хвилин — вважається крашнутим, можна перезапускати
 
+
 @app.post("/universal-analysis")
 async def universal_analysis(payload: UniversalTrigger):
+    """Публічний вхід (веб-форма, tools/catchup.py, зовнішні виклики). З 2026-09-23 НЕ
+    аналізує — кладе офенс у work_queue з його магнітудою. Забирає worker.py у порядку
+    magnitude DESC → (manual перед auto) → найстаріші і віддає у /process-one.
+
+    is_manual тут більше не обходить чергу: аналітик стає в ту саму чергу за тією ж
+    магнітудою (при рівній — перед автоматом). Він і далі вибирає deep-модель/вікно в
+    /process-one і вмикає force (переоцінка вже DONE-офенсу). Оверайди догінного проходу
+    (window_hours, max_span_hours, aql_timeout_seconds, force) зберігаються в рядку черги.
+    Причина: 150 зі 158 mag-7 injection-офенсів не доходили до мідлваря, конкуруючи за
+    100 місць/ран поллера з low-mag шумом (запис 2026-09-23)."""
+    source = payload.source or ("manual" if payload.is_manual else "auto")
+    if source not in queue_db.SOURCES:
+        raise HTTPException(status_code=400, detail=f"source має бути одним з {queue_db.SOURCES}")
+
+    timeout_seconds = APP_CONFIG.get("timeout_seconds", 600.0)
+    async with httpx.AsyncClient(verify=False, timeout=timeout_seconds) as client:
+        details = await get_offense_details(client, payload.offense_id)
+        if not details:
+            raise HTTPException(status_code=404, detail="Offense not found or API error")
+        rules_map = await get_rules_map(client)
+    rule_names = [rules_map.get(r.get("id"), "") for r in details.get("rules", [])]
+    lenses = get_matched_lenses(details["offense_name"], PROMPTS_FILE, rule_names)
+    lens = lenses[0]["key"] if lenses else "Default"
+
+    overrides = {k: getattr(payload, k) for k in ("window_hours", "max_span_hours", "aql_timeout_seconds", "force")
+                 if getattr(payload, k) not in (None, False)}
+
+    with queue_db.connect(DB_PATH) as qconn:
+        outcome = queue_db.enqueue(qconn, payload.offense_id, details["magnitude"], source, lens,
+                                   overrides or None, force=bool(payload.force or payload.is_manual))
+        st = queue_db.status_of(qconn, payload.offense_id) or {}
+
+    logging.info(f"📥 Офенс {payload.offense_id} → черга: {outcome} [m{details['magnitude']} {source} {lens[:40]}] "
+                 f"позиція {st.get('position')}")
+    return {
+        "status": "queued",
+        "outcome": outcome,                 # inserted | refreshed | requeued | skipped
+        "offense_id": payload.offense_id,
+        "magnitude": details["magnitude"],
+        "source": source,
+        "lens": lens,
+        "queue_status": st.get("status"),
+        "position": st.get("position"),
+    }
+
+
+@app.get("/queue/status/{offense_id}")
+async def queue_status(offense_id: int):
+    """Стан рядка в черзі + результат /process-one після DONE (полить веб-форма)."""
+    with queue_db.connect(DB_PATH) as qconn:
+        st = queue_db.status_of(qconn, offense_id)
+    if st is None:
+        raise HTTPException(status_code=404, detail="Offense is not in the queue")
+    return st
+
+
+@app.get("/queue/depth")
+async def queue_depth():
+    """Глибина черги за статусами і магнітудою — метрика «наскільки під водою»."""
+    with queue_db.connect(DB_PATH) as qconn:
+        return queue_db.depth(qconn)
+
+
+@app.post("/process-one")
+async def process_one(payload: UniversalTrigger):
+    """ВНУТРІШНІЙ: власне аналіз одного офенсу (AQL → лінзи → LLM → каскад → нотатка/
+    закриття). До 2026-09-23 це тіло і було /universal-analysis. Викликає лише worker.py
+    після claim'у з черги; зовні сюди ходити не треба — черга обійдеться."""
 
     with sqlite3.connect(DB_PATH) as conn:
         cursor = conn.cursor()
@@ -1634,9 +1711,29 @@ async function runAnalysis() {
 
     resultDiv.style.display = 'block';
     resultDiv.className = 'loading';
-    resultDiv.innerText = "⏳ Аналізую логи (це може зайняти хвилину)...";
+    resultDiv.innerText = "📥 Ставлю в чергу...";
+
+    // Рендер результату /process-one (він же лежить у work_queue.result після DONE)
+    function renderResult(data) {
+        if (data.status === "success") {
+            resultDiv.className = 'success';
+            resultDiv.innerText = `✅ Аналіз завершено!\nВердикт: ${data.verdict}\nОцінка (Score): ${data.score}`;
+        } else if (data.status === "closed") {
+            resultDiv.className = 'success';
+            resultDiv.innerText = `✅ ${data.message}\nОцінка (Score): ${data.score}`;
+        } else if (data.status === "skipped") {
+            resultDiv.className = 'error'; // Можна зробити жовтий стиль для skipped, але поки буде як error
+            resultDiv.innerText = `⚠️ Пропущено: ${data.message}`;
+        } else {
+            resultDiv.className = 'error';
+            resultDiv.innerText = `❌ Помилка: ${data.message || JSON.stringify(data)}`;
+        }
+    }
 
     try {
+        // /universal-analysis більше НЕ аналізує синхронно — кладе офенс у чергу з його
+        // магнітудою. Забирає worker.py у порядку magnitude DESC → manual → найстаріші.
+        // Далі полимо /queue/status/{id}, доки воркер не поставить DONE/ERROR.
         const response = await fetch('/universal-analysis', {
             method: 'POST',
             headers: {
@@ -1645,25 +1742,37 @@ async function runAnalysis() {
             body: JSON.stringify(payload)
         });
 
-        if (response.ok) {
-            const data = await response.json();
-            
-            // ПЕРЕВІРЯЄМО СТАТУС ВІДПОВІДІ
-            if (data.status === "success") {
-                resultDiv.className = 'success';
-                resultDiv.innerText = `✅ Аналіз завершено!\nВердикт: ${data.verdict}\nОцінка (Score): ${data.score}`;
-            } else if (data.status === "skipped") {
-                resultDiv.className = 'error'; // Можна зробити жовтий стиль для skipped, але поки буде як error
-                resultDiv.innerText = `⚠️ Пропущено: ${data.message}`;
-            } else {
-                resultDiv.className = 'error';
-                resultDiv.innerText = `❌ Помилка: ${data.message}`;
-            }
-            
-        } else {
+        if (!response.ok) {
             resultDiv.className = 'error';
             resultDiv.innerText = "❌ Помилка сервера: " + response.status;
+            return;
         }
+        const q = await response.json();
+        if (q.status !== "queued") {
+            renderResult(q);
+            return;
+        }
+
+        const deadline = Date.now() + 45 * 60 * 1000;  // 45 хв — далі результат буде в нотатці офенсу
+        while (Date.now() < deadline) {
+            const st = await fetch(`/queue/status/${q.offense_id}`).then(r => r.ok ? r.json() : null);
+            if (!st) break;
+            if (st.status === "DONE" && st.result) {
+                renderResult(st.result);
+                return;
+            }
+            if (st.status === "ERROR") {
+                resultDiv.className = 'error';
+                resultDiv.innerText = `❌ Воркер не зміг обробити офенс: ${JSON.stringify(st.result)}`;
+                return;
+            }
+            const pos = (st.position === null || st.position === undefined) ? "обробляється" : `позиція ${st.position + 1}`;
+            resultDiv.className = 'loading';
+            resultDiv.innerText = `⏳ У черзі · магнітуда ${st.magnitude} · ${pos} · спроба ${st.attempts}\n(порядок: магнітуда → ручні → найстаріші)`;
+            await new Promise(r => setTimeout(r, 3000));
+        }
+        resultDiv.className = 'loading';
+        resultDiv.innerText = "⏳ Офенс ще в черзі. Результат з'явиться нотаткою «AI Analysis» в офенсі.";
     } catch (error) {
         console.error("Помилка мережі:", error);
         resultDiv.className = 'error';

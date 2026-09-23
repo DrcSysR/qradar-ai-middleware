@@ -75,6 +75,22 @@ SCHEMA = {
     # одночасно). Кожна лінза = окремий пошук в Ariel, тож це стеля вартості.
     "max_aql_lenses_per_offense":     (int,  3),
 
+    # --- черга work_queue / worker.py (запис 2026-09-23) ---
+    # Скільки офенсів воркер віддає в /process-one одночасно. Дорівнює кількості воркерів
+    # gunicorn (3): більше лише створить чергу всередині сервісу (переміряно 2026-08-28).
+    "worker_concurrency":             (int,  3),
+    # Оренда на IN_PROGRESS: має бути більшою за timeout_seconds аналізу, інакше живий
+    # офенс заберуть удруге. Воркер упав — після спливу рядок повертається в чергу сам.
+    "worker_lease_seconds":           (NUM,  900),
+    "worker_max_attempts":            (int,  3),
+    "worker_batch_per_run":           (int,  0),      # 0 = дренаж до порожньої черги
+    # Черга переставляє роботу, а не додає потужності: при припливі > дренажу росте хвіст
+    # QUEUED. Sweep дропає його low-mag частину, старшу за TTL; high-mag не чіпає ніколи.
+    "queue_sweep_low_mag_max":        (int,  3),
+    "queue_sweep_ttl_days":           (NUM,  3),
+    "queue_done_retention_days":      (NUM,  14),
+    "queue_alert_depth":              (int,  1500),   # WARNING у worker.log при QUEUED ≥
+
     # --- каскадна тріаж (tier-2) ---
     "escalate_enabled":               (bool, False),
     "escalate_provider":              (str,  "vertex"),
