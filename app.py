@@ -325,15 +325,25 @@ async def fetch_data_from_qradar(client: httpx.AsyncClient, offense_id: int, tim
         username=username,
     )
     aql = _strip_aql_comments(aql)
+    # Переноси рядків з відступами → один пробіл. Літерали всередині рядка не чіпаємо
+    # (тільки послідовності «пробіли+\n+пробіли»), тож ILIKE-патерни лишаються як є.
+    aql = re.sub(r"[ \t]*\n[ \t]*", " ", aql).strip()
 
     logging.debug(f"Executing Custom AQL ({aql_filename}): {aql}")
-    
+
     try:
-        search_url = f"{QRADAR_API_URL}/ariel/searches?query_expression={urllib.parse.quote(aql)}"
-        response = await client.post(search_url, headers=HEADERS)
-        
+        # AQL — у ТІЛІ POST (form-urlencoded), а не в URL. Ariel приймає обидва варіанти
+        # (перевірено 23.09.2026: form-body → 201, JSON-body → 422), але URL обмежений
+        # Apache LimitRequestLine 8190 байт: ransomware_behavior.aql після серії
+        # бенін-фільтрів став 8842 байт у URL-кодуванні і 40 разів за 3 доби впав з
+        # «414 Request-URI Too Long» (HTML замість JSON, 282 такі відповіді за 3 доби).
+        # Лінза «впала» → close_on_empty знято → generic AQL → 0.7–0.8 на сирих подіях
+        # (KDR02 #1431150). У тілі ліміту на довжину запиту фактично немає.
+        search_url = f"{QRADAR_API_URL}/ariel/searches"
+        response = await client.post(search_url, headers=HEADERS, data={"query_expression": aql})
+
         if response.status_code not in (200, 201):
-            logging.error(f"AQL Error: {response.text}")
+            logging.error(f"AQL Error ({aql_filename}, {len(aql)} chars, HTTP {response.status_code}): {response.text[:300]}")
             return None
 
         search_id = response.json().get("search_id")

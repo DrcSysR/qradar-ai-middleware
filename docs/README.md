@@ -14,6 +14,7 @@ AI-тріаж офенсів QRadar: сервіс читає офенс, під�
 
 | Дата | Запис |
 |---|---|
+| 2026-09-23 | [AQL у тілі POST: ransomware-лінза падала з 414 Request-URI Too Long → generic AQL → 0.8 на FP](changes/2026-09-23-b-aql-414-request-uri.md) |
 | 2026-09-23 | [черга офенсів із пріоритетом за магнітудою: поллер → work_queue → worker → /process-one](changes/2026-09-23-cherha-za-mahnitudoyu.md) |
 | 2026-09-03 | [NO_EVENTS: фолбек на генеричний AQL замість тиші](changes/2026-09-03-b-fallback-genericnyi-aql.md) |
 | 2026-09-03 | [пайплайн розблоковував активні SSH-сканери: окремий поріг зняття блоку](changes/2026-09-03-porih-rozblokuvannya.md) |
