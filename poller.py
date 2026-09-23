@@ -7,13 +7,15 @@ import logging
 import fcntl
 import sys
 import sqlite3
-from concurrent.futures import ThreadPoolExecutor, as_completed
 
 from prompts_loader import get_rule_keys, matched_rule_key
+import queue_db
 
 # --- НАЛАШТУВАННЯ ---
 LOOKBACK_TIME_MS = 48 * 60 * 60 * 1000  # 48 годин: страховка, щоб офенси, пропущені під час бурсту, не гинули поза вікном (deep/manual режим бере 7 днів через AQL time_depth)
-MAX_OFFENSES_PER_RUN = 100  # стеля на ран; таймер рахує від завершення, fcntl-лок не дасть накластися
+# Стеля лише на НОВІ рядки за ран: кожен новий офенс коштує один has_ai_note API-виклик.
+# Перший ран після деплою бачить усе 48-год вікно (~2.5k) — розкладаємо на кілька ранів.
+MAX_ENQUEUE_PER_RUN = 1500
 LOG_FILE = "/opt/qradar-middleware/poller.log"
 LOCK_FILE = "/opt/qradar-middleware/poller.lock"
 DB_PATH = "/opt/qradar-middleware/ai_state.db"
@@ -29,13 +31,9 @@ urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
 BASE_DIR = "/opt/qradar-middleware"
 CONFIG_FILE = os.path.join(BASE_DIR, "config.json")
 PROMPTS_FILE = os.path.join(BASE_DIR, "prompts.json")
-MIDDLEWARE_URL = "http://127.0.0.1:5000/universal-analysis"
 
 with open(CONFIG_FILE, "r", encoding="utf-8") as f:
     config = json.load(f)
-# Конкурентність = кількості воркерів gunicorn (3). Більше не прискорить: запити
-# просто стануть у чергу всередині сервісу, зате Ariel отримає зайвий тиск.
-POLLER_CONCURRENCY = int(config.get("poller_concurrency", 3))
 QRADAR_API = f"{config['qradar_url']}/api"
 HEADERS = {"SEC": config["qradar_token"], "Accept": "application/json"}
 
@@ -85,16 +83,16 @@ except IOError:
     sys.exit(0)
 
 # --- ВИКОНАННЯ ---
-logging.info("--- Запуск Poller (Smart DB Mode) ---")
+logging.info("--- Запуск Poller (продюсер черги) ---")
 
 search_start_time = int(time.time() * 1000) - LOOKBACK_TIME_MS
 
-logging.info(f"Шукаємо офенси за останні 24 години (з {time.strftime('%Y-%m-%d %H:%M:%S', time.localtime(search_start_time/1000))})")
+logging.info(f"Шукаємо офенси за останні 48 годин (з {time.strftime('%Y-%m-%d %H:%M:%S', time.localtime(search_start_time/1000))})")
 
 # Запитуємо тільки відкриті інциденти, створені після search_start_time
 # fields=...,rules — потрібні назви правил-учасників для матчингу за іменем правила
-# fields=...,start_time — потрібен для сортування «найстаріші вперед» усередині юзкейсу
-url = f"{QRADAR_API}/siem/offenses?fields=id,description,rules,start_time&filter=status%3D%22OPEN%22%20and%20start_time%3E{search_start_time}"
+# fields=...,magnitude — ключ пріоритету в черзі (work_queue), див. queue_db.ORDER_BY
+url = f"{QRADAR_API}/siem/offenses?fields=id,description,rules,start_time,magnitude&filter=status%3D%22OPEN%22%20and%20start_time%3E{search_start_time}"
 
 rules_map = get_rules_map()
 
@@ -103,138 +101,78 @@ try:
     if response.status_code == 200:
         offenses = response.json()
         logging.info(f"Знайдено офенсів у вікні пошуку: {len(offenses)}")
-        
-        processed_count = 0
-        hit_limit = False
-        consecutive_conn_errors = 0
-        MAX_CONSECUTIVE_CONN_ERRORS = 3  # Якщо middleware не відповідає N разів поспіль — припиняємо цикл, наступний фаєр спробує знову
 
-        # --- Відбір кандидатів: квота рану по юзкейсах ---
+        # --- Поллер = ПРОДЮСЕР. Нічого не обробляє, лише кладе в чергу. ---
         #
-        # Було: «перші MAX_OFFENSES_PER_RUN, що зматчились». QRadar віддає офенси
-        # НАЙНОВІШИМИ ВПЕРЕД, тож при насиченні це LIFO — поллер щоразу перемелює голову
-        # списку, а хвіст доживає до краю 48-год вікна й гине нерозібраним. Виміряно
-        # 27.08.2026: 847 офенсів у вікні, ліміт вибирався за 8 с на позиції 101, а перший
-        # офенс юзкейсу «Endpoint Administration» стояв на позиції 162 — тобто 125 офенсів
-        # цього типу не могли потрапити в обробку в принципі, скільки б ранів не пройшло.
-        # Один генератор обсягу (rogue-IP bruteforce) забирав 34 місця зі 100.
+        # Було (до 23.09.2026): поллер сам відбирав ≤100 офенсів на ран (кругова роздача
+        # по юзкейсах, усередині — найстаріші вперед) і слав їх у /universal-analysis.
+        # Магнітуда в цьому порядку не брала участі взагалі. Замір 23.09.2026: 150 зі 158
+        # відкритих injection-офенсів (51 на mag 7) мідлваре не бачило жодного разу —
+        # вони конкурували за 100 місць із File Decode/IRC/Botnet і програвали.
         #
-        # Стало, два правила:
-        #   1) КРУГОВА РОЗДАЧА по юзкейсах — беремо по одному офенсу з кожного зматченого
-        #      ключа по колу. Жоден гучний юзкейс не з'їдає ран; фіксованої квоти на ключ
-        #      не задаємо — частка сама масштабується від кількості присутніх юзкейсів.
-        #   2) УСЕРЕДИНІ ЮЗКЕЙСУ — НАЙСТАРІШІ ВПЕРЕД. 48-год вікно це дедлайн, а не
-        #      уподобання: свіжий офенс буде у вікні й наступного рану, старий — ні.
-        #      Тому черга сортується за наближенням до вильоту з вікна.
+        # Стало: кожен зматчений офенс іде рядком у work_queue з його магнітудою; порядок
+        # обробки (magnitude DESC → manual → найстаріші) задає worker.py при claim'і.
+        # Ліміту «100 на ран» більше немає — черга сама вирівнює навантаження.
         #
-        # has_ai_note — це API-виклик на офенс, тому робимо його ЛИШЕ на момент, коли
-        # офенс реально беруть у ран (як і раніше), а не на всі 800 кандидатів.
-        buckets = {}
-        for off in offenses:
-            off_id = int(off["id"])
-            desc = off.get("description", "")
-            rule_names = [rules_map.get(r.get("id"), "") for r in off.get("rules", [])]
-
-            # 1. Швидка перевірка по базі даних
-            if is_processed_in_db(off_id):
-                continue
-
-            # 2. Матчинг за описом офенсу АБО назвою правила-учасника
-            key = matched_rule_key(target_rules, desc, rule_names)
-            if key is None:
-                continue
-            buckets.setdefault(key, []).append((off.get("start_time") or 0, off_id))
-
-        for key in buckets:
-            buckets[key].sort()  # найстаріші вперед: у них найменше часу до вильоту з вікна
-
-        candidates = []
+        # has_ai_note — це API-виклик на офенс, тож робимо його ЛИШЕ для офенсів, яких у
+        # черзі ще немає (перший раз бачимо). Рядок у черзі = has_ai_note вже пройдено.
+        counts = {"inserted": 0, "refreshed": 0, "skipped": 0}
         skipped_noted = 0
-        # Порядок обходу — від найбільшого юзкейсу до найменшого, лише щоб він був
-        # детермінований; на саму частку це не впливає, роздача все одно кругова.
-        order = sorted(buckets, key=lambda k: (-len(buckets[k]), k))
-        pos = {k: 0 for k in buckets}
-        taken = {k: 0 for k in buckets}
+        skipped_processed = 0
+        unmatched = 0
+        hit_limit = False
+        per_lens = {}
 
-        while len(candidates) < MAX_OFFENSES_PER_RUN:
-            took_any = False
-            for key in order:
-                if len(candidates) >= MAX_OFFENSES_PER_RUN:
-                    break
-                lst = buckets[key]
-                i = pos[key]
-                while i < len(lst):
-                    off_id = lst[i][1]
-                    i += 1
-                    # 3. Надійна перевірка через API (якщо в QRadar вже є нотатка, але БД була видалена)
+        with queue_db.connect(DB_PATH) as qconn:
+            for off in offenses:
+                off_id = int(off["id"])
+                desc = off.get("description", "")
+                rule_names = [rules_map.get(r.get("id"), "") for r in off.get("rules", [])]
+
+                # 1. Матчинг за описом офенсу АБО назвою правила-учасника (дешево, локально)
+                key = matched_rule_key(target_rules, desc, rule_names)
+                if key is None:
+                    unmatched += 1
+                    continue
+
+                # 2. Швидка перевірка по базі даних
+                if is_processed_in_db(off_id):
+                    skipped_processed += 1
+                    continue
+
+                # 3. Надійна перевірка через API — лише для нових у черзі (якщо в QRadar
+                #    вже є нотатка, але БД була видалена)
+                if queue_db.get_status(qconn, off_id) is None:
+                    if counts["inserted"] >= MAX_ENQUEUE_PER_RUN:
+                        hit_limit = True
+                        continue
                     if has_ai_note(off_id):
                         skipped_noted += 1
                         continue
-                    candidates.append(off_id)
-                    taken[key] += 1
-                    took_any = True
-                    break
-                pos[key] = i
-            if not took_any:
-                break  # усі черги вичерпані
 
-        if skipped_noted:
-            logging.info(f"ℹ️ Пропущено {skipped_noted} офенсів — уже мають нотатку від AI.")
-        if len(candidates) >= MAX_OFFENSES_PER_RUN:
-            hit_limit = True
-            logging.info(f"⚠️ Досягнуто ліміт ({MAX_OFFENSES_PER_RUN}).")
-        if buckets:
-            shape = ", ".join(f"{k[:28]} {taken[k]}/{len(buckets[k])}" for k in order[:8])
-            logging.info(f"📊 Квота рану (взято/у вікні), топ-8 юзкейсів: {shape}")
+                outcome = queue_db.enqueue(qconn, off_id, int(off.get("magnitude") or 0), "auto", key)
+                counts[outcome] = counts.get(outcome, 0) + 1
+                if outcome == "inserted":
+                    per_lens[key] = per_lens.get(key, 0) + 1
 
-        # --- Обробка: паралельно ---
-        # Раніше офенси йшли строго по одному, і ран упирався в час інференсу: ~30 с на офенс
-        # = 120/год при ~200 нових/год, черга росла (1523 → 1712 за ранок 25.08). При цьому
-        # gunicorn має 3 воркери й уже їх чергував — використовувалась третина потужності.
-        # Конкурентність тримаємо на рівні кількості воркерів: більше не прискорить, лише
-        # створить чергу всередині gunicorn і зайве навантаження на Ariel.
-        if candidates:
-            logging.info(f"До обробки: {len(candidates)} офенсів, конкурентність {POLLER_CONCURRENCY}.")
+            d = queue_db.depth(qconn)
 
-        conn_errors = 0
+        logging.info(
+            f"📥 У чергу: нових {counts['inserted']}, оновлено магнітуду {counts['refreshed']}, "
+            f"без змін {counts['skipped']} · пропущено: PROCESSED {skipped_processed}, "
+            f"з нотаткою AI {skipped_noted}, без юзкейсу {unmatched}."
+        )
+        if per_lens:
+            top = sorted(per_lens.items(), key=lambda kv: -kv[1])[:8]
+            logging.info("📊 Нові за юзкейсами (топ-8): " + ", ".join(f"{k[:28]} {v}" for k, v in top))
+        if hit_limit:
+            logging.info(f"⚠️ Досягнуто стелю нових за ран ({MAX_ENQUEUE_PER_RUN}) — решта наступного разу.")
+        by_mag = " ".join(f"m{m}:{c}" for m, c in d["by_magnitude"].items())
+        logging.info(
+            f"📏 Глибина черги: QUEUED {d['QUEUED']} ({by_mag}) · IN_PROGRESS {d['IN_PROGRESS']} · "
+            f"DONE {d['DONE']} · ERROR {d['ERROR']}"
+        )
 
-        def process_one(off_id):
-            """Повертає ('ok'|'timeout'|'conn'|'err', off_id). Виняток не піднімає:
-            один невдалий офенс не має валити ран."""
-            try:
-                ai_resp = requests.post(MIDDLEWARE_URL, json={"offense_id": off_id, "is_manual": False}, timeout=600)
-                if ai_resp.status_code == 200:
-                    logging.info(f"✅ Офенс {off_id} успішно оброблено. Middleware зберіг статус у БД.")
-                else:
-                    logging.error(f"❌ Помилка Middleware для {off_id}: {ai_resp.status_code}")
-                return "ok", off_id
-            except requests.exceptions.Timeout:
-                logging.error(f"⏳ Таймаут для {off_id}.")
-                return "timeout", off_id
-            except requests.exceptions.ConnectionError as e:
-                logging.error(f"❌ Connection refused для {off_id}: {e}")
-                return "conn", off_id
-            except Exception as e:
-                logging.error(f"❌ Помилка з'єднання для {off_id}: {e}")
-                return "err", off_id
-
-        with ThreadPoolExecutor(max_workers=POLLER_CONCURRENCY) as pool:
-            futures = {pool.submit(process_one, oid): oid for oid in candidates}
-            for fut in as_completed(futures):
-                outcome, off_id = fut.result()
-                if outcome in ("ok", "timeout"):
-                    processed_count += 1
-                elif outcome == "conn":
-                    conn_errors += 1
-        # «Поспіль» при паралельній відправці не має сенсу — рахуємо загальну кількість
-        # відмов з'єднання за ран. Той самий намір: мідлваре лежить → не молотимо даремно.
-        if conn_errors >= MAX_CONSECUTIVE_CONN_ERRORS:
-            logging.error(f"🛑 Middleware недоступний ({conn_errors} відмов з'єднання за ран). Наступний фаєр поллера спробує знову.")
-            consecutive_conn_errors = conn_errors
-
-        if not hit_limit and consecutive_conn_errors < MAX_CONSECUTIVE_CONN_ERRORS:
-            logging.info("Черга порожня або повністю оброблена.")
-            
     else:
         logging.error(f"Помилка API QRadar: {response.status_code}")
 except Exception as e:
