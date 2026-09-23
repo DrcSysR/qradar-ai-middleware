@@ -762,6 +762,17 @@ async def process_one(payload: UniversalTrigger):
         if not details:
             raise HTTPException(status_code=404, detail="Offense not found or API error")
 
+        # Пошкоджений офенс (offense_source = null): народжений під час збою персистера
+        # магістрату — без джерела й event-мапінгу, INOFFENSE(id) дає FunctionCreateError
+        # 28523 (інцидент 23.09.2026, 1154 шт.). AQL марний, модель — тим паче. Віддаємо
+        # skipped (→ DONE у черзі, без 6-годинного ERROR-requeue) і лишаємо офенс відкритим:
+        # це сміття інциденту, його доля — рішення аналітика, не авто-закриття.
+        if details.get("entity_value") in (None, ""):
+            logging.warning(f"⚠️ Офенс {payload.offense_id}: offense_source = null (пошкоджений, INOFFENSE непридатний) — пропуск без AQL.")
+            with sqlite3.connect(DB_PATH) as conn:
+                conn.execute("UPDATE offenses SET status = 'DAMAGED', last_updated = CURRENT_TIMESTAMP WHERE offense_id = ?", (payload.offense_id,))
+            return {"status": "skipped", "message": "Damaged offense: offense_source is null (created while magistrate persister was stuck) — INOFFENSE unusable, no analysis possible; left OPEN"}
+
         # Вікно AQL відраховуємо від часу офенсу, а не від "now": інакше manual-аналіз
         # старого офенсу (або auto з затримкою) втрапляє у порожній період.
         # manual раніше жорстко брав 7 днів «передісторії». На гучних лог-сорсах це

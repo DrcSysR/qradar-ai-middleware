@@ -105,7 +105,9 @@ logging.info(f"Шукаємо офенси за останні 48 годин (з
 # Запитуємо тільки відкриті інциденти, створені після search_start_time
 # fields=...,rules — потрібні назви правил-учасників для матчингу за іменем правила
 # fields=...,magnitude — ключ пріоритету в черзі (work_queue), див. queue_db.ORDER_BY
-url = f"{QRADAR_API}/siem/offenses?fields=id,description,rules,start_time,magnitude&filter=status%3D%22OPEN%22%20and%20start_time%3E{search_start_time}"
+# fields=...,offense_source — офенс без джерела (null) = «напівнароджений» під час збою
+# магістрату: INOFFENSE() на нього дає FunctionCreateError 28523, аналізувати нічого
+url = f"{QRADAR_API}/siem/offenses?fields=id,description,rules,start_time,magnitude,offense_source&filter=status%3D%22OPEN%22%20and%20start_time%3E{search_start_time}"
 
 rules_map = get_rules_map()
 
@@ -132,6 +134,7 @@ try:
         counts = {"inserted": 0, "refreshed": 0, "requeued": 0, "skipped": 0}
         skipped_noted = 0
         skipped_processed = 0
+        skipped_damaged = 0
         unmatched = 0
         hit_limit = False
         per_lens = {}
@@ -141,6 +144,16 @@ try:
                 off_id = int(off["id"])
                 desc = off.get("description", "")
                 rule_names = [rules_map.get(r.get("id"), "") for r in off.get("rules", [])]
+
+                # 0. Пошкоджений офенс: offense_source = null. Такі народжуються, коли кореляція
+                #    працює, а персистер магістрату стоїть (інцидент 23.09.2026: 1154 шт. за 4 год).
+                #    В API вони OPEN з магнітудою, але без джерела й event-мапінгу — INOFFENSE(id)
+                #    падає з FunctionCreateError 28523, тож жодна лінза їх не проаналізує. Не
+                #    кладемо в чергу взагалі: інакше воркер палить AQL у 422, а ERROR-requeue
+                #    повторює це кожні 6 год. Самі не «долічуються» (0 з 101 за 40 хв).
+                if off.get("offense_source") in (None, ""):
+                    skipped_damaged += 1
+                    continue
 
                 # 1. Матчинг за описом офенсу АБО назвою правила-учасника (дешево, локально)
                 key = matched_rule_key(target_rules, desc, rule_names)
@@ -180,7 +193,7 @@ try:
         logging.info(
             f"📥 У чергу: нових {counts['inserted']}, оновлено магнітуду {counts['refreshed']}, "
             f"повторно після ERROR {counts['requeued']}, без змін {counts['skipped']} · "
-            f"пропущено: PROCESSED {skipped_processed}, "
+            f"пропущено: PROCESSED {skipped_processed}, пошкоджені (source=null) {skipped_damaged}, "
             f"з нотаткою AI {skipped_noted}, без юзкейсу {unmatched}."
         )
         if per_lens:
