@@ -76,10 +76,19 @@ WHERE
     -- НЕ відсікаємо — вони й є сигнал. P2P-рядки (bittorrent/unknown-p2p) теж лишаємо:
     -- FIRST CHECK промпта дає на них P2P_Policy_Violation з іменем хоста — це acceptable-use
     -- сигнал, який має лишити слід. Порожньо → close_on_empty 0.0.
+    -- Список ризикових звірено з реальними значеннями PA за добу (24.09): повна назва
+    -- 'proxy-avoidance-and-anonymizers'; 'any' та 'insufficient-content' — це НЕ класифікація,
+    -- а «PA не визначила», тому такі рядки лишаємо моделі. Той самий список живе у рефсеті
+    -- UC03-Exclude-Categories для BB:UC03-BenignBrowsing у правилі #100509 — тримати синхронно.
     AND NOT (
         "Application" IN ('web-browsing', 'ssl', 'tls', 'quic', 'http2', 'http-proxy')
         AND destinationport IN (80, 443)
         AND "Web Category" IS NOT NULL
+        AND "Web Category" != 'any'
+        AND "Web Category" != 'insufficient-content'
+        AND "Web Category" NOT ILIKE '%real-time-detection%'
+        AND "Web Category" NOT ILIKE '%dynamic-dns%'
+        AND "Web Category" NOT ILIKE '%scanning-activity%'
         AND "Web Category" NOT ILIKE '%malware%'
         AND "Web Category" NOT ILIKE '%command-and-control%'
         AND "Web Category" NOT ILIKE '%phishing%'

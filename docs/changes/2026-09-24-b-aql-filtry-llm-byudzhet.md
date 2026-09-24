@@ -89,6 +89,21 @@ UC05-Public-Resolvers` (refset створено через API, 21 IP); #121744 
 браузерні ∧ Web Category ∉ ризикові) як `and NOT`; C2 Beaconing #148849 — виключення gw2
 RustDesk 168.119.209.246 та edge-fleet 172.18.0.0/16.
 
+Аналітик того ж дня додав тести в UI: UC-05-1 #100512 отримав `NOT Destination IP in
+UC05-Public-Resolvers`; UC-03-1 #100509 — `NOT BB:UC03-BenignBrowsing` з рефсетами
+`UC03-Exclude-Applications` (5 браузерних App) і `UC03-Exclude-Categories` (ризикові категорії).
+Дві правки до BB із перевірки за реальними даними PA (91 значення `Web Category` за добу):
+(1) обидва тести в BB були записані як `NOT when … contained in …` — за семантикою BB
+(кон'юнкція тестів, у правилі заперечується цілком) це `NOT(App∉браузерні ∧ Cat∉ризикові)`
+= правило спрацьовує на **браузинг до benign-категорій** (навпаки) і **мовчить на подіях без
+PA-полів** (Falcon, flows — обидва NOT істинні на null). Тест по Application має бути
+ствердним, а Web Category — не-порожнім (AQL-filter test `"Web Category" IS NOT NULL`),
+бо 1.29M рядків/добу з App=ssl мають порожню категорію; (2) справжня назва категорії PA —
+`proxy-avoidance-and-anonymizers`, рефсет-тест точний, `proxy-avoidance` ніколи не збіжиться;
+`any` та `insufficient-content` — «PA не визначила», не benign. AQL `uc03_ioc_ip.aql`
+вирівняно під ті ж значення (`!= 'any'`, `!= 'insufficient-content'`, `real-time-detection`,
+`dynamic-dns`, `scanning-activity`); parse-check на офенсі 1456417 — 3 рядки, OK.
+
 Пастка Ariel, спіймана parse-check'ом до деплою: `destinationip NOT ILIKE '%.255'` → 422
 `WrongArgumentType` — ILIKE не працює на IP-колонках. Subnet-broadcast лишили без фільтра.
 Правило процесу підтверджене ще раз: **кожний правлений .aql — через parse-check
