@@ -14,6 +14,7 @@ AI-тріаж офенсів QRadar: сервіс читає офенс, під�
 
 | Дата | Запис |
 |---|---|
+| 2026-09-24 | [лінза «Login failure to an expired account»: 221 офенс IT-гігієни закриваються самі, external/service-account доходять до аналітика](changes/2026-09-24-linza-expired-account.md) |
 | 2026-09-23 | [«напівнароджені» офенси після збою магістрату (offense_source=null, INOFFENSE 28523): поллер не бере, /process-one без AQL](changes/2026-09-23-c-poshkodzheni-ofensy-magistrat.md) |
 | 2026-09-23 | [AQL у тілі POST: ransomware-лінза падала з 414 Request-URI Too Long → generic AQL → 0.8 на FP](changes/2026-09-23-b-aql-414-request-uri.md) |
 | 2026-09-23 | [черга офенсів із пріоритетом за магнітудою: поллер → work_queue → worker → /process-one](changes/2026-09-23-cherha-za-mahnitudoyu.md) |

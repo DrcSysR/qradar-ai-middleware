@@ -1,0 +1,40 @@
+SELECT
+    DATEFORMAT(starttime, 'MM-dd HH:mm:ss') AS Time,
+    username AS Acct,
+    sourceip AS Src,
+    destinationip AS Dst,
+    "Logon Type" AS LogonType,
+    LOGSOURCENAME(logsourceid) AS LogSource,
+    QIDNAME(qid) AS Event,
+    COUNT(*) AS Attempts
+FROM events
+WHERE
+    INOFFENSE({offense_id})
+    AND QIDNAME(qid) ILIKE '%Expired%'
+    -- BENIGN PRE-FILTER. Правило #118289 «Login Failure to Expired Account» фаєрить на ОДНУ
+    -- подію 4625 «Expired Password» — юзер із простроченим паролем логіниться на власну
+    -- машину (Src 127.0.0.1, logon type 2) або через mfaa/DC (Src 172.17.61.173 → DC).
+    -- Замір 24.09.2026: 221 відкритий офенс, 939 подій разом (~4/офенс), медіана віку 17 днів,
+    -- усі — іменовані користувачі з внутрішніх джерел. Це IT-гігієна (password expiry), не безпека.
+    -- Лишаємо для моделі ЛИШЕ те, що має сенс дивитись:
+    --   (а) прострочену кредy пробують ЗНАДВОРУ — хтось поза мережею має старий пароль
+    --       співробітника (витік/повторне використання), навіть якщо спроба провалилась;
+    --   (б) адмін/сервісний акаунт із простроченим паролем — ops-проблема, що ламає сервіси
+    --       і зазвичай означає забутий сервіс, який б'ється в AD.
+    -- Іменований користувач із внутрішнього/loopback джерела → 0 рядків → close_on_empty 0.0.
+    AND (
+        (
+            NOT INCIDR('10.0.0.0/8', sourceip)
+            AND NOT INCIDR('172.16.0.0/12', sourceip)
+            AND NOT INCIDR('192.168.0.0/16', sourceip)
+            AND sourceip != '127.0.0.1'
+        )
+        OR username ILIKE 'adm%'
+        OR username ILIKE '%admin%'
+        OR username ILIKE 'svc%'
+        OR username ILIKE 'sa'
+        OR username ILIKE '%$'
+    )
+GROUP BY Time, Acct, Src, Dst, LogonType, LogSource, Event
+ORDER BY Time DESC
+LIMIT {limit} {time_depth}

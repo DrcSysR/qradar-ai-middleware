@@ -201,6 +201,13 @@
         "",
         "close_on_empty"
     ],
+    "Login failure to an expired account": [
+        "expired_account.md",
+        "sergii.legerko",
+        "expired_account.aql",
+        "",
+        "close_on_empty"
+    ],
     "Default": [
         "default.md",
         "",
