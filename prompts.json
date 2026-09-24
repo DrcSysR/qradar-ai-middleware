@@ -137,7 +137,9 @@
     "Excessive Firewall Denies Between Hosts": [
         "excessive_fw_denies_between_only.md",
         "sergii.legerko",
-        "excessive_fw_denies_between_only.aql"
+        "excessive_fw_denies_between_only.aql",
+        "",
+        "close_on_empty"
     ],
     "Powershell Has Been Launched in a Compromised Host": [
         "compromised_host_cascade.md",

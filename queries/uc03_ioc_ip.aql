@@ -66,6 +66,34 @@ WHERE
     AND NOT INCIDR('74.125.0.0/16', destinationip)
     AND NOT INCIDR('64.233.160.0/19', destinationip)
     AND NOT INCIDR('209.85.128.0/17', destinationip)
+    -- BEHAVIOUR PRE-FILTER (24.09.2026). За добу конвеєра ця лінза дала 1286 LLM-викликів —
+    -- найбільше з усіх, — і 1235 з них завершились вердиктом Benign_Feed_FalsePositive 0.2:
+    -- «браузерний App на стандартному порту до призначення з реальною benign PA-категорією».
+    -- Це рівно той бенд промпта, який модель застосовувала 1235 разів підряд; переносимо його
+    -- сюди. PA URL Filtering сама класифікує призначення — якщо категорія легітимна, генеричне
+    -- потрапляння IP у Spam/Malware-фід не несе інформації. Ризикові PA-категорії
+    -- (malware, C2, phishing, grayware, ransomware, unknown, parked, NRD, high/medium-risk)
+    -- НЕ відсікаємо — вони й є сигнал. P2P-рядки (bittorrent/unknown-p2p) теж лишаємо:
+    -- FIRST CHECK промпта дає на них P2P_Policy_Violation з іменем хоста — це acceptable-use
+    -- сигнал, який має лишити слід. Порожньо → close_on_empty 0.0.
+    AND NOT (
+        "Application" IN ('web-browsing', 'ssl', 'tls', 'quic', 'http2', 'http-proxy')
+        AND destinationport IN (80, 443)
+        AND "Web Category" IS NOT NULL
+        AND "Web Category" NOT ILIKE '%malware%'
+        AND "Web Category" NOT ILIKE '%command-and-control%'
+        AND "Web Category" NOT ILIKE '%phishing%'
+        AND "Web Category" NOT ILIKE '%grayware%'
+        AND "Web Category" NOT ILIKE '%ransomware%'
+        AND "Web Category" NOT ILIKE '%unknown%'
+        AND "Web Category" NOT ILIKE '%parked%'
+        AND "Web Category" NOT ILIKE '%newly-registered%'
+        AND "Web Category" NOT ILIKE '%high-risk%'
+        AND "Web Category" NOT ILIKE '%medium-risk%'
+        AND "Web Category" NOT ILIKE '%proxy-avoidance%'
+    )
+    -- SECOND CHECK промпта: spam-джерело, що шле на наш SMTP — система працює як задумано.
+    AND NOT (destinationport IN (25, 465, 587) AND QIDNAME(qid) ILIKE '%Spam%')
 GROUP BY sourceip, destinationip, destinationport, QIDNAME(qid), "Application", "Web Category"
 ORDER BY Conns DESC
 LIMIT {limit} {time_depth}

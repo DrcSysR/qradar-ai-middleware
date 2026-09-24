@@ -9,4 +9,17 @@ SELECT DATEFORMAT(starttime, 'MM-dd HH:mm:ss') AS Time,
        UTF8(payload) AS RawPayload
 FROM events
 WHERE INOFFENSE({offense_id})
+    -- BENIGN PRE-FILTER (24.09.2026). За добу конвеєра ця лінза дала 510 LLM-викликів, з них
+    -- 283 — вердикт Multicast/LinkLocal_Noise: LAN-«балаканина», яку файрвол між сегментами
+    -- denies за дизайном. Її видно без моделі: призначення в multicast/link-local/broadcast
+    -- або службові discovery-порти (NetBIOS 137/138, SSDP 1900, mDNS 5353, LLMNR 5355,
+    -- WS-Discovery 3702). Модель отримує лише те, що лишилось; порожньо → close_on_empty 0.0.
+    -- Inconclusive_FW_Burst (209) і LAN_To_LAN_Misconfig свідомо НЕ фільтруємо — це
+    -- те, заради чого лінза існує.
+    AND NOT INCIDR('224.0.0.0/4', destinationip)
+    AND NOT INCIDR('169.254.0.0/16', destinationip)
+    AND destinationip != '255.255.255.255'
+    -- (subnet-broadcast x.x.x.255 не відсікаємо: ILIKE на IP-колонці Ariel не парсить —
+    --  WrongArgumentType; multicast/link-local/discovery-порти покривають основну масу)
+    AND destinationport NOT IN (137, 138, 1900, 5353, 5355, 3702)
 ORDER BY starttime DESC LIMIT {limit} {time_depth}

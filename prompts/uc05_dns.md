@@ -10,8 +10,12 @@ What the data means. Each row is one (host → DNS server) pair with:
   the query, so every host you see is one that is NOT a sanctioned DNS server.
 - `DNS_Dst` + `Server_Class` — the server contacted, pre-classified:
   - `corporate` — one of our own resolvers. Benign.
-  - `public-resolver` — Google / Cloudflare / Quad9 / OpenDNS / AliDNS / Tencent / Yandex /
-    AdGuard. The host is bypassing corporate DNS. This is a POLICY violation, not malware.
+  - (PRE-FILTER since 2026-09-24: the well-known PUBLIC and ISP resolvers — Google, Cloudflare,
+    Quad9, OpenDNS, AliDNS, Tencent, 114DNS, Yandex, AdGuard, Play/Tucows, Vodafone — are
+    REMOVED by the AQL before you see anything. A client bypassing corporate DNS towards one
+    of them is a policy matter that the middleware closes at 0.0 without calling you. If the
+    input is EMPTY, that is all the offense contained. You will therefore never see a
+    `public-resolver` row any more; if you think you do, it is an `unclassified` host.)
   - `internal-unlisted` — a private (RFC1918) address that is not in our approved set.
     Almost always a branch-office or VPN-side resolver that nobody added to the reference
     set, not a rogue server. Treat as low risk and say in the explanation that the address
@@ -32,11 +36,9 @@ above 0.6 are (a) a large `Bytes_Per_Query` (>300 over ≥50 queries), or (b) an
 destination. Nothing else. Score the offense by its single worst row, not by total volume.**
 1. If EVERY row is `corporate` → the client used an approved resolver. False positive.
    Score 0.0-0.2, verdict `Benign_Corporate_DNS`. Stop.
-2. Rows are `public-resolver` and every `Bytes_Per_Query` < 300 → misconfigured host bypassing
-   corporate DNS. Real policy violation, expected to be common. **Score MUST be ≤ 0.55**
-   (use 0.4-0.55), verdict `DNS_Policy_Bypass`. Nothing is compromised; the fix is
-   reconfiguring the client's DNS. High `Queries` does NOT change this — do not go above 0.55.
-   Name the offending hosts. **Stop here unless a row breaks the byte rule.**
+2. (Retired 2026-09-24 — `public-resolver` rows no longer reach you; the AQL closes them at
+   0.0. If a destination nonetheless looks like a household-name public resolver you do not
+   recognise from the list, treat it as `unclassified` with the byte rule below, and say so.)
    - `internal-unlisted` rows with `Bytes_Per_Query` < 300 → even lower: **score MUST be ≤ 0.4**,
      verdict `DNS_Unlisted_Resolver`. This is a branch/VPN resolver nobody added to the refset,
      not a threat; say the address is a candidate for `UC05-DNS Servers`. Volume is irrelevant.
@@ -51,17 +53,22 @@ destination. Nothing else. Score the offense by its single worst row, not by tot
    - an `unclassified` DNS server with sustained traffic, or
    - `Bytes_Per_Query` above ~300 on a non-trivial query count — **this applies regardless of
      `Server_Class`**. Tunnelling through Google or Cloudflare is still tunnelling: the
-     tunnel domain is resolved recursively by the public resolver, so a large average query
-     size to 8.8.8.8 is just as anomalous as to an unknown host. Do not dismiss it because
-     the destination is a well-known resolver, or
+     tunnel domain is resolved recursively by the resolver, so a large average query size is
+     anomalous regardless of destination. (Known public resolvers such as 8.8.8.8 are
+     pre-filtered by the AQL since 2026-09-24 — a deliberate trade: tunnelling THROUGH a
+     household-name resolver is not visible to you here; the one such suspicion we ever had,
+     192.168.22.19, turned out to be a Palo Alto session-aggregation artefact on a CCTV VMS.)
+     Apply the byte rule to every destination you do see, or
    - one internal host hammering a single non-corporate resolver at extreme volume.
 
 Scoring rubric (float 0.0-1.0):
 - 0.0-0.3 — CLEAR FALSE POSITIVE. All traffic to `corporate` resolvers, or a negligible
   number of stray queries.
-- 0.4-0.6 — POLICY VIOLATION. Host(s) using `public-resolver` addresses with normal query
-  sizes. Real, worth recording, but no security incident and no host to remediate.
-  This is the expected verdict for the majority of offenses in this use case.
+- 0.4-0.6 — POLICY / HYGIENE. `internal-unlisted` resolver (branch/VPN DNS missing from the
+  reference set — name it as a candidate), or an `unclassified` host with normal query sizes
+  and low volume that looks like a niche-but-legitimate resolver. No security incident, no
+  host to remediate. (Before 2026-09-24 this band was mostly `public-resolver` bypass; those
+  rows are now filtered out by the AQL and never reach you.)
 - 0.7-0.8 — SUSPICIOUS. `unclassified` DNS server with sustained traffic, OR
   `Bytes_Per_Query` consistently above 300 across at least ~50 queries, OR one internal host
   hammering a single unknown resolver. Something a human must look at. Never award this band

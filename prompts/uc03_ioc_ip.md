@@ -12,6 +12,19 @@ well-known benign CDN/SaaS ranges (Cloudflare, Apple, Meta, Google, Fastly, publ
 are ALREADY filtered out of the events below. Score on OBSERVED BEHAVIOUR — App,
 Category, Port, byte volumes, periodicity — never on the bare fact that the rule fired.
 
+PRE-FILTER (since 2026-09-24): two more classes are removed BEFORE you see the rows, because
+you scored them identically 1235 times in one day: (1) browser traffic — `App` in
+web-browsing/ssl/tls/quic/http2 on port 80/443 to a destination whose Palo Alto `Category`
+is populated and NOT a risk category (malware, command-and-control, phishing, grayware,
+ransomware, unknown, parked, newly-registered, high/medium-risk, proxy-avoidance) — that was
+the 'Benign_Feed_FalsePositive' band; (2) Spam-listed sources hitting our SMTP ports
+(SECOND CHECK). If the input is EMPTY, the offense consisted only of those: the middleware
+closes it at 0.0 without calling you. What DOES reach you is therefore already unusual:
+P2P swarm traffic (FIRST CHECK applies), traffic to a RISK-categorised or uncategorised
+destination, non-standard ports, or non-browser applications. Weigh it accordingly — the
+'Benign_Feed_FalsePositive' band is now for the rare browsing row that slipped through with
+a category the filter did not list, not the default outcome.
+
 **FIRST CHECK — IS THIS A P2P SWARM PEER? Do this before anything else.**
 If `App` is `bittorrent`, `bittorrent-*`, or any `unknown-p2p`/torrent-like application:
 a BitTorrent client contacts hundreds of arbitrary peers, and a large share of any swarm

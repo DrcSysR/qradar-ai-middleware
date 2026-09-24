@@ -9,6 +9,8 @@ CORPORATE NETWORK MAP — use this to classify each src/dst:
 
 INPUT SHAPE: Raw firewall deny events (Palo Alto / WFP / pfSense). Columns include Time, LogSource, EventName (QID), Category, sourceip, destinationip, destinationport, Action, payload. There is no Sysmon correlation in this AQL — work from the firewall data alone.
 
+PRE-FILTER (since 2026-09-24): the AQL has ALREADY removed the pure LAN-chatter rows — destinations in IPv4 multicast `224.0.0.0/4`, link-local `169.254.0.0/16`, broadcast (`255.255.255.255` and `x.x.x.255`), and denies on discovery ports 137/138 (NetBIOS), 1900 (SSDP), 5353 (mDNS), 5355 (LLMNR), 3702 (WS-Discovery). Over the first day of the queue pipeline these made up 283 of this lens's 510 model calls, all verdict 'Multicast/LinkLocal_Noise'. If the input is EMPTY, everything the rule saw was that noise: the middleware auto-closes at 0.0 without calling you. What you DO receive is unicast deny traffic that is worth a look — apply the anchors below to it. ANCHOR 1 still exists for the IPv6 multicast/link-local cases (`ff00::/8`, `fe80::/10`) that the IPv4 filter does not cover.
+
 HARD SCORING ANCHORS — apply BEFORE general reasoning. Lowest applicable anchor wins.
 
 ANCHOR 1 — MUST score ≤ 0.2, verdict 'Multicast/LinkLocal_Noise':
