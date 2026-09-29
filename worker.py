@@ -12,7 +12,8 @@
 DONE з тілом відповіді (його читає веб-форма через /queue/status). HTTP 4xx → ERROR
 одразу (детерміновано: офенса нема, поганий запит). HTTP 5xx / таймаут → рядок лишаємо
 IN_PROGRESS: оренда спливе — claim забере знову; після worker_max_attempts → ERROR.
-Немає з'єднання з мідлварем ≥3 рази за ран → зупиняємось, не молотимо даремно.
+Немає з'єднання з мідлварем ≥3 рази за ран → зупиняємось, не молотимо даремно. Те саме
+для HTTP 503 status "retry" (мідлвар живий, але лежить Ariel/QRadar) — 3 поспіль → стоп.
 """
 
 import fcntl
@@ -114,6 +115,12 @@ def process_claim(claim: dict) -> str:
             queue_db.mark(conn, off_id, queue_db.ERROR, {"http": r.status_code, "body": r.text[:500]})
             logging.error(f"❌ {tag}: HTTP {r.status_code}, спроб {claim['attempts']} ≥ {MAX_ATTEMPTS} — ERROR.")
             return "http5xx_final"
+        # 503 + status "retry" = мідлвар живий, але лежить Ariel/QRadar (рестарт консолі).
+        # Рядок лишається IN_PROGRESS до спливу оренди — це і є backoff; а ран зупиняємо
+        # після кількох таких поспіль, щоб не прогнати всю чергу в миттєві відмови.
+        if r.status_code == 503 and '"retry"' in r.text:
+            logging.warning(f"⏸ {tag}: QRadar/Ariel недоступний — IN_PROGRESS до спливу оренди.")
+            return "qradar_down"
         logging.error(f"❌ {tag}: HTTP {r.status_code} — лишаємо IN_PROGRESS, повтор після спливу оренди.")
         return "http5xx"
 
@@ -150,6 +157,7 @@ def main() -> None:
             return queue_db.claim_next(c, LEASE_SECONDS)
 
     hold_logged = [False]
+    qradar_down = [0]   # 503-retry поспіль (скидається першою нормальною відповіддю)
 
     def wait_for_chat_hold():
         """Пісочниця (/chat) поставила hold → не беремо НОВИХ офенсів, поки він активний:
@@ -191,6 +199,14 @@ def main() -> None:
                     stop = True
                     logging.error(f"🛑 Мідлваре недоступне ({conn_errors} відмов з'єднання). Зупиняємо ран; "
                                   f"оренда поверне рядки в чергу.")
+            elif outcome == "qradar_down":
+                qradar_down[0] += 1
+                if qradar_down[0] >= MAX_CONN_ERRORS:
+                    stop = True
+                    logging.error(f"🛑 QRadar/Ariel недоступний ({qradar_down[0]} відповідей 503 поспіль). Зупиняємо ран; "
+                                  f"наступний таймер спробує знову, оренда поверне рядки в чергу.")
+            else:
+                qradar_down[0] = 0
 
     with ThreadPoolExecutor(max_workers=CONCURRENCY) as pool:
         for _ in range(CONCURRENCY):

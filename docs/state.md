@@ -51,6 +51,8 @@ QRadar offenses API ──► poller.py (кожні 10 хв, вікно 48 го�
                           ├─ порожній без прапорця → фолбек на default.aql (сирі події);
                           │                            якщо і там пусто → NO_EVENTS, офенс відкритий
                           ├─ AQL не виконався → AQL_ERROR, офенс лишається відкритим
+                          ├─ Ariel 502/503/504 / обрив → HTTP 503 "retry", без нотатки,
+                          │   статус QRADAR_UNAVAILABLE; воркер: оренда → повтор, 3 поспіль → стоп рану
                           ▼
              tier-1 (llm01, повтор provider_retries) ──score > escalate_threshold──► tier-2 (Vertex, 168 год)
              tier-1 не відповів → AI_ERROR, офенс лишається відкритим (Vertex НЕ підхоплює)
@@ -175,6 +177,12 @@ health, при провалі відкатує. Негайно — `./deploy.sh`
   Activities`, `Detected a Service Binary Path Changed`, `Suspicious Number of Same User
   Logins to Multiple Devices`, `Abnormal Parent for a System Process`. Це вже не борг
   механізму, а робота з написання юзкейсів.
+- **Недоступність Ariel ≠ AQL_ERROR (з 2026-09-29).** Рестарт консолі (hostcontext,
+  ecs-ep) кладе Ariel на хвилини з `503 The Ariel server might be temporarily unavailable`.
+  Раніше це ставало AQL_ERROR з нотаткою, і воркер за 2 хв «спалював» сотні офенсів (28.09 —
+  226 рядків ERROR). Тепер `QRadarUnavailable` → HTTP 503 `status: retry`, див. запис
+  2026-09-29. Паузити таймер воркера на час рестарту консолі не потрібно —
+  він сам зупиниться після 3 відмов і продовжить наступним таймером.
 - **`AQL_ERROR` — це таймаут Ariel, а не поламаний запит (діагноз 2026-09-02).**
   Застряглі офенси довгоживучі, вікно прив'язане до їх `start/end`, розмах упирається у
   стелю `max_aql_span_hours` (192 год) — і пошук на 8 діб не встигає за

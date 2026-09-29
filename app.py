@@ -1,5 +1,5 @@
 from fastapi import FastAPI, HTTPException
-from fastapi.responses import HTMLResponse, StreamingResponse
+from fastapi.responses import HTMLResponse, StreamingResponse, JSONResponse
 from pydantic import BaseModel
 from google.oauth2 import service_account
 import google.auth.transport.requests
@@ -297,6 +297,37 @@ async def fetch_events_multi_lens(client: httpx.AsyncClient, offense_id: int, ti
     return events, failed
 
 
+class QRadarUnavailable(Exception):
+    """Ariel тимчасово недоступний (HTTP 502/503/504 або обрив з'єднання) — це НЕ поганий
+    запит і НЕ «подій нема». 28.09.2026 рестарт hostcontext на консолі поклав Ariel на ~2 хв
+    (`503 The Ariel server might be temporarily unavailable`): 503 приходить миттєво, тож
+    воркер за ці 2 хв «спалив» 226 офенсів — кожен отримав AQL_ERROR, нотатку «AQL execution
+    failed» і рядок ERROR у черзі, а поллер повторює ERROR лише в межах свого 48-год вікна,
+    тож більшість так і зависла. Тепер така відмова піднімається винятком, /process-one
+    відповідає HTTP 503 без нотатки, і рядок повертається в чергу через оренду воркера."""
+
+    def __init__(self, message: str, offense_id: int | None = None):
+        super().__init__(message)
+        self.offense_id = offense_id
+
+
+TRANSIENT_HTTP = (502, 503, 504)
+
+
+@app.exception_handler(QRadarUnavailable)
+async def _qradar_unavailable(request, exc: QRadarUnavailable):
+    """/process-one → HTTP 503 без нотатки в офенсі. Статус у БД знімаємо з PROCESSING
+    (інакше повтор після оренди 60 хв бачив би «Currently processing»), але НЕ ставимо
+    AQL_ERROR: офенс не аналізувався, а не «зламався». Воркер лишає рядок IN_PROGRESS до
+    спливу оренди й зупиняє ран після кількох таких відповідей поспіль."""
+    logging.warning(f"⏸ Офенс {exc.offense_id}: QRadar/Ariel недоступний — {exc}. Повтор через чергу, нотатку не пишемо.")
+    if exc.offense_id is not None:
+        with sqlite3.connect(DB_PATH) as conn:
+            conn.execute("UPDATE offenses SET status = 'QRADAR_UNAVAILABLE', last_updated = CURRENT_TIMESTAMP "
+                         "WHERE offense_id = ? AND status = 'PROCESSING'", (exc.offense_id,))
+    return JSONResponse(status_code=503, content={"status": "retry", "message": f"QRadar/Ariel unavailable: {exc}"})
+
+
 async def fetch_data_from_qradar(client: httpx.AsyncClient, offense_id: int, time_depth: str, aql_filename: str, entity_value: str = "", entity_type: str = "", aql_timeout_seconds: float | None = None):
     filepath = os.path.join(QUERIES_DIR, aql_filename)
 
@@ -346,6 +377,8 @@ async def fetch_data_from_qradar(client: httpx.AsyncClient, offense_id: int, tim
         form_headers = {**HEADERS, "Content-Type": "application/x-www-form-urlencoded"}
         response = await client.post(search_url, headers=form_headers, data={"query_expression": aql})
 
+        if response.status_code in TRANSIENT_HTTP:
+            raise QRadarUnavailable(f"Ariel HTTP {response.status_code} on POST /ariel/searches ({aql_filename})", offense_id)
         if response.status_code not in (200, 201):
             logging.error(f"AQL Error ({aql_filename}, {len(aql)} chars, HTTP {response.status_code}): {response.text[:300]}")
             return None
@@ -367,6 +400,10 @@ async def fetch_data_from_qradar(client: httpx.AsyncClient, offense_id: int, tim
                 return None
             await asyncio.sleep(2)
             status_resp = await client.get(f"{QRADAR_API_URL}/ariel/searches/{search_id}", headers=HEADERS)
+            if status_resp.status_code in TRANSIENT_HTTP:
+                # Ariel ліг посеред полінгу: тіло 503 не має "status", і раніше це читалось
+                # як ERROR, тобто як поламаний запит.
+                raise QRadarUnavailable(f"Ariel HTTP {status_resp.status_code} while polling search {search_id} ({aql_filename})", offense_id)
             status = status_resp.json().get("status", "ERROR")
             if status in ("ERROR", "CANCELED"):
                 logging.error(f"AQL status={status} для пошуку {search_id}.")
@@ -379,6 +416,10 @@ async def fetch_data_from_qradar(client: httpx.AsyncClient, offense_id: int, tim
 
         return [{k: v for k, v in e.items() if v and v != "null"} for e in events]
 
+    except QRadarUnavailable:
+        raise
+    except (httpx.ConnectError, httpx.ConnectTimeout, httpx.RemoteProtocolError) as e:
+        raise QRadarUnavailable(f"QRadar connection failed ({aql_filename}): {e}", offense_id) from e
     except Exception as e:
         logging.error(f"Error fetching exact offense events: {e}")
         return None
