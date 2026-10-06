@@ -14,6 +14,7 @@ AI-тріаж офенсів QRadar: сервіс читає офенс, під�
 
 | Дата | Запис |
 |---|---|
+| 2026-10-06 | [два FIRST CHECK у брутфорс-лінзах: самоавтентифікація брокера RDS V-SRV01 (tssdis) і PAM fall-through на SSSD-Linux](changes/2026-10-06-first-check-rds-broker-pam-fallthrough.md) |
 | 2026-09-29 | [недоступність Ariel (503 на рестарті консолі) більше не «AQL_ERROR»: офенс повертається в чергу, воркер зупиняє ран](changes/2026-09-29-ariel-503-ne-aql-error.md) |
 | 2026-09-24 | [три AQL-префільтри (IOC browsing-FP, FW-denies multicast, DNS public resolvers): ~47% LLM-викликів → безкоштовний close_on_empty](changes/2026-09-24-b-aql-filtry-llm-byudzhet.md) |
 | 2026-09-24 | [лінза «Login failure to an expired account»: 221 офенс IT-гігієни закриваються самі, external/service-account доходять до аналітика](changes/2026-09-24-linza-expired-account.md) |
