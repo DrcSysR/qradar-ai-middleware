@@ -34,6 +34,21 @@ fi
 
 cd "$APP_DIR" || { log "❌ Не можу зайти в $APP_DIR"; exit 1; }
 
+# 0. Права на секрети (з 2026-10-19). config.json містить токен QRadar, webhook і ключ
+#    Cortex: 640 root:qmiddleware (сервіс, поллер і воркер працюють від qmiddleware).
+#    Ручні копії config.json.* (bak, bad) службам не потрібні — 600 root.
+#    Щоцикл і ДО fetch: cp без -p створює копію з 644, тож правимо не пізніше ніж за 10 хв.
+#    У лог — лише коли щось виправили.
+if [ -f config.json ] && [ "$(stat -c '%a %U:%G' config.json)" != "640 root:qmiddleware" ]; then
+    chown root:qmiddleware config.json && chmod 640 config.json && log "🔒 config.json → 640 root:qmiddleware"
+fi
+for f in config.json.*; do
+    [ -f "$f" ] || continue
+    if [ "$(stat -c '%a %U' "$f")" != "600 root" ]; then
+        chown root:root "$f" && chmod 600 "$f" && log "🔒 $f → 600 root"
+    fi
+done
+
 # 1. Fetch. Вивід тримаємо в змінній і пишемо в лог ЛИШЕ якщо щось пішло не так.
 FETCH_OUT=$(git fetch origin main 2>&1)
 if [ $? -ne 0 ]; then
