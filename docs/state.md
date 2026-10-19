@@ -75,10 +75,11 @@ QRadar offenses API ──► poller.py (кожні 10 хв, вікно 48 го�
 | `score > 0.6` + assignee | лишити відкритим, призначити |
 | `is_manual: true` | ніколи не закриває автоматично |
 
-Побічні джоби (cron на mdlwr01): `falcon_pua_scan.py` (09:00, дайджест Falcon PUP у
-Google Chat), `cdn_allowlist_update.py` (06:30, рефсет CDN-allowlist ~22 тис. IP),
-`botnet_scan.py` (systemd timer, кожні 4 год, review+hunt блок-листа),
-`cortex_xdr_scan.py` (**свідомо вимкнений** до жовтня 2026 — фід мертвий з 2026-08-04).
+Побічні джоби (cron на mdlwr01): `falcon_pua_scan.py` (**вимкнено 2026-10-19** — Falcon
+замінюється на Cortex; рядок crontab закоментовано), `cdn_allowlist_update.py` (06:30, рефсет
+CDN-allowlist ~22 тис. IP), `botnet_scan.py` (systemd timer, кожні 4 год, review+hunt
+блок-листа), `cortex_xdr_scan.py` (systemd timer, 09:30, дайджест алертів Cortex XDR у Google
+Chat; з 2026-10-19 джерело — **Cortex XDR Public API** напряму, read-only ключ, не QRadar).
 
 ## 4. Ключові файли й скрипти
 
