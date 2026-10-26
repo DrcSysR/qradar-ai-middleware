@@ -14,6 +14,7 @@ AI-тріаж офенсів QRadar: сервіс читає офенс, під�
 
 | Дата | Запис |
 |---|---|
+| 2026-10-26 | [лінза remote_thread_injection: агент Cortex XDR (137 FP «Confirmed Credential Access»), Bing Wallpaper, Intel DPTF, Opera, eDrawings, MasterD; 157 офенсів аналітика закрито](changes/2026-10-26-remote-thread-cortex-xdr-fp.md) |
 | 2026-10-19 | [права на config.json (640 root:qmiddleware) і копії (600); autoupdate тримає їх щоцикл](changes/2026-10-19-b-prava-config-json.md) |
 | 2026-10-19 | [Cortex XDR: дайджест бере алерти з API Cortex, не з QRadar; Falcon-дайджест вимкнено](changes/2026-10-19-cortex-xdr-api-scan.md) |
 | 2026-10-06 | [два FIRST CHECK у брутфорс-лінзах: самоавтентифікація брокера RDS V-SRV01 (tssdis) і PAM fall-through на SSSD-Linux](changes/2026-10-06-first-check-rds-broker-pam-fallthrough.md) |

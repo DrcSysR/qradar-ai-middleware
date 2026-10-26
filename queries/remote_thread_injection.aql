@@ -28,6 +28,16 @@ WHERE
     -- Sysmon читає lsass легітимно; будь-який ІНШИЙ інжектор у lsass.exe навмисно лишається.
     AND NOT ("Process Name" ILIKE 'Sysmon64.exe' AND "Process Path" ILIKE '%Windows%')
     AND NOT ("Process Name" ILIKE 'OcsService.exe' AND "Process Path" ILIKE '%OCS Inventory%')
+    -- Агент Cortex XDR (розгорнутий 12.10.2026 на ~650 хостів): cyserver.exe штатно інжектить
+    -- у lsass/svchost (захист пам'яті), payload і VAScanner — у невідомі процеси. 137 офенсів
+    -- за 2 тижні з вердиктом «Confirmed Credential Access». Шляхи захищені ACL агента —
+    -- користувач туди не покладе файл; cyserver.exe з будь-якого ІНШОГО місця лишається.
+    AND NOT ("Process Name" ILIKE 'cyserver.exe' AND "Process Path" ILIKE '%Program Files%Palo Alto Networks%Traps%')
+    AND NOT ("Process Name" ILIKE 'cortex-xdr-payload.exe' AND "Process Path" ILIKE '%ProgramData%Cyvera%LocalSystem%')
+    AND NOT ("Process Name" ILIKE 'VAScanner.exe' AND "Process Path" ILIKE '%ProgramData%Cyvera%LocalSystem%')
+    -- SOLIDWORKS eDrawings зі штатної інсталяції (40 хостів). Копії з %TEMP%\EMO*\ НЕ фільтруємо —
+    -- Temp пише користувач; їх розбирає промпт.
+    AND NOT ("Process Name" ILIKE 'EModelViewer.exe' AND "Process Path" ILIKE '%Program Files%eDrawings%')
     -- Sysmon часто не резолвить ціль і пише Target Process Path = unknown process. Для
     -- браузерів і шелу це їхня внутрішня пісочниця — ~130 подій/добу без жодного сигналу
     -- (цілі не видно, аналізувати нема що). Знімаємо ЛИШЕ для цих інжекторів: нерозпізнана
@@ -36,6 +46,10 @@ WHERE
     AND NOT ("Target Process Path" ILIKE '%unknown process%' AND "Process Name" ILIKE 'msedge.exe')
     AND NOT ("Target Process Path" ILIKE '%unknown process%' AND "Process Name" ILIKE 'dwm.exe')
     AND NOT ("Target Process Path" ILIKE '%unknown process%' AND "Process Name" ILIKE 'explorer.exe')
+    -- Opera / Opera GX ставляться в профіль користувача (AppData\Local\Programs\Opera*) — та сама
+    -- пісочниця, що й у Chrome, ~40 тис. подій за 2 тижні. Лише ціль «unknown process» і лише з
+    -- рідного каталогу: opera.exe з Temp чи в іменовану ціль (lsass тощо) лишається видимим.
+    AND NOT ("Target Process Path" ILIKE '%unknown process%' AND "Process Name" ILIKE 'opera.exe' AND "Process Path" ILIKE '%AppData%Local%Programs%Opera%')
 GROUP BY Hostname, Injector, Injector_Path, Target_Proc, Target_Path, Acct
 ORDER BY Events DESC
 LIMIT {limit} {time_depth}
