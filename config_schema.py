@@ -185,6 +185,23 @@ SCHEMA = {
     "cortex_xdr_fp_external_ids":         (list, []),
     "cortex_xdr_report_title":            (str,  ""),
 
+    # --- трекінг пристроїв /track (tracker.py; запис 2026-11-02) ---
+    # Джерело місця — RADIUS-події NPS у QRadar (Called-Station-ID 'AP:SSID'); карта точок —
+    # мапи Zabbix (map.get/host.get/image.get, токен API з правом читання мап). Реєстр
+    # «пристрій → людина» — JSON поза git. Радіус = умовне покриття точки; масштаб
+    # метри/піксель задається на кожну мапу окремо ({"33": 0.05}), без нього коло умовне.
+    "zabbix_url":                         (str,  ""),
+    "zabbix_api_token":                   (str,  ""),
+    "track_zabbix_maps":                  (list, []),
+    "track_registry_file":                (str,  "/opt/qradar-middleware/track_registry.json"),
+    "track_default_hours":                (NUM,  72),
+    "track_max_hours":                    (NUM,  720),
+    "track_aql_limit":                    (int,  3000),
+    "track_aql_timeout_seconds":          (NUM,  180),
+    "track_ap_radius_m":                  (NUM,  20),
+    "track_map_cache_hours":              (NUM,  24),
+    "track_map_scale_m_per_px":           (dict, {}),
+
     # --- cdn_allowlist_update.py ---
     "cdn_allowlist_providers":            (list, []),
     "cdn_allowlist_static_cidrs":         (list, []),

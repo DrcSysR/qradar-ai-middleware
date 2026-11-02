@@ -1,5 +1,5 @@
 from fastapi import FastAPI, HTTPException
-from fastapi.responses import HTMLResponse, StreamingResponse, JSONResponse
+from fastapi.responses import HTMLResponse, StreamingResponse, JSONResponse, FileResponse
 from pydantic import BaseModel
 from google.oauth2 import service_account
 import google.auth.transport.requests
@@ -17,6 +17,7 @@ from prompts_loader import get_dynamic_prompt as _get_dynamic_prompt, DEFAULT_AQ
 from prompts_loader import get_matched_lenses
 import config_schema
 import queue_db
+import tracker
 
 VERTEX_KEY_PATH = "/opt/qradar-middleware/me-vertex-ai-studio-666353d9e1df.json"
 CONFIG_FILE = "/opt/qradar-middleware/config.json"
@@ -1785,6 +1786,7 @@ async def get_web_ui():
                 <button type="button" onclick="runAnalysis()" id="submitBtn">🚀 Запустити аналітику</button>
             </form>
             <div class="hint" style="margin-top:18px"><a href="/chat" style="color:#005A9E">🧪 Пісочниця llm01</a> — прямий діалог з моделлю, без тріаж-обгортки</div>
+            <div class="hint"><a href="/track" style="color:#005A9E">🧭 Трекінг пристроїв</a> — остання точка Wi-Fi / свіч пристрою і його місце на плані</div>
             
             <div id="result"></div>
         </div>
@@ -1880,3 +1882,123 @@ async function runAnalysis() {
     </html>
     """
     return html_content
+
+# =============================================================================
+# /track — трекінг пристроїв на вимогу (tracker.py). Де пристрій востаннє реєструвався
+# (точка Wi-Fi / свіч за RADIUS-подіями NPS у QRadar) і де ця точка стоїть на плані
+# (мапи Zabbix). Відстані в метрах тут немає принципово — RSSI в RADIUS не ходить, —
+# тому «приблизно» = коло радіусом track_ap_radius_m навколо точки.
+# =============================================================================
+class TrackRequest(BaseModel):
+    devices: list[str]                 # імена хостів / MAC / логіни / прізвища з реєстру
+    hours: float | None = None         # вікно пошуку; None → track_default_hours
+    refresh_map: bool = False          # перечитати мапи з Zabbix, ігноруючи кеш
+
+
+@app.post("/track")
+async def track_devices(req: TrackRequest):
+    hours = float(req.hours or APP_CONFIG.get("track_default_hours", 72))
+    hours = max(1.0, min(hours, float(APP_CONFIG.get("track_max_hours", 720))))
+    registry = tracker.load_registry(APP_CONFIG.get("track_registry_file", ""))
+    targets = tracker.resolve_targets(req.devices[:200], registry)
+    if not targets:
+        raise HTTPException(status_code=400, detail="Порожній запит: дайте ім'я хоста, MAC, логін або прізвище з реєстру")
+    aql = tracker.build_aql(targets, hours, int(APP_CONFIG.get("track_aql_limit", 3000)))
+    t0 = time.monotonic()
+    async with httpx.AsyncClient(verify=False, timeout=60.0) as client:
+        events = await tracker.run_aql(client, QRADAR_API_URL, HEADERS, aql,
+                                       float(APP_CONFIG.get("track_aql_timeout_seconds", 180)))
+        if events is None:
+            raise HTTPException(status_code=502, detail="QRadar: пошук не виконався (див. лог сервісу)")
+        tracker.assign(targets, events)
+        idx = await tracker.fetch_ap_map(client, APP_CONFIG, force=req.refresh_map)
+    for t in targets:
+        tracker.with_location(t, idx, APP_CONFIG)
+    logging.info(f"🧭 /track: {len(targets)} цілей, {len(events)} подій за {hours:g} год, {time.monotonic() - t0:.1f} с")
+    return {
+        "window_hours": hours,
+        "events": len(events),
+        "registry_entries": len(registry),
+        "map": {"fetched_at": tracker.ts_str(idx.get("fetched_at", 0) * 1000), "maps": idx.get("maps", {}),
+                "aps_known": len(idx.get("aps", {})), "error": idx.get("error", "")},
+        "targets": [tracker.to_public(t) for t in targets],
+    }
+
+
+@app.get("/track/map/{map_id}")
+async def track_map_image(map_id: int):
+    path = os.path.join(tracker.CACHE_DIR, f"map_{int(map_id)}.png")
+    if not os.path.exists(path):
+        raise HTTPException(status_code=404, detail="фон мапи ще не завантажено з Zabbix")
+    return FileResponse(path, media_type="image/png")
+
+
+TRACK_PAGE_HTML = """<!DOCTYPE html>
+<html lang="uk"><head><meta charset="utf-8"><title>Трекінг пристроїв</title>
+<style>
+ body{font-family:Arial,sans-serif;background:#f4f7f6;margin:0;padding:24px;color:#222}
+ .wrap{max-width:1200px;margin:auto}
+ .card{background:#fff;border-radius:8px;box-shadow:0 4px 8px rgba(0,0,0,.08);padding:20px;margin-bottom:18px}
+ h2{margin:0 0 6px;color:#333} .hint{color:#666;font-size:.9em;margin-bottom:12px}
+ textarea{width:100%;height:110px;padding:8px;border:1px solid #ccc;border-radius:4px;box-sizing:border-box;font-family:monospace}
+ .row{display:flex;gap:12px;align-items:center;margin-top:10px;flex-wrap:wrap}
+ input[type=number]{width:90px;padding:8px;border:1px solid #ccc;border-radius:4px}
+ button{padding:10px 18px;background:#005A9E;color:#fff;border:0;border-radius:4px;font-size:15px;cursor:pointer}
+ button:hover{background:#004578}
+ table{width:100%;border-collapse:collapse;font-size:.93em} th,td{border-bottom:1px solid #e5e5e5;padding:6px 8px;text-align:left;vertical-align:top}
+ th{background:#f0f3f5} .muted{color:#888} .wifi{color:#1b7f3b;font-weight:bold} .wired{color:#8a5a00;font-weight:bold}
+ .plan{position:relative;width:100%;margin-top:8px;border:1px solid #ddd;border-radius:4px;overflow:hidden}
+ .plan img{display:block;width:100%;height:auto}
+ .dot{position:absolute;width:14px;height:14px;background:#e02020;border:2px solid #fff;border-radius:50%;transform:translate(-50%,-50%);box-shadow:0 0 4px #000}
+ .ring{position:absolute;border:3px solid rgba(224,32,32,.85);background:rgba(224,32,32,.12);border-radius:50%;transform:translate(-50%,-50%);aspect-ratio:1/1}
+ .tag{position:absolute;transform:translate(-50%,-160%);background:#222;color:#fff;font-size:12px;padding:2px 6px;border-radius:3px;white-space:nowrap}
+ .err{background:#f8d7da;color:#721c24;padding:10px;border-radius:4px} .warn{background:#fff3cd;color:#664d03;padding:8px;border-radius:4px;font-size:.9em}
+ details summary{cursor:pointer;color:#005A9E}
+</style></head><body><div class="wrap">
+<div class="card">
+ <h2>🧭 Трекінг пристроїв по QRadar</h2>
+ <div class="hint">По одному на рядок: ім'я хоста (<code>LGS53</code>), MAC (будь-який формат), логін або прізвище з реєстру.
+ Джерело — RADIUS-події NPS (Wi-Fi: точка доступу + SSID, дріт: свіч). Місце на плані — з мап Zabbix; коло = умовний радіус покриття точки, не вимір.</div>
+ <textarea id="devs" placeholder="LGS53&#10;a4:5e:60:11:22:33&#10;Іваненко"></textarea>
+ <div class="row"><label>Вікно, год: <input type="number" id="hours" value="72" min="1" max="720"></label>
+  <label><input type="checkbox" id="refresh"> перечитати мапи з Zabbix</label>
+  <button onclick="run()" id="btn">🔎 Знайти</button><span id="status" class="muted"></span></div>
+</div>
+<div id="out"></div>
+</div>
+<script>
+function esc(s){return String(s??'').replace(/[&<>"]/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c]));}
+function sig(s){ if(!s) return '<span class="muted">—</span>';
+  const place = s.medium==='wifi' ? `<span class="wifi">Wi-Fi</span> ${esc(s.ap)} <span class="muted">(${esc(s.ssid)}, ${esc(s.nas)})</span>`
+                                  : `<span class="wired">дріт</span> ${esc(s.switch)} <span class="muted">(порт ${esc(s.port_mac)})</span>`;
+  return `${esc(s.time)}<br>${place}<br><span class="muted">${esc(s.user)} · ${esc(s.mac?s.mac.replace(/(..)(?=.)/g,'$1-'):'')}</span>`; }
+function plan(t){ const L=t.location; if(!L) return '<div class="muted">Wi-Fi-реєстрацій у вікні немає → позиції на плані немає.</div>';
+  if(!L.known) return `<div class="warn">Точка <b>${esc(L.ap)}</b> не знайдена на мапах Zabbix (нема host-елемента/підпису з таким ім'ям).</div>`;
+  if(!L.image) return `<div class="warn">Точка <b>${esc(L.ap)}</b> на мапі «${esc(L.map_name)}» (x=${L.x}, y=${L.y}), але фон мапи недоступний.</div>`;
+  const cx=(L.x+24)/L.w*100, cy=(L.y+24)/L.h*100;  // +24: координати елемента — лівий верх іконки (~48px)
+  const d = L.radius_px ? (2*L.radius_px/L.w*100) : 5;  // без масштабу — умовне коло 5% ширини
+  return `<div class="muted">Мапа «${esc(L.map_name)}», точка <b>${esc(L.ap)}</b>, радіус ≈ ${L.radius_m} м${L.radius_px?'':' (масштаб мапи не заданий — коло умовне)'}</div>
+   <div class="plan"><img src="${L.image}?v=${Date.now()}"><div class="ring" style="left:${cx}%;top:${cy}%;width:${d}%"></div><div class="dot" style="left:${cx}%;top:${cy}%"></div><div class="tag" style="left:${cx}%;top:${cy}%">${esc(L.ap)}</div></div>`; }
+function card(t){ const who = t.person ? `<b>${esc(t.person)}</b> · ` : '';
+  const places = t.places.length ? `<details><summary>Усі місця за вікно (${t.places.length})</summary><table><tr><th>Місце</th><th>Тип</th><th>Реєстрацій</th><th>Перша</th><th>Остання</th></tr>`+
+     t.places.map(p=>`<tr><td>${esc(p.place)}</td><td>${p.medium}</td><td>${p.count}</td><td>${esc(p.first_time)}</td><td>${esc(p.last_time)}</td></tr>`).join('')+'</table></details>' : '';
+  return `<div class="card"><h3 style="margin:0 0 6px">${who}${esc(t.label)} <span class="muted" style="font-weight:normal">(запит: ${esc(t.query)}; MAC: ${esc((t.macs_seen.length?t.macs_seen:t.macs).join(', ')||'невідомий')})</span></h3>
+   <table><tr><th style="width:33%">Останній контакт</th><th style="width:33%">Останній Wi-Fi</th><th>Останній дріт</th></tr>
+   <tr><td>${sig(t.last)}</td><td>${sig(t.last_wifi)}</td><td>${sig(t.last_wired)}</td></tr></table>
+   <div class="muted" style="margin:6px 0">Подій у вікні: ${t.sightings}</div>${places}${plan(t)}</div>`; }
+async function run(){ const devs=document.getElementById('devs').value.split(/\\n|,|;/).map(s=>s.trim()).filter(Boolean);
+  if(!devs.length){alert('Дайте хоча б один пристрій');return;}
+  const btn=document.getElementById('btn'), st=document.getElementById('status'), out=document.getElementById('out');
+  btn.disabled=true; st.textContent='⏳ Шукаю в QRadar (до 1–2 хв)…'; out.innerHTML='';
+  try{ const r=await fetch('/track',{method:'POST',headers:{'Content-Type':'application/json'},
+        body:JSON.stringify({devices:devs,hours:parseFloat(document.getElementById('hours').value)||72,refresh_map:document.getElementById('refresh').checked})});
+    const d=await r.json(); if(!r.ok){out.innerHTML=`<div class="card err">${esc(d.detail||JSON.stringify(d))}</div>`;return;}
+    st.textContent=`подій ${d.events}, вікно ${d.window_hours} год, точок на мапах ${d.map.aps_known}` + (d.map.fetched_at?` (мапи від ${d.map.fetched_at})`:'');
+    out.innerHTML=(d.map.error?`<div class="card warn">Мапи Zabbix: ${esc(d.map.error)}</div>`:'')+d.targets.map(card).join('');
+  }catch(e){out.innerHTML=`<div class="card err">${esc(e)}</div>`;} finally{btn.disabled=false;} }
+</script></body></html>"""
+
+
+@app.get("/track", response_class=HTMLResponse)
+async def track_ui():
+    return TRACK_PAGE_HTML
