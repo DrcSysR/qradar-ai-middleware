@@ -1899,7 +1899,8 @@ class TrackRequest(BaseModel):
 async def track_devices(req: TrackRequest):
     hours = float(req.hours or APP_CONFIG.get("track_default_hours", 72))
     hours = max(1.0, min(hours, float(APP_CONFIG.get("track_max_hours", 720))))
-    registry = tracker.load_registry(APP_CONFIG.get("track_registry_file", ""))
+    # load_config() не підставляє дефолти зі SCHEMA — без ключа в config.json .get() дає "", і реєстр мовчки порожній
+    registry = tracker.load_registry(APP_CONFIG.get("track_registry_file") or config_schema.SCHEMA["track_registry_file"][1])
     targets = tracker.resolve_targets(req.devices[:200], registry)
     if not targets:
         raise HTTPException(status_code=400, detail="Порожній запит: дайте ім'я хоста, MAC, логін або прізвище з реєстру")
