@@ -40,6 +40,12 @@ HEADERS = {"SEC": config["qradar_token"], "Accept": "application/json"}
 # ніж через стільки годин: Ariel за хвилину не одужає, а AQL-файл лагодиться деплоєм.
 # Раніше поллер молотив AQL_ERROR кожні 10 хв усі 48 год — це і є та «зациклена трійка».
 ERROR_RETRY_HOURS = float(config.get("queue_error_retry_hours", 6))
+# Фаза 2 — переоцінка довгоживучих офенсів поза 48-год вікном (див. config_schema).
+RETRIAGE_ENABLED = bool(config.get("poller_retriage_enabled", True))
+RETRIAGE_MIN_MAG = int(config.get("poller_retriage_min_magnitude", 6))
+RETRIAGE_INTERVAL_HOURS = float(config.get("poller_retriage_interval_hours", 24))
+RETRIAGE_SPAN_HOURS = float(config.get("poller_retriage_span_hours", 24))
+RETRIAGE_MAX_PER_RUN = int(config.get("poller_retriage_max_per_run", 30))
 
 target_rules = get_rule_keys(PROMPTS_FILE)
 
@@ -86,6 +92,104 @@ def has_ai_note(offense_id):
     except Exception:
         return False
     return False
+
+
+def processed_age_hours(offense_id):
+    """Скільки годин тому мідлварь востаннє ВИНІС вердикт (status=PROCESSED у ai_state.db).
+    None — вердикту в базі немає (ніколи не оброблявся, або AQL_ERROR/NO_EVENTS)."""
+    try:
+        with sqlite3.connect(DB_PATH) as conn:
+            row = conn.execute("SELECT status, last_updated FROM offenses WHERE offense_id = ?",
+                               (offense_id,)).fetchone()
+    except sqlite3.OperationalError:
+        return None
+    if row and row[0] == 'PROCESSED' and row[1]:
+        return age_hours(str(row[1])[:19])
+    return None
+
+
+def ai_note_age_hours(offense_id):
+    """Вік наймолодшої нотатки «AI Analysis» у QRadar (год). None — нотатки немає або API
+    впав (тоді вважаємо, що переоцінка потрібна — краще зайвий тріаж, ніж сліпа зона).
+    Фолбек для фази 2, коли ai_state.db не знає офенс (база чистилась або вердикт писав
+    інший інстанс)."""
+    url = f"{QRADAR_API}/siem/offenses/{offense_id}/notes?fields=note_text,create_time"
+    try:
+        response = requests.get(url, headers=HEADERS, verify=False, timeout=5)
+        if response.status_code != 200:
+            return None
+        ts = [n.get("create_time") or 0 for n in response.json() if "AI Analysis" in n.get("note_text", "")]
+        if not ts:
+            return None
+        return (time.time() * 1000 - max(ts)) / 3600000
+    except Exception:
+        return None
+
+
+def retriage_pass(qconn, rules_map, window_start_ms):
+    """Фаза 2: довгоживучі OPEN офенси поза вікном discovery.
+
+    Чому: discovery бере лише офенси, створені за 48 год. Офенс, у який QRadar доливає
+    події тижнями, після першого вердикту (або без нього, якщо випав у бурст) більше не
+    потрапляє нікому — аудит 02.11.2026: 22 OPEN mag-7 офенси з вересня–жовтня без
+    жодної нотатки AI, усі виявились FP-стеками, але дізнались ми про це вручну.
+
+    Що робимо: OPEN ∧ start_time <= початок вікна ∧ magnitude >= RETRIAGE_MIN_MAG ∧
+    last_updated_time за останні RETRIAGE_INTERVAL_HOURS (тобто офенс ще «живий»).
+    Кандидат іде в чергу з force=True (переоцінка PROCESSED у /process-one) і
+    max_span_hours=RETRIAGE_SPAN_HOURS — AQL дивиться на свіжий хвіст, а не на всю
+    історію (INOFFENSE за 45 діб не завершується, див. tools/catchup.py). Не частіше,
+    ніж раз на RETRIAGE_INTERVAL_HOURS на офенс: вік беремо з ai_state.db, інакше — з
+    нотатки AI в QRadar; немає ні того, ні іншого → переоцінюємо одразу.
+    Вердикт score<=0.6 закриє офенс, і він зникне з вибірки сам; score>0.6 лишає його
+    відкритим на аналітику й повернеться сюди через добу — це свідомо: офенс, що
+    росте, має свіжий вердикт щодня, а не один із вересня."""
+    now_ms = int(time.time() * 1000)
+    since_ms = now_ms - int(RETRIAGE_INTERVAL_HOURS * 3600 * 1000)
+    url = (f"{QRADAR_API}/siem/offenses?fields=id,description,rules,start_time,last_updated_time,magnitude,offense_source"
+           f"&filter=status%3D%22OPEN%22%20and%20start_time%3C%3D{window_start_ms}"
+           f"%20and%20last_updated_time%3E{since_ms}%20and%20magnitude%3E%3D{RETRIAGE_MIN_MAG}"
+           f"&sort=-magnitude")
+    r = requests.get(url, headers={**HEADERS, "Range": "items=0-499"}, verify=False, timeout=20)
+    if r.status_code not in (200, 206):
+        logging.warning(f"🔁 Фаза 2: QRadar API {r.status_code} — переоцінку пропущено цього разу.")
+        return
+    cands = r.json()
+    stats = {"кандидатів": len(cands), "без юзкейсу": 0, "пошкоджені": 0, "свіжий вердикт": 0,
+             "у черзі": 0, "у чергу": 0, "стеля рану": 0}
+    queued_ids = []
+    for off in cands:
+        off_id = int(off["id"])
+        if off.get("offense_source") in (None, ""):
+            stats["пошкоджені"] += 1
+            continue
+        rule_names = [rules_map.get(x.get("id"), "") for x in off.get("rules", [])]
+        key = matched_rule_key(target_rules, off.get("description", ""), rule_names)
+        if key is None:
+            stats["без юзкейсу"] += 1
+            continue
+        if queue_db.get_status(qconn, off_id) in (queue_db.QUEUED, queue_db.IN_PROGRESS):
+            stats["у черзі"] += 1
+            continue
+        if stats["у чергу"] >= RETRIAGE_MAX_PER_RUN:
+            stats["стеля рану"] += 1
+            continue
+        age = processed_age_hours(off_id)
+        if age is None:
+            age = ai_note_age_hours(off_id)
+        if age is not None and age < RETRIAGE_INTERVAL_HOURS:
+            stats["свіжий вердикт"] += 1
+            continue
+        outcome = queue_db.enqueue(qconn, off_id, int(off.get("magnitude") or 0), "auto", key,
+                                   overrides={"force": True, "max_span_hours": RETRIAGE_SPAN_HOURS},
+                                   force=True)
+        if outcome in ("inserted", "requeued"):
+            stats["у чергу"] += 1
+            queued_ids.append(f"{off_id}(m{off.get('magnitude')})")
+    logging.info("🔁 Фаза 2 (довгоживучі, mag>=%d, живі за %gh): %s" % (
+        RETRIAGE_MIN_MAG, RETRIAGE_INTERVAL_HOURS, ", ".join(f"{k} {v}" for k, v in stats.items())))
+    if queued_ids:
+        logging.info("🔁 На переоцінку: " + " ".join(queued_ids[:40]) + (" …" if len(queued_ids) > 40 else ""))
 
 # --- ПЕРЕВІРКА НА ЗАПУЩЕНИЙ ЕКЗЕМПЛЯР ---
 lock_file_handle = open(LOCK_FILE, "w")
@@ -187,6 +291,12 @@ try:
                 counts[outcome] = counts.get(outcome, 0) + 1
                 if outcome == "inserted":
                     per_lens[key] = per_lens.get(key, 0) + 1
+
+            if RETRIAGE_ENABLED:
+                try:
+                    retriage_pass(qconn, rules_map, search_start_time)
+                except Exception as e:  # фаза 2 — доповнення; її збій не має ламати discovery
+                    logging.warning(f"🔁 Фаза 2 впала: {e}")
 
             d = queue_db.depth(qconn)
 

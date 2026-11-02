@@ -34,6 +34,8 @@ reference set'ами.
 QRadar offenses API ──► poller.py (кожні 10 хв, вікно 48 год, БЕЗ ліміту — продюсер)
                           │ фільтр: OPEN + опис/назва правила є ключем у prompts.json
                           │ skip: status=PROCESSED у ai_state.db або вже є нотатка "AI Analysis"
+                          │ фаза 2 (2026-11-02): OPEN поза вікном, mag>=6, оновлювався за 24 год →
+                          │   у чергу з force + max_span_hours=24, не частіше ніж раз на добу
                           ▼
               work_queue в ai_state.db (queue_db.py): offense_id · magnitude · source · lens
                           │ порядок claim'у: magnitude DESC → manual → найстаріші (2026-09-23)

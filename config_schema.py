@@ -93,6 +93,20 @@ SCHEMA = {
     # /process-one віддав status "error" (AQL/AI впали) → рядок ERROR; поллер force-перекладе
     # його в QUEUED не раніше, ніж через стільки годин, якщо офенс досі OPEN у вікні.
     "queue_error_retry_hours":        (NUM,  6),
+    # --- переоцінка довгоживучих офенсів (poller.py, фаза 2; запис 2026-11-02) ---
+    # Поллер бачить лише офенси, СТВОРЕНІ за 48 год. Офенс, що живе тижнями й у який
+    # QRadar щодня доливає події, випадає з вікна назавжди — аудит 02.11.2026 знайшов 22
+    # OPEN mag-7 офенси з вересня–жовтня без жодного вердикту. Фаза 2 бере OPEN офенси
+    # старші за вікно, з magnitude >= min_magnitude і свіжим last_updated_time, і кладе
+    # їх у чергу з force (переоцінка PROCESSED) не частіше, ніж раз на interval_hours.
+    # span_hours обрізає AQL до свіжого хвоста офенсу (інакше INOFFENSE за 45 діб не
+    # завершується — та сама причина, що в tools/catchup.py). max_per_run обмежує
+    # вартість рану (кожен кандидат = до одного API-виклику за нотатками).
+    "poller_retriage_enabled":        (bool, True),
+    "poller_retriage_min_magnitude":  (int,  6),
+    "poller_retriage_interval_hours": (NUM,  24),
+    "poller_retriage_span_hours":     (NUM,  24),
+    "poller_retriage_max_per_run":    (int,  30),
     # Пріоритет пісочниці (/chat) над тріажем: на повідомлення app.py ставить hold на
     # chat_hold_seconds — воркер не бере нових офенсів, поточний дороблює; чат чекає
     # вільний слот llm01 до chat_wait_seconds; після відповіді hold ще chat_grace_seconds.
