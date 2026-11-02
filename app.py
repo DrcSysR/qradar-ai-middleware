@@ -1948,7 +1948,7 @@ TRACK_PAGE_HTML = """<!DOCTYPE html>
  table{width:100%;border-collapse:collapse;font-size:.93em} th,td{border-bottom:1px solid #e5e5e5;padding:6px 8px;text-align:left;vertical-align:top}
  th{background:#f0f3f5} .muted{color:#888} .wifi{color:#1b7f3b;font-weight:bold} .wired{color:#8a5a00;font-weight:bold}
  .plan{position:relative;width:100%;margin-top:8px;border:1px solid #ddd;border-radius:4px;overflow:hidden}
- .plan img{display:block;width:100%;height:auto}
+ .plan{background:#fff} .plan img{display:block;height:auto;position:absolute;left:0;top:0}  /* полотно мапи Zabbix більше за фон: координати елементів — у пікселях полотна, фон кладемо в лівий верх у тому ж масштабі */
  .dot{position:absolute;width:14px;height:14px;background:#e02020;border:2px solid #fff;border-radius:50%;transform:translate(-50%,-50%);box-shadow:0 0 4px #000}
  .ring{position:absolute;border:3px solid rgba(224,32,32,.85);background:rgba(224,32,32,.12);border-radius:50%;transform:translate(-50%,-50%);aspect-ratio:1/1}
  .tag{position:absolute;transform:translate(-50%,-160%);background:#222;color:#fff;font-size:12px;padding:2px 6px;border-radius:3px;white-space:nowrap}
@@ -1978,7 +1978,7 @@ function plan(t){ const L=t.location; if(!L) return '<div class="muted">Wi-Fi-р
   const cx=(L.x+24)/L.w*100, cy=(L.y+24)/L.h*100;  // +24: координати елемента — лівий верх іконки (~48px)
   const d = L.radius_px ? (2*L.radius_px/L.w*100) : 5;  // без масштабу — умовне коло 5% ширини
   return `<div class="muted">Мапа «${esc(L.map_name)}», точка <b>${esc(L.ap)}</b>, радіус ≈ ${L.radius_m} м${L.radius_px?'':' (масштаб мапи не заданий — коло умовне)'}</div>
-   <div class="plan"><img src="${L.image}?v=${Date.now()}"><div class="ring" style="left:${cx}%;top:${cy}%;width:${d}%"></div><div class="dot" style="left:${cx}%;top:${cy}%"></div><div class="tag" style="left:${cx}%;top:${cy}%">${esc(L.ap)}</div></div>`; }
+   <div class="plan" style="aspect-ratio:${L.w}/${L.h}"><img src="${L.image}?v=${Date.now()}" onload="this.style.width=(this.naturalWidth/${L.w}*100)+'%'"><div class="ring" style="left:${cx}%;top:${cy}%;width:${d}%"></div><div class="dot" style="left:${cx}%;top:${cy}%"></div><div class="tag" style="left:${cx}%;top:${cy}%">${esc(L.ap)}</div></div>`; }
 function card(t){ const who = t.person ? `<b>${esc(t.person)}</b> · ` : '';
   const places = t.places.length ? `<details><summary>Усі місця за вікно (${t.places.length})</summary><table><tr><th>Місце</th><th>Тип</th><th>Реєстрацій</th><th>Перша</th><th>Остання</th></tr>`+
      t.places.map(p=>`<tr><td>${esc(p.place)}</td><td>${p.medium}</td><td>${p.count}</td><td>${esc(p.first_time)}</td><td>${esc(p.last_time)}</td></tr>`).join('')+'</table></details>' : '';
