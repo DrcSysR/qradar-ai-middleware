@@ -2037,7 +2037,7 @@ function card(t){ const who = t.person ? `<b>${esc(t.person)}</b> · ` : '';
      t.places.map(p=>`<tr><td>${esc(p.place)}</td><td>${p.medium}</td><td>${p.count}</td><td>${esc(p.first_time)}</td><td>${esc(p.last_time)}</td></tr>`).join('')+'</table></details>' : '';
   return `<div class="card"><h3 style="margin:0 0 6px">${who}${esc(t.label)} <span class="muted" style="font-weight:normal">(запит: ${esc(t.query)}; MAC: ${esc((t.macs_seen.length?t.macs_seen:t.macs).join(', ')||'невідомий')})</span></h3>
    <table><tr><th style="width:25%">Останній контакт (RADIUS)</th><th style="width:25%">Останній Wi-Fi</th><th style="width:20%">Останній дріт</th><th style="width:20%">Останній DHCP (dhcp1)</th><th>DHCP Palo Alto (зараз)</th></tr>
-   <tr><td>${sig(t.last)}</td><td>${sig(t.last_wifi)}</td><td>${sig(t.last_wired)}</td><td>${dhcp(t)}</td><td>${padhcp(t)}</td></tr></table>
+   <tr><td>${sig(t.last)}</td><td>${sig(t.last_wifi)}</td><td>${sig(t.last_wired)}${t.wired_place?`<br><span class="muted">📍 ${esc([t.wired_place.location,t.wired_place.site_rack].filter(Boolean).join(', '))}</span>`:''}</td><td>${dhcp(t)}</td><td>${padhcp(t)}</td></tr></table>
    <div class="muted" style="margin:6px 0">Подій у вікні: ${t.sightings}</div>${places}${plan(t)}</div>`; }
 async function run(){ const devs=document.getElementById('devs').value.split(/\\n|,|;/).map(s=>s.trim()).filter(Boolean);
   if(!devs.length){alert('Дайте хоча б один пристрій');return;}

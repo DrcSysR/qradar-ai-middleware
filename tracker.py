@@ -631,10 +631,15 @@ def load_buildings(path: str) -> list[dict]:
     return out
 
 
+def buildings_path(cfg: dict) -> str:
+    # load_config() не підставляє дефолти зі SCHEMA — без ключа в config.json .get() дає ""
+    return cfg.get("track_buildings_file") or os.path.join(BASE_DIR, "track_buildings.json")
+
+
 def load_georefs(cfg: dict) -> dict:
     """{map_id: georef(+building, floor, inventory_match)} з усіх будівель track_buildings_file."""
     out = {}
-    for b in load_buildings(cfg.get("track_buildings_file") or ""):
+    for b in load_buildings(buildings_path(cfg)):
         for g in b["floors"]:
             out[g["map"]] = {**g, "building": b["name"], "inventory_match": b["inventory_match"],
                              "corners": list(b["corners"].values())}
@@ -643,7 +648,7 @@ def load_georefs(cfg: dict) -> dict:
 
 def building_of(lat: float, lon: float, cfg: dict) -> str:
     """Назва будівлі, у контур якої потрапляє GPS-точка (інвентар без мапи), або ''."""
-    for b in load_buildings(cfg.get("track_buildings_file") or ""):
+    for b in load_buildings(buildings_path(cfg)):
         if len(b["corners"]) >= 3 and in_polygon(lat, lon, list(b["corners"].values())):
             return b["name"]
     return ""
@@ -674,6 +679,12 @@ def with_location(t: dict, idx: dict, cfg: dict, georefs: dict | None = None) ->
     збігається з site_rack/location (source="inventory"); (3) лише інвентар — текст
     «будівля/поверх» + посилання на карту, без плану. Радіус у пікселях: ручний
     track_map_scale_m_per_px, інакше масштаб із прив'язки."""
+    # Дріт: місце свіча з інвентарю Zabbix (location/site_rack: «Корпус 5 біля Фінпауер», «Серверна №2»)
+    t["wired_place"] = None
+    sw = (t.get("last_wired") or {}).get("switch")
+    if sw and idx.get("inventory", {}).get(sw.upper()):
+        i = idx["inventory"][sw.upper()]
+        t["wired_place"] = {k: i.get(k, "") for k in ("location", "site_rack", "site_city")}
     s = t.get("last_wifi")
     t["location"] = None
     if not s or not s.get("ap"):
@@ -752,4 +763,5 @@ def to_public(t: dict) -> dict:
         "dhcp_macs": [{**d, "first_time": ts_str(d["first"]), "last_time": ts_str(d["last"])} for d in t.get("dhcp_macs", [])],
         "pa_dhcp": t.get("pa_dhcp", []),
         "location": t.get("location"),
+        "wired_place": t.get("wired_place"),
     }
