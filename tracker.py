@@ -41,6 +41,13 @@ API (map.get + host.get + image.get), кешуємо на диск і малює
 
 Запит приймає рядки будь-якого виду: ім'я хоста, MAC (будь-який роздільник), логін або
 прізвище з реєстру (тоді беруться всі пристрої цієї людини).
+
+Друга лінза — DHCP (`LinuxDHCP @ dhcp1`, ISC dhcpd: `DHCPACK on <ip> to <mac> (<hostname>) via
+<relay>`). Потрібна для пристроїв, яких у RADIUS немає взагалі: SSID `me_mobile` — PSK без
+NPS, а телефони ще й рандомізують MAC. Тоді єдиний стабільний ідентифікатор — hostname у
+DHCP-запиті (`dhcp_host` у реєстрі, напр. "F6"): з нього дістаємо поточний випадковий MAC,
+IP і relay (= VLAN/підмережа), а знайдені MAC ще раз проганяємо через RADIUS. Точку доступу
+для PSK-клієнта QRadar не знає — її знає лише WLC (див. docs/changes/2026-11-02-b).
 """
 
 import base64
@@ -98,15 +105,17 @@ def load_registry(path: str) -> list[dict]:
         for d in person.get("devices", []):
             if isinstance(d, str):
                 mac = norm_mac(d)
-                out.append({"person": who, "name": None if mac else norm_name(d), "macs": [mac] if mac else [], "label": d})
+                out.append({"person": who, "name": None if mac else norm_name(d), "macs": [mac] if mac else [],
+                            "dhcp_host": "" if mac else d.strip(), "label": d})
             elif isinstance(d, dict):
                 macs = d.get("mac") or d.get("macs") or []
                 macs = [macs] if isinstance(macs, str) else list(macs)
                 macs = [m for m in (norm_mac(x) for x in macs) if m]
                 name = d.get("name") or ""
                 host = d.get("host") or (name if name and not re.search(r"\s", name) else "")
+                dhcp_host = d.get("dhcp_host") or host or ""
                 out.append({"person": who, "name": norm_name(host) if host else None, "macs": macs,
-                            "label": name or host or (mac_dashed(macs[0]) if macs else "?")})
+                            "dhcp_host": dhcp_host.strip(), "label": name or host or (mac_dashed(macs[0]) if macs else "?")})
     return out
 
 
@@ -129,19 +138,20 @@ def resolve_targets(items: list[str], registry: list[dict]) -> list[dict]:
         if mac:
             hit = next((r for r in registry if mac in r["macs"]), None)
             add({"query": q, "label": hit["label"] if hit else mac_dashed(mac), "person": hit["person"] if hit else "",
-                 "name": hit["name"] if hit else None, "macs": [mac]})
+                 "name": hit["name"] if hit else None, "macs": [mac], "dhcp_host": hit.get("dhcp_host", "") if hit else ""})
             continue
         ql = q.lower()
         # прізвище / частина імені людини з реєстру → усі її пристрої
         people = [r for r in registry if r["person"] and ql in r["person"].lower()]
         if people:
             for r in people:
-                add({"query": q, "label": r["label"], "person": r["person"], "name": r["name"], "macs": list(r["macs"])})
+                add({"query": q, "label": r["label"], "person": r["person"], "name": r["name"], "macs": list(r["macs"]),
+                     "dhcp_host": r.get("dhcp_host", "")})
             continue
         name = norm_name(q)
         hit = next((r for r in registry if r["name"] == name), None)
         add({"query": q, "label": hit["label"] if hit else q, "person": hit["person"] if hit else "",
-             "name": name, "macs": list(hit["macs"]) if hit else []})
+             "name": name, "macs": list(hit["macs"]) if hit else [], "dhcp_host": hit.get("dhcp_host", "") if hit else q})
     return targets
 
 
@@ -259,6 +269,56 @@ def assign(targets: list[dict], events: list[dict]) -> None:
     for t in targets:
         t["macs_seen"] = sorted(mac_dashed(m) for m in t["macs_seen"])
         t["aps"] = sorted(({"place": k, **v} for k, v in t["aps"].items()), key=lambda x: -x["last"])
+
+
+# ----------------------------------------------------------------------------- DHCP
+DHCP_RE = re.compile(r"DHCPACK on ([\d.]+) to ([0-9a-f:]{17})(?: \(([^)]*)\))? via ([\d.]+|\w+)", re.I)
+
+
+def build_dhcp_aql(targets: list[dict], hours: float, limit: int, logsource: str) -> str:
+    """DHCPACK по hostname у дужках (стабільний для рандомізованого MAC) і по відомих MAC."""
+    conds = []
+    for t in targets:
+        if t.get("dhcp_host"):
+            conds.append(f"UTF8(payload) ILIKE '%({_lit(t['dhcp_host'])})%'")
+        for m in t["macs"]:
+            conds.append(f"UTF8(payload) ILIKE '% {':'.join(m[i:i + 2] for i in range(0, 12, 2))} %'")
+    if not conds:
+        return ""
+    return ("SELECT starttime AS ts, UTF8(payload) AS p FROM events "
+            f"WHERE LOGSOURCENAME(logsourceid) ILIKE '{_lit(logsource)}' AND QIDNAME(qid) = 'DHCPACK' "
+            f"AND ({' OR '.join(conds)}) ORDER BY starttime DESC LIMIT {int(limit)} LAST {max(1, int(hours))} HOURS")
+
+
+def assign_dhcp(targets: list[dict], events: list[dict]) -> list[str]:
+    """Розкладає DHCPACK по цілях (за hostname або MAC), ставить last_dhcp і dhcp_macs.
+    Повертає нові MAC (не з реєстру), які варто доганяти через RADIUS."""
+    new_macs = []
+    for t in targets:
+        t.setdefault("last_dhcp", None)
+        t.setdefault("dhcp_macs", {})
+    for ev in events:
+        m = DHCP_RE.search(ev.get("p", ""))
+        if not m:
+            continue
+        ip, mac, host, relay = m.group(1), norm_mac(m.group(2)), (m.group(3) or "").strip(), m.group(4)
+        ts = int(ev.get("ts") or 0)
+        for t in targets:
+            hit = (mac and mac in t["macs"]) or (t.get("dhcp_host") and host.lower() == t["dhcp_host"].lower())
+            if not hit:
+                continue
+            rec = {"ts": ts, "ip": ip, "mac": mac, "host": host, "relay": relay}
+            if t["last_dhcp"] is None or ts > t["last_dhcp"]["ts"]:
+                t["last_dhcp"] = rec
+            d = t["dhcp_macs"].setdefault(mac, {"first": ts, "last": ts, "ips": set()})
+            d["first"], d["last"] = min(d["first"], ts), max(d["last"], ts)
+            d["ips"].add(ip)
+            if mac not in t["macs"] and mac not in new_macs:
+                new_macs.append(mac)
+    for t in targets:
+        t["dhcp_macs"] = sorted(({"mac": mac_dashed(k), "first": v["first"], "last": v["last"], "ips": sorted(v["ips"])}
+                                 for k, v in t["dhcp_macs"].items()), key=lambda x: -x["last"])
+    return new_macs
 
 
 # ----------------------------------------------------------------------------- Zabbix: карта точок
@@ -401,5 +461,8 @@ def to_public(t: dict) -> dict:
         "sightings": t.get("sightings", 0),
         "last": sig(t.get("last")), "last_wifi": sig(t.get("last_wifi")), "last_wired": sig(t.get("last_wired")),
         "places": [{**a, "first_time": ts_str(a["first"]), "last_time": ts_str(a["last"])} for a in t.get("aps", [])],
+        "last_dhcp": ({**t["last_dhcp"], "mac": mac_dashed(t["last_dhcp"]["mac"]) if t["last_dhcp"].get("mac") else "",
+                       "time": ts_str(t["last_dhcp"]["ts"])} if t.get("last_dhcp") else None),
+        "dhcp_macs": [{**d, "first_time": ts_str(d["first"]), "last_time": ts_str(d["last"])} for d in t.get("dhcp_macs", [])],
         "location": t.get("location"),
     }
