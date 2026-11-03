@@ -82,3 +82,23 @@
 несе системний MAC контролера). Тоді `Accounting Request` понесе `<AP>:me_mobile` + MAC
 клієнта, і лінза RADIUS запрацює й для телефонів (MAC за сесію постійний — DHCP дає його
 через hostname). Альтернатива — живий SNMP/SSH до WLC (дає ще й RSSI), але це вже не QRadar.
+
+## Доповнення 2026-11-03 — DHCP Palo Alto (коміт d5704c3) і інвентар Zabbix
+
+- У QRadar подій DHCP від pa-vm немає взагалі (PaSeries за 7 діб без `dhcp`). Але сам pa-vm
+  роздає адреси чотирьом сегментам, і таблицю оренд можна читати живцем (`show dhcp server
+  lease interface all`, XML API `type=op`): `ethernet1/4.500` — гостьовий VLAN 500
+  (172.18.48/21, 284 оренди, 249 з hostname-ами телефонів), `ethernet1/3.605` — VLAN точок
+  доступу (172.17.65.x, hostname = ім'я точки `CS-…`), `ethernet1/2.10`, `ethernet1/2.12`.
+  Це **стан, не історія**. Додано лінзу 3: `fetch_pa_dhcp`/`parse_pa_dhcp`/`assign_pa_dhcp`,
+  колонка «DHCP Palo Alto (зараз)», знайдені MAC доганяються через RADIUS. Ключі
+  `pa_api_host`, `pa_api_key`, `track_pa_dhcp_enabled`. ⚠️ Ключ має бути від окремого адміна з
+  роллю «XML API: Operational Requests» (read-only): user-id-ключ QRadar на `type=op` дає 403, а
+  superuser-ключ у `config.json` класти не можна. Телефон F6 і Chromebook користувача на PA
+  DHCP не живуть (вони на `dhcp1`), тож для них ця лінза порожня за визначенням.
+- Інвентар Zabbix (`inventory_mode=1`, ручний) заповнений лише у `CS_IT_01`: серійник,
+  модель `AIR-AP2802I-E-K9`, `url_a`=172.17.65.117, GPS `50.743863, 25.394716`,
+  `site_rack`="build 1 floor 2", місто/область. З 114 AP-хостів `location`=0, GPS=1, rack=1.
+  Якби інвентар заповнили для всіх точок (`location_lat/lon` + `site_rack` як «будівля/поверх»),
+  це дало б друге джерело місця без мап: координати → відстані між точками в метрах і
+  посилання на карту; на плані поверху все одно потрібен елемент мапи.
