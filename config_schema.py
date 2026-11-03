@@ -201,6 +201,8 @@ SCHEMA = {
     "track_ap_radius_m":                  (NUM,  20),
     "track_map_cache_hours":              (NUM,  24),
     "track_map_scale_m_per_px":           (dict, {}),
+    # Лог-сорс DHCP для другої лінзи (ISC dhcpd на dhcp1; 172.17.61.254 дублює ті самі події)
+    "track_dhcp_logsource":               (str,  "LinuxDHCP @ dhcp1"),
 
     # --- cdn_allowlist_update.py ---
     "cdn_allowlist_providers":            (list, []),

@@ -1912,13 +1912,33 @@ async def track_devices(req: TrackRequest):
         if events is None:
             raise HTTPException(status_code=502, detail="QRadar: пошук не виконався (див. лог сервісу)")
         tracker.assign(targets, events)
+        # Лінза DHCP: пристрої без RADIUS (me_mobile = PSK) і з рандомізованим MAC — за hostname
+        # у DHCPACK дістаємо поточний MAC/IP/relay; нові MAC доганяємо через RADIUS ще раз.
+        dhcp_events, extra_events = [], []
+        dhcp_aql = tracker.build_dhcp_aql(targets, hours, int(APP_CONFIG.get("track_aql_limit", 3000)),
+                                          APP_CONFIG.get("track_dhcp_logsource") or "LinuxDHCP @ dhcp1")
+        if dhcp_aql:
+            dhcp_events = await tracker.run_aql(client, QRADAR_API_URL, HEADERS, dhcp_aql,
+                                                float(APP_CONFIG.get("track_aql_timeout_seconds", 180))) or []
+            new_macs = tracker.assign_dhcp(targets, dhcp_events)
+            if new_macs:
+                extra = [{"query": "", "label": "", "person": "", "name": None, "macs": new_macs[:50], "dhcp_host": ""}]
+                extra_aql = tracker.build_aql(extra, hours, int(APP_CONFIG.get("track_aql_limit", 3000)))
+                extra_events = await tracker.run_aql(client, QRADAR_API_URL, HEADERS, extra_aql,
+                                                     float(APP_CONFIG.get("track_aql_timeout_seconds", 180))) or []
+                if extra_events:
+                    for t in targets:  # MAC з DHCP тимчасово вважаємо «своїми», щоб assign їх прийняв
+                        t["macs"] = t["macs"] + [tracker.norm_mac(d["mac"]) for d in t.get("dhcp_macs", [])
+                                                 if tracker.norm_mac(d["mac"]) not in t["macs"]]
+                    tracker.assign(targets, events + extra_events)
         idx = await tracker.fetch_ap_map(client, APP_CONFIG, force=req.refresh_map)
     for t in targets:
         tracker.with_location(t, idx, APP_CONFIG)
-    logging.info(f"🧭 /track: {len(targets)} цілей, {len(events)} подій за {hours:g} год, {time.monotonic() - t0:.1f} с")
+    logging.info(f"🧭 /track: {len(targets)} цілей, RADIUS {len(events)}+{len(extra_events)} / DHCP {len(dhcp_events)} подій за {hours:g} год, {time.monotonic() - t0:.1f} с")
     return {
         "window_hours": hours,
-        "events": len(events),
+        "events": len(events) + len(extra_events),
+        "dhcp_events": len(dhcp_events),
         "registry_entries": len(registry),
         "map": {"fetched_at": tracker.ts_str(idx.get("fetched_at", 0) * 1000), "maps": idx.get("maps", {}),
                 "aps_known": len(idx.get("aps", {})), "error": idx.get("error", "")},
@@ -1959,7 +1979,7 @@ TRACK_PAGE_HTML = """<!DOCTYPE html>
 <div class="card">
  <h2>🧭 Трекінг пристроїв по QRadar</h2>
  <div class="hint">По одному на рядок: ім'я хоста (<code>LGS53</code>), MAC (будь-який формат), логін або прізвище з реєстру.
- Джерело — RADIUS-події NPS (Wi-Fi: точка доступу + SSID, дріт: свіч). Місце на плані — з мап Zabbix; коло = умовний радіус покриття точки, не вимір.</div>
+ Джерело — RADIUS-події NPS (Wi-Fi: точка доступу + SSID, дріт: свіч) + DHCP (hostname → поточний MAC/IP, для телефонів з рандомізованим MAC). Місце на плані — з мап Zabbix; коло = умовний радіус покриття точки, не вимір.</div>
  <textarea id="devs" placeholder="LGS53&#10;a4:5e:60:11:22:33&#10;Іваненко"></textarea>
  <div class="row"><label>Вікно, год: <input type="number" id="hours" value="72" min="1" max="720"></label>
   <label><input type="checkbox" id="refresh"> перечитати мапи з Zabbix</label>
@@ -1973,7 +1993,11 @@ function sig(s){ if(!s) return '<span class="muted">—</span>';
   const place = s.medium==='wifi' ? `<span class="wifi">Wi-Fi</span> ${esc(s.ap)} <span class="muted">(${esc(s.ssid)}, ${esc(s.nas)})</span>`
                                   : `<span class="wired">дріт</span> ${esc(s.switch)} <span class="muted">(порт ${esc(s.port_mac)})</span>`;
   return `${esc(s.time)}<br>${place}<br><span class="muted">${esc(s.user)} · ${esc(s.mac?s.mac.replace(/(..)(?=.)/g,'$1-'):'')}</span>`; }
-function plan(t){ const L=t.location; if(!L) return '<div class="muted">Wi-Fi-реєстрацій у вікні немає → позиції на плані немає.</div>';
+function dhcp(t){ const d=t.last_dhcp; if(!d) return '<span class="muted">—</span>';
+  const macs=t.dhcp_macs.length>1?`<br><span class="muted">MAC за вікно: ${t.dhcp_macs.length} (рандомізація)</span>`:'';
+  return `${esc(d.time)}<br>IP <b>${esc(d.ip)}</b> <span class="muted">relay ${esc(d.relay)}</span><br><span class="muted">${esc(d.mac)}${d.host?' · '+esc(d.host):''}</span>${macs}`; }
+function plan(t){ const L=t.location;
+  if(!L) return t.last_dhcp && !t.last ? '<div class="warn">Є лише DHCP: пристрій у мережі (див. IP/relay), але через RADIUS не проходить (SSID без NPS, напр. me_mobile) — точку доступу знає лише WLC.</div>' : '<div class="muted">Wi-Fi-реєстрацій у вікні немає → позиції на плані немає.</div>';
   if(!L.known) return `<div class="warn">Точка <b>${esc(L.ap)}</b> не знайдена на мапах Zabbix (нема host-елемента/підпису з таким ім'ям).</div>`;
   if(!L.image) return `<div class="warn">Точка <b>${esc(L.ap)}</b> на мапі «${esc(L.map_name)}» (x=${L.x}, y=${L.y}), але фон мапи недоступний.</div>`;
   const cx=(L.x+24)/L.w*100, cy=(L.y+24)/L.h*100;  // +24: координати елемента — лівий верх іконки (~48px)
@@ -1984,8 +2008,8 @@ function card(t){ const who = t.person ? `<b>${esc(t.person)}</b> · ` : '';
   const places = t.places.length ? `<details><summary>Усі місця за вікно (${t.places.length})</summary><table><tr><th>Місце</th><th>Тип</th><th>Реєстрацій</th><th>Перша</th><th>Остання</th></tr>`+
      t.places.map(p=>`<tr><td>${esc(p.place)}</td><td>${p.medium}</td><td>${p.count}</td><td>${esc(p.first_time)}</td><td>${esc(p.last_time)}</td></tr>`).join('')+'</table></details>' : '';
   return `<div class="card"><h3 style="margin:0 0 6px">${who}${esc(t.label)} <span class="muted" style="font-weight:normal">(запит: ${esc(t.query)}; MAC: ${esc((t.macs_seen.length?t.macs_seen:t.macs).join(', ')||'невідомий')})</span></h3>
-   <table><tr><th style="width:33%">Останній контакт</th><th style="width:33%">Останній Wi-Fi</th><th>Останній дріт</th></tr>
-   <tr><td>${sig(t.last)}</td><td>${sig(t.last_wifi)}</td><td>${sig(t.last_wired)}</td></tr></table>
+   <table><tr><th style="width:25%">Останній контакт (RADIUS)</th><th style="width:25%">Останній Wi-Fi</th><th style="width:25%">Останній дріт</th><th>Останній DHCP</th></tr>
+   <tr><td>${sig(t.last)}</td><td>${sig(t.last_wifi)}</td><td>${sig(t.last_wired)}</td><td>${dhcp(t)}</td></tr></table>
    <div class="muted" style="margin:6px 0">Подій у вікні: ${t.sightings}</div>${places}${plan(t)}</div>`; }
 async function run(){ const devs=document.getElementById('devs').value.split(/\\n|,|;/).map(s=>s.trim()).filter(Boolean);
   if(!devs.length){alert('Дайте хоча б один пристрій');return;}
