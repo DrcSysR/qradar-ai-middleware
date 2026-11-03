@@ -1946,8 +1946,9 @@ async def track_devices(req: TrackRequest):
                 extra_events += pa_ev
                 tracker.assign(targets, events + extra_events)
         idx = await tracker.fetch_ap_map(client, APP_CONFIG, force=req.refresh_map)
+    georefs = tracker.load_georefs(APP_CONFIG)   # будівлі: кути ↔ пікселі планів (track_buildings_file)
     for t in targets:
-        tracker.with_location(t, idx, APP_CONFIG)
+        tracker.with_location(t, idx, APP_CONFIG, georefs)
     logging.info(f"🧭 /track: {len(targets)} цілей, RADIUS {len(events)}+{len(extra_events)} / DHCP {len(dhcp_events)} подій за {hours:g} год, {time.monotonic() - t0:.1f} с")
     return {
         "window_hours": hours,
@@ -1956,7 +1957,9 @@ async def track_devices(req: TrackRequest):
         "pa_dhcp": {"leases": len(pa_leases), "error": pa_err},
         "registry_entries": len(registry),
         "map": {"fetched_at": tracker.ts_str(idx.get("fetched_at", 0) * 1000), "maps": idx.get("maps", {}),
-                "aps_known": len(idx.get("aps", {})), "error": idx.get("error", "")},
+                "aps_known": len(idx.get("aps", {})), "error": idx.get("error", ""),
+                "inventory": len(idx.get("inventory", {})),
+                "georef_maps": sorted(georefs.keys())},
         "targets": [tracker.to_public(t) for t in targets],
     }
 
@@ -2013,13 +2016,21 @@ function dhcp(t){ const d=t.last_dhcp; if(!d) return '<span class="muted">—</s
   return `${esc(d.time)}<br>IP <b>${esc(d.ip)}</b> <span class="muted">relay ${esc(d.relay)}</span><br><span class="muted">${esc(d.mac)}${d.host?' · '+esc(d.host):''}</span>${macs}`; }
 function padhcp(t){ const l=t.pa_dhcp||[]; if(!l.length) return '<span class="muted">—</span>';
   return l.map(x=>`IP <b>${esc(x.ip)}</b> <span class="muted">${esc(x.iface)} · ${esc(x.state)}</span><br><span class="muted">${esc(x.mac)}${x.hostname?' · '+esc(x.hostname):''} · до ${esc(x.lease_time)}</span>`).join('<br>'); }
+function inv(L){ const i=L.inventory; const parts=[];
+  if(L.building) parts.push(`будівля <b>${esc(L.building)}</b>`);
+  if(i){ const where=[i.site_rack,i.location].filter(Boolean).join(', '); if(where) parts.push(`інвентар Zabbix: <b>${esc(where)}</b>`);
+         const extra=[i.site_city,i.model,i.ip?('IP '+i.ip):''].filter(Boolean).join(' · '); if(extra) parts.push(`<span class="muted">${esc(extra)}</span>`); }
+  if(L.gps) parts.push(`GPS <a href="${esc(L.gps_url)}" target="_blank" rel="noopener">${L.gps[0]}, ${L.gps[1]}</a>${L.source==='map'?' <span class="muted">(з плану за прив\'язкою)</span>':''}`);
+  return parts.length?`<div style="margin:6px 0">${parts.join(' · ')}</div>`:''; }
 function plan(t){ const L=t.location;
   if(!L) return t.last_dhcp && !t.last ? '<div class="warn">Є лише DHCP: пристрій у мережі (див. IP/relay), але через RADIUS не проходить (SSID без NPS, напр. me_mobile) — точку доступу знає лише WLC.</div>' : '<div class="muted">Wi-Fi-реєстрацій у вікні немає → позиції на плані немає.</div>';
-  if(!L.known) return `<div class="warn">Точка <b>${esc(L.ap)}</b> не знайдена на мапах Zabbix (нема host-елемента/підпису з таким ім'ям).</div>`;
-  if(!L.image) return `<div class="warn">Точка <b>${esc(L.ap)}</b> на мапі «${esc(L.map_name)}» (x=${L.x}, y=${L.y}), але фон мапи недоступний.</div>`;
+  if(!L.known) return inv(L)+`<div class="warn">Точка <b>${esc(L.ap)}</b> не знайдена на мапах Zabbix (нема host-елемента/підпису з таким ім'ям)${L.inventory?'; в інвентарі ' + (L.gps?'є GPS, але нема прив\'язаного плану для цієї будівлі/поверху':'нема GPS'):''}.</div>`;
+  if(!L.image) return inv(L)+`<div class="warn">Точка <b>${esc(L.ap)}</b> на мапі «${esc(L.map_name)}» (x=${L.x}, y=${L.y}), але фон мапи недоступний.</div>`;
   const cx=(L.x+24)/L.w*100, cy=(L.y+24)/L.h*100;  // +24: координати елемента — лівий верх іконки (~48px)
   const d = L.radius_px ? (2*L.radius_px/L.w*100) : 5;  // без масштабу — умовне коло 5% ширини
-  return `<div class="muted">Мапа «${esc(L.map_name)}», точка <b>${esc(L.ap)}</b>, радіус ≈ ${L.radius_m} м${L.radius_px?'':' (масштаб мапи не заданий — коло умовне)'}</div>
+  const src = L.source==='inventory' ? ' <span class="muted">(позиція з GPS інвентарю Zabbix через прив\'язку плану)</span>' : '';
+  const sc = L.radius_px ? (L.scale_source && L.scale_source!=='config' ? ` <span class="muted">(масштаб із прив\'язки: ${esc(L.scale_source)})</span>` : '') : ' (масштаб мапи не заданий — коло умовне)';
+  return inv(L)+`<div class="muted">Мапа «${esc(L.map_name)}», точка <b>${esc(L.ap)}</b>${src}, радіус ≈ ${L.radius_m} м${sc}</div>
    <div class="plan" style="aspect-ratio:${L.w}/${L.h}"><img src="${L.image}?v=${Date.now()}" onload="this.style.width=(this.naturalWidth/${L.w}*100)+'%'"><div class="ring" style="left:${cx}%;top:${cy}%;width:${d}%"></div><div class="dot" style="left:${cx}%;top:${cy}%"></div><div class="tag" style="left:${cx}%;top:${cy}%">${esc(L.ap)}</div></div>`; }
 function card(t){ const who = t.person ? `<b>${esc(t.person)}</b> · ` : '';
   const places = t.places.length ? `<details><summary>Усі місця за вікно (${t.places.length})</summary><table><tr><th>Місце</th><th>Тип</th><th>Реєстрацій</th><th>Перша</th><th>Остання</th></tr>`+
@@ -2035,7 +2046,7 @@ async function run(){ const devs=document.getElementById('devs').value.split(/\\
   try{ const r=await fetch('/track',{method:'POST',headers:{'Content-Type':'application/json'},
         body:JSON.stringify({devices:devs,hours:parseFloat(document.getElementById('hours').value)||72,refresh_map:document.getElementById('refresh').checked})});
     const d=await r.json(); if(!r.ok){out.innerHTML=`<div class="card err">${esc(d.detail||JSON.stringify(d))}</div>`;return;}
-    st.textContent=`подій ${d.events}, вікно ${d.window_hours} год, точок на мапах ${d.map.aps_known}` + (d.map.fetched_at?` (мапи від ${d.map.fetched_at})`:'');
+    st.textContent=`подій ${d.events}, вікно ${d.window_hours} год, точок на мапах ${d.map.aps_known}, з інвентарем ${d.map.inventory||0}, прив'язаних планів ${(d.map.georef_maps||[]).length}` + (d.map.fetched_at?` (мапи від ${d.map.fetched_at})`:'');
     out.innerHTML=(d.map.error?`<div class="card warn">Мапи Zabbix: ${esc(d.map.error)}</div>`:'')+(d.pa_dhcp&&d.pa_dhcp.error?`<div class="card warn">DHCP Palo Alto: ${esc(d.pa_dhcp.error)}</div>`:'')+d.targets.map(card).join('');
   }catch(e){out.innerHTML=`<div class="card err">${esc(e)}</div>`;} finally{btn.disabled=false;} }
 </script></body></html>"""

@@ -89,7 +89,7 @@ Chat; з 2026-10-19 джерело — **Cortex XDR Public API** напряму,
 |---|---|
 | `app.py` | FastAPI: `POST /universal-analysis`, `GET /` (HTML-форма ручного запуску) |
 | `poller.py` | продюсер черги під systemd timer: discovery + матч → `work_queue` (нічого не обробляє) |
-| `tracker.py` | /track: де пристрій востаннє реєструвався (точка Wi-Fi/свіч з RADIUS-подій NPS) + місце на плані з мап Zabbix; реєстр `track_registry.json` поза git |
+| `tracker.py` | /track: де пристрій востаннє реєструвався (точка Wi-Fi/свіч з RADIUS-подій NPS, DHCP dhcp1, DHCP Palo Alto) + місце на плані з мап Zabbix, інвентарю Zabbix (GPS/site_rack) і файлу будівель `track_buildings.json` (кути будівлі ↔ пікселі планів → масштаб і GPS); реєстр `track_registry.json` поза git |
 | `queue_db.py` | таблиця `work_queue` в `ai_state.db`; єдиний `ORDER_BY` для claim/position; enqueue/claim_next/mark/sweep/depth |
 | `worker.py` | консюмер черги під systemd timer: claim → `POST /process-one` → DONE/ERROR; sweep low-mag хвоста |
 | `prompts.json` | мапа: ключ опису → `[prompt.md, assignee, query.aql, refset_cleanup?, close_on_empty?]` |

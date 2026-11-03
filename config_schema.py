@@ -201,6 +201,11 @@ SCHEMA = {
     "track_ap_radius_m":                  (NUM,  20),
     "track_map_cache_hours":              (NUM,  24),
     "track_map_scale_m_per_px":           (dict, {}),
+    # Інвентар Zabbix (location_lat/lon, site_rack, location) — друге джерело місця точки без мапи
+    "track_zabbix_inventory":             (bool, True),
+    # Опис будівель: GPS крайніх точок + пікселі тих самих кутів на кожному плані поверху (мапі
+    # Zabbix) → масштаб м/px і GPS для будь-якої точки плану; формат — у docstring tracker.py
+    "track_buildings_file":               (str,  "/opt/qradar-middleware/track_buildings.json"),
     # Лог-сорс DHCP для другої лінзи (ISC dhcpd на dhcp1; 172.17.61.254 дублює ті самі події)
     "track_dhcp_logsource":               (str,  "LinuxDHCP @ dhcp1"),
     # Лінза 3: живі оренди DHCP-сервера pa-vm через XML API (type=op). Ключ — окремий адмін з

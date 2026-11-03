@@ -48,11 +48,22 @@ NPS, а телефони ще й рандомізують MAC. Тоді єдин
 DHCP-запиті (`dhcp_host` у реєстрі, напр. "F6"): з нього дістаємо поточний випадковий MAC,
 IP і relay (= VLAN/підмережа), а знайдені MAC ще раз проганяємо через RADIUS. Точку доступу
 для PSK-клієнта QRadar не знає — її знає лише WLC (див. docs/changes/2026-11-02-b).
+
+Третя лінза — живі оренди DHCP-сервера Palo Alto (`fetch_pa_dhcp`, XML API type=op): гостьовий
+VLAN 500 з hostname-ами телефонів і VLAN точок доступу; це стан «зараз», не історія.
+
+Місце точки без мапи — інвентар Zabbix (`fetch_inventory`: location_lat/lon, site_rack,
+location) і файл будівель `track_buildings_file`: GPS крайніх точок кожної будівлі + пікселі
+тих самих кутів на кожному плані поверху. З цього виходить масштаб м/px і GPS для будь-якої
+точки плану, а інвентарна точка з GPS кладеться на план своєї будівлі/поверху (формат — біля
+`fit_georef`). Порядок джерел у `with_location`: елемент мапи → GPS інвентарю через прив'язку →
+лише текст інвентарю + посилання на карту.
 """
 
 import base64
 import json
 import logging
+import math
 import os
 import re
 import time
@@ -409,7 +420,7 @@ async def fetch_ap_map(client: httpx.AsyncClient, cfg: dict, force: bool = False
             pass
     url, token = cfg.get("zabbix_url", ""), cfg.get("zabbix_api_token", "")
     map_ids = [str(x) for x in cfg.get("track_zabbix_maps", [])]
-    idx = {"fetched_at": int(time.time()), "maps": {}, "aps": {}, "labels": {}, "error": ""}
+    idx = {"fetched_at": int(time.time()), "maps": {}, "aps": {}, "labels": {}, "inventory": {}, "error": ""}
     if not (url and token and map_ids):
         idx["error"] = "zabbix_url / zabbix_api_token / track_zabbix_maps не задані"
         return idx
@@ -447,6 +458,14 @@ async def fetch_ap_map(client: httpx.AsyncClient, cfg: dict, force: bool = False
                     idx["aps"][host.upper()] = rec
                 if label:
                     idx["labels"].setdefault(label.upper(), []).append(rec)
+        # Інвентар хостів (Zabbix Inventory, ручний або авто): друге джерело місця, незалежне
+        # від мап — GPS (location_lat/lon) + «будівля/поверх» (site_rack/location). Станом на
+        # 2026-11-03 заповнений лише у CS_IT_01; читаємо все, що є, помилка тут не валить індекс.
+        if cfg.get("track_zabbix_inventory", True):
+            try:
+                idx["inventory"] = await fetch_inventory(client, url, token)
+            except Exception as e:
+                logging.warning(f"track: інвентар Zabbix не прочитано: {e}")
     except Exception as e:
         logging.error(f"track: Zabbix недоступний: {e}")
         idx["error"] = str(e)
@@ -462,6 +481,158 @@ async def fetch_ap_map(client: httpx.AsyncClient, cfg: dict, force: bool = False
     with open(path, "w", encoding="utf-8") as fh:
         json.dump(idx, fh, ensure_ascii=False)
     return idx
+
+
+INV_FIELDS = ["location", "location_lat", "location_lon", "site_rack", "site_city", "site_address_a",
+              "model", "serialno_a", "url_a"]
+
+
+async def fetch_inventory(client: httpx.AsyncClient, url: str, token: str) -> dict:
+    """{HOST_UPPER: {host, name, lat, lon, location, site_rack, site_city, site_address, model,
+    serial, ip}} — лише хости, у яких заповнено хоч щось із місця (GPS / location / site_rack);
+    інші поля інвентарю тягнуться для довідки."""
+    hosts = await _zbx(client, url, token, "host.get",
+                       {"output": ["hostid", "host", "name"], "withInventory": True, "selectInventory": INV_FIELDS})
+    out = {}
+    for h in hosts:
+        inv = h.get("inventory") or {}
+        if not isinstance(inv, dict):
+            continue
+        lat, lon = _num(inv.get("location_lat")), _num(inv.get("location_lon"))
+        rec = {"host": h.get("host", ""), "name": h.get("name", ""),
+               "lat": lat, "lon": lon,
+               "location": (inv.get("location") or "").strip(),
+               "site_rack": (inv.get("site_rack") or "").strip(),
+               "site_city": (inv.get("site_city") or "").strip(),
+               "site_address": (inv.get("site_address_a") or "").strip(),
+               "model": (inv.get("model") or "").strip(),
+               "serial": (inv.get("serialno_a") or "").strip(),
+               "ip": (inv.get("url_a") or "").strip()}
+        if (lat is not None and lon is not None) or rec["location"] or rec["site_rack"]:
+            out[rec["host"].upper()] = rec
+    return out
+
+
+def _num(v) -> float | None:
+    try:
+        return float(str(v).strip()) if v not in (None, "") else None
+    except ValueError:
+        return None
+
+
+# ---------- будівлі та гео-прив'язка планів: «кути будівлі ↔ пікселі на мапі» ----------
+# Файл track_buildings_file (JSON поза git; будівель може бути кілька):
+#   [{"name": "Корпус 1, Струмівка",
+#     "inventory_match": ["build 1"],                    # підрядки site_rack/location в інвентарі Zabbix
+#     "corners": {"NE": [50.7445, 25.3962], "SE": [...], "SW": [...], "NW": [...]},   # GPS крайніх точок
+#     "floors": [{"map": 33, "floor": "floor 2",         # мапа Zabbix і підрядок поверху для інвентарю
+#                 "px": {"NE": [3368, 127], "SE": [3368, 655], "SW": [78, 655], "NW": [164, 127]}}]}]
+# Кути задаються один раз на будівлю; на кожному плані поверху вказуються пікселі тих самих
+# кутів (≥2 на мапу). Підгонка подібності (масштаб + поворот + зсув) методом найменших квадратів
+# у комплексній формі: z = x − i·y (вісь y плану вниз), w = east + i·north у метрах від
+# центроїда, w = c·z + d. |c| = метрів на піксель — замінює ручний track_map_scale_m_per_px.
+M_PER_DEG_LAT = 111_320.0
+
+
+def fit_georef(points: list[dict]) -> dict | None:
+    """points: [{"px": [x, y], "gps": [lat, lon]}, …] (≥2) → параметри перетворення або None."""
+    z, lat, lon = [], [], []
+    for p in points:
+        try:
+            z.append(complex(float(p["px"][0]), -float(p["px"][1])))
+            lat.append(float(p["gps"][0])); lon.append(float(p["gps"][1]))
+        except (KeyError, TypeError, ValueError, IndexError):
+            return None
+    if len(z) < 2:
+        return None
+    lat0, lon0 = sum(lat) / len(lat), sum(lon) / len(lon)
+    kx = M_PER_DEG_LAT * math.cos(math.radians(lat0))
+    w = [complex((lo - lon0) * kx, (la - lat0) * M_PER_DEG_LAT) for la, lo in zip(lat, lon)]
+    zm, wm = sum(z) / len(z), sum(w) / len(w)
+    den = sum(abs(zi - zm) ** 2 for zi in z)
+    if den == 0:
+        return None
+    c = sum((zi - zm).conjugate() * (wi - wm) for zi, wi in zip(z, w)) / den
+    if abs(c) == 0:
+        return None
+    d = wm - c * zm
+    rms = math.sqrt(sum(abs(c * zi + d - wi) ** 2 for zi, wi in zip(z, w)) / len(z))
+    return {"lat0": lat0, "lon0": lon0, "kx": kx, "c": c, "d": d, "m_per_px": abs(c),
+            "rot_deg": math.degrees(math.atan2(c.imag, c.real)), "rms_m": rms, "points": len(z)}
+
+
+def px_to_gps(g: dict, x: float, y: float) -> tuple[float, float]:
+    w = g["c"] * complex(x, -y) + g["d"]
+    return g["lat0"] + w.imag / M_PER_DEG_LAT, g["lon0"] + w.real / g["kx"]
+
+
+def gps_to_px(g: dict, lat: float, lon: float) -> tuple[float, float]:
+    w = complex((lon - g["lon0"]) * g["kx"], (lat - g["lat0"]) * M_PER_DEG_LAT)
+    z = (w - g["d"]) / g["c"]
+    return z.real, -z.imag
+
+
+def in_polygon(lat: float, lon: float, poly: list[list[float]]) -> bool:
+    """Точка всередині многокутника з GPS-вершин (парність перетинів променя)."""
+    inside = False
+    n = len(poly)
+    for i in range(n):
+        (y1, x1), (y2, x2) = poly[i], poly[(i + 1) % n]
+        if (y1 > lat) != (y2 > lat):
+            xi = x1 + (lat - y1) * (x2 - x1) / (y2 - y1)
+            if lon < xi:
+                inside = not inside
+    return inside
+
+
+def load_buildings(path: str) -> list[dict]:
+    """Опис будівель із файлу; криві записи пропускаються з логом, без файлу — []."""
+    if not path or not os.path.exists(path):
+        return []
+    try:
+        with open(path, encoding="utf-8") as fh:
+            data = json.load(fh)
+    except (OSError, ValueError) as e:
+        logging.warning(f"track: {path}: {e}")
+        return []
+    out = []
+    for b in data if isinstance(data, list) else []:
+        corners = b.get("corners") if isinstance(b, dict) else None
+        if not isinstance(corners, dict) or len(corners) < 2:
+            logging.warning(f"track: будівля {b.get('name') if isinstance(b, dict) else b!r}: потрібно ≥2 кути в corners")
+            continue
+        floors = []
+        for f in b.get("floors") or []:
+            pts = [{"px": px, "gps": corners[k]} for k, px in (f.get("px") or {}).items() if k in corners]
+            g = fit_georef(pts)
+            if not g:
+                logging.warning(f"track: будівля {b.get('name')}, мапа {f.get('map')}: потрібно ≥2 кути з px, що є в corners")
+                continue
+            g["floor"] = (f.get("floor") or "").strip().lower()
+            g["map"] = str(f.get("map"))
+            floors.append(g)
+        out.append({"name": b.get("name") or "", "corners": corners,
+                    "inventory_match": [str(s).lower() for s in (b.get("inventory_match") or [])],
+                    "floors": floors})
+    return out
+
+
+def load_georefs(cfg: dict) -> dict:
+    """{map_id: georef(+building, floor, inventory_match)} з усіх будівель track_buildings_file."""
+    out = {}
+    for b in load_buildings(cfg.get("track_buildings_file") or ""):
+        for g in b["floors"]:
+            out[g["map"]] = {**g, "building": b["name"], "inventory_match": b["inventory_match"],
+                             "corners": list(b["corners"].values())}
+    return out
+
+
+def building_of(lat: float, lon: float, cfg: dict) -> str:
+    """Назва будівлі, у контур якої потрапляє GPS-точка (інвентар без мапи), або ''."""
+    for b in load_buildings(cfg.get("track_buildings_file") or ""):
+        if len(b["corners"]) >= 3 and in_polygon(lat, lon, list(b["corners"].values())):
+            return b["name"]
+    return ""
 
 
 def locate_ap(ap_name: str, idx: dict) -> dict | None:
@@ -481,25 +652,70 @@ def locate_ap(ap_name: str, idx: dict) -> dict | None:
     return best[1] if best else None
 
 
-def with_location(t: dict, idx: dict, cfg: dict) -> dict:
-    """Додає до цілі блок location за останньою Wi-Fi-точкою (або None)."""
+def with_location(t: dict, idx: dict, cfg: dict, georefs: dict | None = None) -> dict:
+    """Додає до цілі блок location за останньою Wi-Fi-точкою (або None).
+
+    Порядок джерел: (1) елемент мапи Zabbix (source="map"; з гео-прив'язкою — ще й GPS точки);
+    (2) GPS з інвентарю Zabbix, покладений на план через прив'язку тієї мапи, чий "floor"
+    збігається з site_rack/location (source="inventory"); (3) лише інвентар — текст
+    «будівля/поверх» + посилання на карту, без плану. Радіус у пікселях: ручний
+    track_map_scale_m_per_px, інакше масштаб із прив'язки."""
     s = t.get("last_wifi")
     t["location"] = None
     if not s or not s.get("ap"):
         return t
-    rec = locate_ap(s["ap"], idx)
-    if not rec:
-        t["location"] = {"ap": s["ap"], "known": False}
-        return t
-    m = idx["maps"].get(rec["map"], {})
+    ap = s["ap"]
+    georefs = georefs if georefs is not None else load_georefs(cfg)
+    loc = {"ap": ap, "known": False, "source": None}
+    inv = idx.get("inventory", {}).get(ap.upper())
+    if inv:
+        loc["inventory"] = inv
     radius_m = float(cfg.get("track_ap_radius_m", 20))
-    scale = (cfg.get("track_map_scale_m_per_px") or {}).get(rec["map"])
-    t["location"] = {
-        "ap": s["ap"], "known": True, "map": rec["map"], "map_name": m.get("name", ""),
-        "x": rec["x"], "y": rec["y"], "w": m.get("w"), "h": m.get("h"), "image": m.get("image", ""),
-        "radius_m": radius_m,
-        "radius_px": (radius_m / float(scale)) if scale else None,
-    }
+    rec = locate_ap(ap, idx)
+    g = None
+    if rec:
+        m = idx["maps"].get(rec["map"], {})
+        g = georefs.get(rec["map"])
+        loc.update({"known": True, "source": "map", "map": rec["map"], "map_name": m.get("name", ""),
+                    "x": rec["x"], "y": rec["y"], "w": m.get("w"), "h": m.get("h"), "image": m.get("image", "")})
+        if g:
+            lat, lon = px_to_gps(g, rec["x"] + 24, rec["y"] + 24)
+            loc["gps"] = [round(lat, 6), round(lon, 6)]
+    elif inv and inv.get("lat") is not None and inv.get("lon") is not None:
+        # Мапа для інвентарної точки: будівля — за inventory_match АБО за тим, що GPS лежить у її
+        # контурі; поверх — за підрядком floor у site_rack/location. Обидва мають збігтися.
+        where = f"{inv.get('site_rack', '')} {inv.get('location', '')}".lower()
+        for mid, gg in georefs.items():
+            m = idx.get("maps", {}).get(mid)
+            if not m or not gg.get("floor") or gg["floor"] not in where:
+                continue
+            b_ok = any(s and s in where for s in gg.get("inventory_match", [])) or \
+                   (len(gg.get("corners", [])) >= 3 and in_polygon(inv["lat"], inv["lon"], gg["corners"]))
+            if not b_ok:
+                continue
+            x, y = gps_to_px(gg, inv["lat"], inv["lon"])
+            if 0 <= x <= m.get("w", 0) and 0 <= y <= m.get("h", 0):
+                g = gg
+                # x,y у термінах елемента мапи (лівий верх іконки 48px) — як і в rec, сторінка додає +24
+                loc.update({"known": True, "source": "inventory", "map": mid, "map_name": m.get("name", ""),
+                            "x": int(round(x)) - 24, "y": int(round(y)) - 24, "w": m.get("w"), "h": m.get("h"),
+                            "image": m.get("image", "")})
+                break
+    if "gps" not in loc and inv and inv.get("lat") is not None and inv.get("lon") is not None:
+        loc["gps"] = [inv["lat"], inv["lon"]]
+    if loc.get("gps"):
+        loc["gps_url"] = f"https://www.google.com/maps?q={loc['gps'][0]},{loc['gps'][1]}"
+        loc["building"] = (g or {}).get("building") or building_of(loc["gps"][0], loc["gps"][1], cfg)
+    if loc["known"]:
+        scale = (cfg.get("track_map_scale_m_per_px") or {}).get(loc["map"])
+        if scale:
+            loc["scale_source"] = "config"
+        elif g:
+            scale = g["m_per_px"]
+            loc["scale_source"] = f"georef ({g['points']} т., похибка {g['rms_m']:.1f} м)"
+        loc["radius_m"] = radius_m
+        loc["radius_px"] = (radius_m / float(scale)) if scale else None
+    t["location"] = loc
     return t
 
 
