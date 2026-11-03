@@ -203,6 +203,11 @@ SCHEMA = {
     "track_map_scale_m_per_px":           (dict, {}),
     # Лог-сорс DHCP для другої лінзи (ISC dhcpd на dhcp1; 172.17.61.254 дублює ті самі події)
     "track_dhcp_logsource":               (str,  "LinuxDHCP @ dhcp1"),
+    # Лінза 3: живі оренди DHCP-сервера pa-vm через XML API (type=op). Ключ — окремий адмін з
+    # роллю «XML API: Operational Requests» (read-only), не superuser і не user-id-ключ QRadar.
+    "pa_api_host":                        (str,  ""),
+    "pa_api_key":                         (str,  ""),
+    "track_pa_dhcp_enabled":              (bool, True),
 
     # --- cdn_allowlist_update.py ---
     "cdn_allowlist_providers":            (list, []),

@@ -321,6 +321,62 @@ def assign_dhcp(targets: list[dict], events: list[dict]) -> list[str]:
     return new_macs
 
 
+# ----------------------------------------------------------------------------- Palo Alto DHCP (живий стан)
+async def fetch_pa_dhcp(client: httpx.AsyncClient, cfg: dict) -> tuple[list[dict], str]:
+    """Таблиця оренд DHCP-сервера pa-vm — ЖИВИЙ стан, не історія (у QRadar цих подій немає:
+    переміряно 03.11.2026, PaSeries за 7 діб не містить 'dhcp'). PA роздає адреси гостьовому
+    VLAN 500 (172.18.48/21: телефони з hostname-ами), AP-VLAN 605 (172.17.65.x: самі точки
+    `CS-…`), .10 і .12. XML API `type=op`, `show dhcp server lease interface all`.
+    Ключ `pa_api_key` має бути від окремого адміна з роллю «XML API: Operational Requests»
+    (read-only) — НЕ superuser і НЕ user-id-ключ QRadar (у того op → 403)."""
+    host, key = cfg.get("pa_api_host", ""), cfg.get("pa_api_key", "")
+    if not (host and key) or not cfg.get("track_pa_dhcp_enabled", True):
+        return [], "pa_api_host / pa_api_key не задані"
+    try:
+        r = await client.get(f"https://{host}/api/", params={
+            "type": "op", "cmd": "<show><dhcp><server><lease><interface>all</interface></lease></server></dhcp></show>"},
+            headers={"X-PAN-KEY": key}, timeout=25.0)
+        return parse_pa_dhcp(r.text)
+    except Exception as e:
+        logging.warning(f"track: PA DHCP недоступний: {e}")
+        return [], str(e)
+
+
+def parse_pa_dhcp(xml_text: str) -> tuple[list[dict], str]:
+    import xml.etree.ElementTree as ET
+    try:
+        root = ET.fromstring(xml_text)
+    except ET.ParseError as e:
+        return [], f"PA: не XML ({e})"
+    if root.get("status") != "success":
+        msg = root.findtext(".//msg") or root.findtext(".//line") or xml_text[:120]
+        return [], f"PA API: {msg.strip()}"
+    out = []
+    for iface in root.iter("interface"):
+        for e in iface.iter("entry"):
+            f = {c.tag: (c.text or "").strip() for c in e}
+            if not f.get("ip"):
+                continue
+            out.append({"iface": iface.get("name", ""), "ip": f["ip"], "mac": norm_mac(f.get("mac", "")) or "",
+                        "hostname": f.get("hostname", ""), "state": f.get("state", ""), "lease_time": f.get("leasetime", "")})
+    return out, ""
+
+
+def assign_pa_dhcp(targets: list[dict], leases: list[dict]) -> list[str]:
+    """Збіг за hostname (dhcp_host) або MAC → t['pa_dhcp'] = список поточних оренд.
+    Повертає нові MAC для дорахунку через RADIUS."""
+    new_macs = []
+    for t in targets:
+        t["pa_dhcp"] = []
+        for L in leases:
+            hit = (L["mac"] and L["mac"] in t["macs"]) or (t.get("dhcp_host") and L["hostname"].lower() == t["dhcp_host"].lower())
+            if hit:
+                t["pa_dhcp"].append({**L, "mac": mac_dashed(L["mac"]) if L["mac"] else ""})
+                if L["mac"] and L["mac"] not in t["macs"] and L["mac"] not in new_macs:
+                    new_macs.append(L["mac"])
+    return new_macs
+
+
 # ----------------------------------------------------------------------------- Zabbix: карта точок
 def _cache_path(name: str) -> str:
     os.makedirs(CACHE_DIR, exist_ok=True)
@@ -464,5 +520,6 @@ def to_public(t: dict) -> dict:
         "last_dhcp": ({**t["last_dhcp"], "mac": mac_dashed(t["last_dhcp"]["mac"]) if t["last_dhcp"].get("mac") else "",
                        "time": ts_str(t["last_dhcp"]["ts"])} if t.get("last_dhcp") else None),
         "dhcp_macs": [{**d, "first_time": ts_str(d["first"]), "last_time": ts_str(d["last"])} for d in t.get("dhcp_macs", [])],
+        "pa_dhcp": t.get("pa_dhcp", []),
         "location": t.get("location"),
     }
