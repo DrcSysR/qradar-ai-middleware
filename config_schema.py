@@ -192,6 +192,8 @@ SCHEMA = {
     # метри/піксель задається на кожну мапу окремо ({"33": 0.05}), без нього коло умовне.
     "zabbix_url":                         (str,  ""),
     "zabbix_api_token":                   (str,  ""),
+    # Якщо zabbix_api_token порожній — токен читається з цього файлу (600 root:qmiddleware, поза git)
+    "zabbix_api_token_file":              (str,  "/opt/qradar-middleware/zabbix_api_token"),
     "track_zabbix_maps":                  (list, []),
     "track_registry_file":                (str,  "/opt/qradar-middleware/track_registry.json"),
     "track_default_hours":                (NUM,  72),

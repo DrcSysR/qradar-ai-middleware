@@ -394,6 +394,20 @@ def _cache_path(name: str) -> str:
     return os.path.join(CACHE_DIR, name)
 
 
+def zabbix_token(cfg: dict) -> str:
+    """Токен API Zabbix: ключ zabbix_api_token у config.json, інакше вміст окремого файлу
+    zabbix_api_token_file (600 root:qmiddleware, поза git — секрет лежить окремо від конфігу)."""
+    tok = (cfg.get("zabbix_api_token") or "").strip()
+    if tok:
+        return tok
+    path = cfg.get("zabbix_api_token_file") or os.path.join(BASE_DIR, "zabbix_api_token")
+    try:
+        with open(path, encoding="utf-8") as fh:
+            return fh.read().strip()
+    except OSError:
+        return ""
+
+
 async def _zbx(client: httpx.AsyncClient, url: str, token: str, method: str, params: dict):
     r = await client.post(url.rstrip("/") + "/api_jsonrpc.php",
                           headers={"Content-Type": "application/json-rpc", "Authorization": f"Bearer {token}"},
@@ -418,11 +432,11 @@ async def fetch_ap_map(client: httpx.AsyncClient, cfg: dict, force: bool = False
                 return json.load(fh)
         except (OSError, ValueError):
             pass
-    url, token = cfg.get("zabbix_url", ""), cfg.get("zabbix_api_token", "")
+    url, token = cfg.get("zabbix_url", ""), zabbix_token(cfg)
     map_ids = [str(x) for x in cfg.get("track_zabbix_maps", [])]
     idx = {"fetched_at": int(time.time()), "maps": {}, "aps": {}, "labels": {}, "inventory": {}, "error": ""}
     if not (url and token and map_ids):
-        idx["error"] = "zabbix_url / zabbix_api_token / track_zabbix_maps не задані"
+        idx["error"] = "zabbix_url / zabbix_api_token (або файл zabbix_api_token_file) / track_zabbix_maps не задані"
         return idx
     try:
         maps = await _zbx(client, url, token, "map.get",

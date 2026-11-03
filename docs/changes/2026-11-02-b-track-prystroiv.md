@@ -126,3 +126,7 @@
 - Перевірка на синтетиці (будівля 200×32 м, поворот 10°): масштаб і кут відновлено точно,
   round-trip px→GPS→px без похибки; точка з інвентарю `build 1 floor 2` лягає на мапу 33, точка
   `build 7 floor 1` — ні (поверх не збігся), точка без інвентарю й мапи — як раніше.
+- Токен Zabbix (Bitwarden «API: Zabbix Midlware (admin)») зберігається на mdlwr01 окремим файлом
+  `/opt/qradar-middleware/zabbix_api_token` (600 root:qmiddleware), `config.json` — лише `zabbix_url`
+  і `track_zabbix_maps`; `tracker.zabbix_token()` бере ключ з конфігу, інакше з файлу
+  (`zabbix_api_token_file`).
