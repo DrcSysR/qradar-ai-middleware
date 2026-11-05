@@ -45,6 +45,18 @@ Endpoint Administration у консолі Cortex XDR накопичує запи
 - Admin-ключ — Bitwarden «API: Cortex XDR (Privileged IT Admin)» (поля ApiKeyId/ApiKey/ApiUrl),
   записаний у `config.json` на mdlwr01 скриптом (бекап `config.json.bak-<ts>-cortexadmin`).
 
+## Блок «повернулися після видалення» (коміт того ж дня)
+
+Видалення запису не чіпає агент: у 90-денному вікні Cortex відновлює запис при повторному
+підключенні («If a deleted endpoint reconnects, Cortex XDR recovers its existing data»), після
+вікна потрібен `cytool reconnect` або переустановка, і хост з'являється з новим id. Щоб бачити
+обидва випадки, скрипт на кожному прогоні звіряє `cortex_endpoint_deleted` (рядки без
+`returned_ts`) з консоллю: за `endpoint_id_list` (→ «відновлено старий запис») і за `hostname`
+(інший id → «новий запис (переустановка/reconnect)»); умова — `last_seen` пізніший за
+`deleted_ts`. Знайдені йдуть окремим блоком у звіт (звіт шлеться і коли видалень 0), після
+успішного webhook позначаються `returned_ts`/`returned_as` (міграція колонок у `init_db`).
+Перевірено на живому API: фільтр `hostname in [...]` працює (BUH37, INS16 знайдено).
+
 ## Режим на проді
 
 У `config.json` на mdlwr01: `cortex_xdr_cleanup_days: 15`, `cortex_xdr_cleanup_dry_run: false` — таймер

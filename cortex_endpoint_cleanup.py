@@ -13,7 +13,10 @@ Endpoint Administration і тримають ліцензії. Сам Cortex ви
   3. `POST /public_api/v1/endpoints/delete` з `endpoint_id_list` (до 1000 за запит);
   4. контрольне читання тих самих id — скільки лишилось;
   5. запис у таблицю `cortex_endpoint_deleted` в ai_state.db + звіт у Google Chat (webhook
-     `cortex_xdr_webhook_url`, інакше `falcon_pua_webhook_url`).
+     `cortex_xdr_webhook_url`, інакше `falcon_pua_webhook_url`);
+  6. блок «повернулися після видалення»: раніше видалені записи звіряються з консоллю за
+     endpoint_id (Cortex відновив запис) і за ім'ям хоста (новий id після переустановки);
+     знайдені потрапляють у звіт і позначаються `returned_ts`/`returned_as`.
 
 Видалення з консолі НЕ деінсталює агент: якщо хост повернеться, агент зареєструється як новий
 запис (і ліцензію візьме знову). Тому операція безпечна для живих машин, а стан «видалено»
@@ -108,10 +111,24 @@ def init_db() -> None:
                 groups TEXT,
                 deleted_ts DATETIME DEFAULT CURRENT_TIMESTAMP,
                 run_id TEXT,
+                returned_ts DATETIME,
+                returned_as TEXT,
                 PRIMARY KEY (endpoint_id, deleted_ts)
             )
             """
         )
+        cols = {r[1] for r in conn.execute("PRAGMA table_info(cortex_endpoint_deleted)")}
+        for col in ("returned_ts DATETIME", "returned_as TEXT"):
+            if col.split()[0] not in cols:
+                conn.execute(f"ALTER TABLE cortex_endpoint_deleted ADD COLUMN {col}")
+
+
+def sqlite_ts_ms(ts: str) -> int:
+    """'YYYY-MM-DD HH:MM:SS' (CURRENT_TIMESTAMP у SQLite, UTC) -> мс епохи; 0 якщо не розібрати."""
+    try:
+        return int(datetime.strptime(str(ts), "%Y-%m-%d %H:%M:%S").replace(tzinfo=timezone.utc).timestamp() * 1000)
+    except (TypeError, ValueError):
+        return 0
 
 
 def ts_iso(ms) -> str:
@@ -231,6 +248,63 @@ def still_present(config: dict, ids: list) -> list | None:
     return left
 
 
+def find_returned(config: dict) -> list | None:
+    """Хости з cortex_endpoint_deleted (ще не позначені як повернуті), які знову є в консолі.
+
+    Два випадки: той самий endpoint_id (Cortex відновив запис у 90-денному вікні) або те саме
+    ім'я з новим endpoint_id (переустановка / cytool reconnect після вичищення запису).
+    Повертає список {row, endpoint, how} або None при помилці API.
+    """
+    with sqlite3.connect(DB_PATH) as conn:
+        conn.row_factory = sqlite3.Row
+        rows = [dict(r) for r in conn.execute(
+            "SELECT endpoint_id, endpoint_name, deleted_ts FROM cortex_endpoint_deleted "
+            "WHERE returned_ts IS NULL")]
+    if not rows:
+        return []
+    by_id = {r["endpoint_id"]: r for r in rows}
+    by_name = {}
+    for r in rows:
+        if r.get("endpoint_name"):
+            by_name.setdefault(r["endpoint_name"].lower(), r)
+    found: dict = {}
+    ids = list(by_id)
+    for i in range(0, len(ids), 100):
+        eps = fetch_endpoints(config, [{"field": "endpoint_id_list", "operator": "in", "value": ids[i:i + 100]}])
+        if eps is None:
+            return None
+        for e in eps:
+            if str(e.get("endpoint_status") or "").upper() in ("", "UNINSTALLED") or not e.get("last_seen"):
+                continue
+            r = by_id.get(e.get("endpoint_id"))
+            if r and int(e["last_seen"]) > sqlite_ts_ms(r["deleted_ts"]):
+                found[r["endpoint_id"]] = {"row": r, "endpoint": e, "how": "same_id"}
+    names = [n for n, r in by_name.items() if r["endpoint_id"] not in found]
+    for i in range(0, len(names), 100):
+        eps = fetch_endpoints(config, [{"field": "hostname", "operator": "in", "value": names[i:i + 100]}])
+        if eps is None:
+            return None
+        for e in eps:
+            r = by_name.get(str(e.get("endpoint_name") or "").lower())
+            if not r or r["endpoint_id"] in found or e.get("endpoint_id") == r["endpoint_id"]:
+                continue
+            if str(e.get("endpoint_status") or "").upper() in ("", "UNINSTALLED") or not e.get("last_seen"):
+                continue
+            if int(e["last_seen"]) > sqlite_ts_ms(r["deleted_ts"]):
+                found[r["endpoint_id"]] = {"row": r, "endpoint": e, "how": "new_id"}
+    return list(found.values())
+
+
+def mark_returned(items: list) -> None:
+    with sqlite3.connect(DB_PATH) as conn:
+        for it in items:
+            conn.execute(
+                "UPDATE cortex_endpoint_deleted SET returned_ts = CURRENT_TIMESTAMP, returned_as = ? "
+                "WHERE endpoint_id = ? AND deleted_ts = ?",
+                (f"{it['how']}:{it['endpoint'].get('endpoint_id')}", it["row"]["endpoint_id"], it["row"]["deleted_ts"]),
+            )
+
+
 def record_deleted(eps: list, run_id: str, now_ms: int) -> None:
     with sqlite3.connect(DB_PATH) as conn:
         for e in eps:
@@ -259,8 +333,17 @@ def describe(e: dict, now_ms: int) -> str:
             f"мовчить {days:.0f} д, останній контакт {ts_iso(ls)}, ip {ip}, user {users}")
 
 
+def describe_returned(it: dict) -> str:
+    e, r = it["endpoint"], it["row"]
+    how = ("відновлено старий запис" if it["how"] == "same_id"
+           else f"новий запис (переустановка/reconnect), id {e.get('endpoint_id')}")
+    ip = ",".join(e.get("ip") or []) or "—"
+    return (f"{r.get('endpoint_name') or e.get('endpoint_name') or '?'} — видалено {r['deleted_ts']} UTC, "
+            f"знову на зв'язку {ts_iso(e.get('last_seen'))} ({e.get('endpoint_status')}, ip {ip}); {how}")
+
+
 def build_chat_message(title: str, deleted: list, left: list, stats: dict, days: float,
-                       now_ms: int, dry_run: bool) -> dict:
+                       now_ms: int, dry_run: bool, returned: list | None = None) -> dict:
     head = "DRY-RUN: видалили б" if dry_run else "видалено"
     lines = [f"*{title}*",
              f"_{head} {len(deleted)} ендпоінтів без зв'язку понад {days:g} д_"]
@@ -274,6 +357,12 @@ def build_chat_message(title: str, deleted: list, left: list, stats: dict, days:
         lines.append(f"  • {describe(e, now_ms)}")
     if len(deleted) > 60:
         lines.append(f"  …та ще {len(deleted) - 60}")
+    if returned:
+        lines += ["", f"*↩️ Повернулися після видалення: {len(returned)}*"]
+        for it in returned[:60]:
+            lines.append(f"  • {describe_returned(it)}")
+        if len(returned) > 60:
+            lines.append(f"  …та ще {len(returned) - 60}")
     return {"text": "\n".join(lines)}
 
 
@@ -317,6 +406,14 @@ def main() -> None:
                  f"max={cfg(config, 'cortex_xdr_cleanup_max_per_run')} api={cx.api_host(config)}"
                  f"{' DRY-RUN' if dry_run else ' APPLY'} ===")
 
+    # Блок «повернулися після видалення»: раніше видалені записи, що знову є в консолі.
+    returned = find_returned(config)
+    if returned is None:
+        logging.error("Cortex API недоступний (звірка повернутих) — нічого не робимо")
+        sys.exit(1)
+    for it in returned:
+        logging.info(f"returned: {describe_returned(it)}")
+
     silent = fetch_silent(config, days)
     if silent is None:
         logging.error("Cortex API недоступний — нічого не робимо")
@@ -327,8 +424,8 @@ def main() -> None:
     for e in candidates:
         logging.info(f"{'[dry-run] ' if dry_run else ''}delete: {describe(e, now_ms)}")
 
-    if not candidates:
-        logging.info("Кандидатів немає — звіт не шлемо")
+    if not candidates and not returned:
+        logging.info("Кандидатів і повернутих немає — звіт не шлемо")
         return
 
     left: list = []
@@ -345,16 +442,19 @@ def main() -> None:
         logging.info(f"Видалено {len(candidates)}, state оновлено")
 
     message = build_chat_message(cfg(config, "cortex_xdr_cleanup_report_title"), candidates, left,
-                                 stats, days, now_ms, dry_run)
+                                 stats, days, now_ms, dry_run, returned)
     if dry_run:
         print(message["text"])
-        logging.info("DRY-RUN: нічого не видалено, звіт не надіслано")
+        logging.info("DRY-RUN: нічого не видалено, звіт не надіслано, повернуті не позначено")
         return
     if not webhook_url:
         logging.warning("Немає webhook у config.json — звіт лише в лог")
+        mark_returned(returned)
         return
     if cx.send_to_chat(webhook_url, message):
-        logging.info("Звіт надіслано")
+        # Повернутих позначаємо лише після успішного звіту — інакше покажемо наступного разу.
+        mark_returned(returned)
+        logging.info(f"Звіт надіслано (видалено {len(candidates)}, повернулось {len(returned)})")
     else:
         logging.error("Webhook fail — видалення вже виконано, звіт лише в лог")
 
