@@ -1,6 +1,6 @@
 """cortex_endpoint_cleanup.py — видалення з консолі Cortex XDR ендпоінтів, що довго мовчать.
 
-Навіщо: ендпоінти, які не виходили на зв'язок понад N днів (за замовчуванням 14), засмічують
+Навіщо: ендпоінти, які не виходили на зв'язок N днів і більше (за замовчуванням 15; last_seen <= now − N днів), засмічують
 Endpoint Administration і тримають ліцензії. Сам Cortex видаляє їх лише через 180 днів
 «Connection Lost». Цей джоб робить те саме раніше, через Public API:
 
@@ -56,7 +56,7 @@ LOG_FILE = os.path.join(BASE_DIR, "cortex_endpoint_cleanup.log")
 DELETE_BATCH = 1000  # стеля API на один запит endpoints/delete
 
 DEFAULTS = {
-    "cortex_xdr_cleanup_days": 14,
+    "cortex_xdr_cleanup_days": 15,
     "cortex_xdr_cleanup_dry_run": True,
     "cortex_xdr_cleanup_max_per_run": 100,
     "cortex_xdr_cleanup_exclude_hostnames": [],

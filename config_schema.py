@@ -189,7 +189,7 @@ SCHEMA = {
     # Видалення з консолі Cortex ендпоінтів, що мовчать понад N днів. dry_run=true за
     # замовчуванням — вимикати свідомо в config.json. Admin-ключ (роль з правом Endpoint
     # Administration → Delete) окремий від read-only ключа дайджесту; без нього лише dry-run.
-    "cortex_xdr_cleanup_days":            (NUM,  14),
+    "cortex_xdr_cleanup_days":            (NUM,  15),
     "cortex_xdr_cleanup_dry_run":         (bool, True),
     "cortex_xdr_cleanup_max_per_run":     (int,  100),
     "cortex_xdr_cleanup_exclude_hostnames": (list, []),

@@ -14,7 +14,7 @@ AI-тріаж офенсів QRadar: сервіс читає офенс, під�
 
 | Дата | Запис |
 |---|---|
-| 2026-11-05 | [Cortex XDR: автоматичне видалення ендпоінтів, що мовчать понад 14 днів (cortex_endpoint_cleanup.py, dry-run за замовчуванням)](changes/2026-11-05-cortex-endpoint-cleanup.md) |
+| 2026-11-05 | [Cortex XDR: автоматичне видалення ендпоінтів, що мовчать 15 днів і більше (cortex_endpoint_cleanup.py, щодня 10:00)](changes/2026-11-05-cortex-endpoint-cleanup.md) |
 | 2026-10-26 | [лінза remote_thread_injection: агент Cortex XDR (137 FP «Confirmed Credential Access»), Bing Wallpaper, Intel DPTF, Opera, eDrawings, MasterD; 157 офенсів аналітика закрито](changes/2026-10-26-remote-thread-cortex-xdr-fp.md) |
 | 2026-10-19 | [права на config.json (640 root:qmiddleware) і копії (600); autoupdate тримає їх щоцикл](changes/2026-10-19-b-prava-config-json.md) |
 | 2026-10-19 | [Cortex XDR: дайджест бере алерти з API Cortex, не з QRadar; Falcon-дайджест вимкнено](changes/2026-10-19-cortex-xdr-api-scan.md) |

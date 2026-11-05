@@ -1,6 +1,6 @@
-# 2026-11-05 — Cortex XDR: автоматичне видалення ендпоінтів, що мовчать понад 14 днів
+# 2026-11-05 — Cortex XDR: щоденне видалення ендпоінтів, що мовчать 15 днів і більше
 
-**Статус:** код зроблено, на проді — dry-run (вимкнути `cortex_xdr_cleanup_dry_run` свідомо).
+**Статус:** зроблено; на проді бойовий режим (`cortex_xdr_cleanup_dry_run: false`, поріг 15 д) за рішенням користувача.
 **Прод:** mdlwr01, `cortex_endpoint_cleanup.timer` щодня 10:00.
 
 ## Навіщо
@@ -8,7 +8,7 @@
 Endpoint Administration у консолі Cortex XDR накопичує записи хостів, яких давно немає
 (переустановлені, списані, ноутбуки, що не повертались). Сам Cortex видаляє такий запис лише
 через 180 днів «Connection Lost» (за замовчуванням). Користувач хоче прибирати їх раніше —
-через 14 днів мовчання.
+щодня, коли пристрій мовчить 15 днів і більше.
 
 ## Що в API (переміряно 05.11.2026 на тенанті `modernexpo.xdr.eu`)
 
@@ -45,11 +45,9 @@ Endpoint Administration у консолі Cortex XDR накопичує запи
 - Admin-ключ — Bitwarden «API: Cortex XDR (Privileged IT Admin)» (поля ApiKeyId/ApiKey/ApiUrl),
   записаний у `config.json` на mdlwr01 скриптом (бекап `config.json.bak-<ts>-cortexadmin`).
 
-## Увімкнути бойовий режим
+## Режим на проді
 
-```
-sed -i 's/"cortex_xdr_cleanup_dry_run": true/"cortex_xdr_cleanup_dry_run": false/' /opt/qradar-middleware/config.json
-```
-
-або разово `python3 cortex_endpoint_cleanup.py --apply`. Перед цим — переглянути dry-run звіт
-у `cortex_endpoint_cleanup.log` і за потреби заповнити `cortex_xdr_cleanup_exclude_*`.
+У `config.json` на mdlwr01: `cortex_xdr_cleanup_days: 15`, `cortex_xdr_cleanup_dry_run: false` — таймер
+щодня 10:00 видаляє все, що мовчить ≥15 днів (стеля 100 за прогін). Щоб призупинити: поставити
+`cortex_xdr_cleanup_dry_run: true` або `systemctl disable --now cortex_endpoint_cleanup.timer`.
+Винятки — `cortex_xdr_cleanup_exclude_*`.
