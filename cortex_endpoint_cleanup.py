@@ -68,10 +68,13 @@ DEFAULTS = {
     "cortex_xdr_admin_api_key": "",
 }
 
+# force=True: імпорт cortex_xdr_scan уже налаштував root-логер на cortex_xdr_scan.log —
+# без force наш basicConfig був би no-op і лог прибирання їхав би в чужий файл.
 logging.basicConfig(
     level=logging.INFO,
     format="%(asctime)s - %(levelname)s - %(message)s",
     handlers=[logging.FileHandler(LOG_FILE), logging.StreamHandler()],
+    force=True,
 )
 
 
