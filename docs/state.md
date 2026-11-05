@@ -81,7 +81,9 @@ QRadar offenses API ──► poller.py (кожні 10 хв, вікно 48 го�
 замінюється на Cortex; рядок crontab закоментовано), `cdn_allowlist_update.py` (06:30, рефсет
 CDN-allowlist ~22 тис. IP), `botnet_scan.py` (systemd timer, кожні 4 год, review+hunt
 блок-листа), `cortex_xdr_scan.py` (systemd timer, 09:30, дайджест алертів Cortex XDR у Google
-Chat; з 2026-10-19 джерело — **Cortex XDR Public API** напряму, read-only ключ, не QRadar).
+Chat; з 2026-10-19 джерело — **Cortex XDR Public API** напряму, read-only ключ, не QRadar),
+`cortex_endpoint_cleanup.py` (systemd timer, 10:00, видаляє з консолі Cortex ендпоінти без зв'язку понад
+`cortex_xdr_cleanup_days` = 14 д admin-ключем; `cortex_xdr_cleanup_dry_run` = true, поки не вимкнуть).
 
 ## 4. Ключові файли й скрипти
 
@@ -102,7 +104,7 @@ Chat; з 2026-10-19 джерело — **Cortex XDR Public API** напряму,
 | `autoupdate.sh`, `deploy.sh` | деплой: pip → смоук-гейт → рестарт → health → rollback |
 
 Стан — `ai_state.db` (SQLite): таблиці `offenses`, `botnet_scan`,
-`falcon_pua_reported`, `cortex_xdr_reported`.
+`falcon_pua_reported`, `cortex_xdr_reported`, `cortex_endpoint_deleted`.
 
 ## 5. Доступ і секрети
 

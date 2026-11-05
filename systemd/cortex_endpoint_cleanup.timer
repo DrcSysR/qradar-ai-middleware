@@ -1,0 +1,9 @@
+[Unit]
+Description=Run cortex_endpoint_cleanup daily
+
+[Timer]
+OnCalendar=*-*-* 10:00:00
+Persistent=true
+
+[Install]
+WantedBy=timers.target

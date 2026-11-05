@@ -185,6 +185,21 @@ SCHEMA = {
     "cortex_xdr_fp_external_ids":         (list, []),
     "cortex_xdr_report_title":            (str,  ""),
 
+    # --- cortex_endpoint_cleanup.py (запис 2026-11-05) ---
+    # Видалення з консолі Cortex ендпоінтів, що мовчать понад N днів. dry_run=true за
+    # замовчуванням — вимикати свідомо в config.json. Admin-ключ (роль з правом Endpoint
+    # Administration → Delete) окремий від read-only ключа дайджесту; без нього лише dry-run.
+    "cortex_xdr_cleanup_days":            (NUM,  14),
+    "cortex_xdr_cleanup_dry_run":         (bool, True),
+    "cortex_xdr_cleanup_max_per_run":     (int,  100),
+    "cortex_xdr_cleanup_exclude_hostnames": (list, []),
+    "cortex_xdr_cleanup_exclude_groups":  (list, []),
+    "cortex_xdr_cleanup_exclude_types":   (list, []),
+    "cortex_xdr_cleanup_skip_isolated":   (bool, True),
+    "cortex_xdr_cleanup_report_title":    (str,  ""),
+    "cortex_xdr_admin_api_key_id":        (str,  ""),
+    "cortex_xdr_admin_api_key":           (str,  ""),
+
     # --- трекінг пристроїв /track (tracker.py; запис 2026-11-02) ---
     # Джерело місця — RADIUS-події NPS у QRadar (Called-Station-ID 'AP:SSID'); карта точок —
     # мапи Zabbix (map.get/host.get/image.get, токен API з правом читання мап). Реєстр

@@ -1,0 +1,8 @@
+[Unit]
+Description=Cortex XDR: delete endpoints silent longer than cortex_xdr_cleanup_days
+After=network-online.target
+
+[Service]
+Type=oneshot
+WorkingDirectory=/opt/qradar-middleware
+ExecStart=/usr/bin/python3 /opt/qradar-middleware/cortex_endpoint_cleanup.py
