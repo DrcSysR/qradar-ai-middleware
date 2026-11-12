@@ -256,6 +256,16 @@ SCHEMA = {
     "netdiag_rate_per_minute":            (int,  6),
     "netdiag_dhcp_hours":                 (int,  24),
     "netdiag_reply_budget_seconds":       (NUM,  26),
+    # Palo Alto pa-vm (netdiag_pa.py): зняти wan-block / дати tmp-inet через User-ID API. Ключ — user-id
+    # (BW «PaloAlto API Key»), op-ключ — необов'язковий, лише щоб показувати поточні теги IP.
+    "netdiag_pa_host":                    (str,  "172.17.64.101"),
+    "netdiag_pa_ca_file":                 (str,  "/opt/qradar-middleware/netdiag_tls/modern-ca-g2.pem"),
+    "netdiag_pa_uid_key":                 (str,  ""),
+    "netdiag_pa_op_key":                  (str,  ""),
+    "netdiag_pa_inet_tag":                (str,  "tmp-inet"),
+    "netdiag_pa_unblock_tags":            (list, ["wan-block"]),
+    "netdiag_pa_max_hours":               (int,  720),
+    "netdiag_pa_group":                   (str,  "noc@modern-expo.com"),
 
     # --- cdn_allowlist_update.py ---
     "cdn_allowlist_providers":            (list, []),

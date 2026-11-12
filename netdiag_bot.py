@@ -34,6 +34,7 @@ from fastapi import FastAPI, Request
 from fastapi.responses import JSONResponse
 
 import netdiag
+import netdiag_pa
 import tracker
 
 BASE_DIR = netdiag.BASE_DIR
@@ -241,24 +242,88 @@ async def chat(request: Request):
     etype = event.get("type")
     user = event.get("user") or {}
     email = (user.get("email") or "").strip().lower() if user.get("type") == "HUMAN" else ""
-    if etype not in ("MESSAGE", "ADDED_TO_SPACE"):
+    if etype not in ("MESSAGE", "ADDED_TO_SPACE", "CARD_CLICKED"):
         return JSONResponse({})
-    text = ((event.get("message") or {}).get("argumentText") or (event.get("message") or {}).get("text") or "")[:500]
     if not await asyncio.to_thread(authorized, cfg, email):
-        log.info(f"deny user={email or '?'}")
+        log.info(f"deny user={email or '?'} event={etype}")
         return JSONResponse({"text": "⛔ У вас немає доступу до діагностики мережі. Зверніться до NOC."})
+    if etype == "CARD_CLICKED":
+        return JSONResponse(await card_clicked(cfg, event, email))
+    text = ((event.get("message") or {}).get("argumentText") or (event.get("message") or {}).get("text") or "")[:500]
     if etype == "ADDED_TO_SPACE" or not text.strip() or text.strip().lower() in ("help", "/help", "допомога", "?"):
         log.info(f"help user={email} event={etype}")
-        return JSONResponse({"text": HELP})
+        return JSONResponse({"text": HELP + "\n\n" + netdiag_pa.HELP_PA})
     if not rate_ok(cfg, email):
         return JSONResponse({"text": "⏳ Забагато запитів — спробуйте за хвилину."})
+    cmd = netdiag_pa.parse_command(text)
+    if cmd:
+        log.info(f"pa-ask user={email} op={cmd['op']} ip={cmd.get('ip')}")
+        if not await asyncio.to_thread(pa_allowed, cfg, email):
+            return JSONResponse({"text": "⛔ Дії на Palo Alto вам не дозволені."})
+        p, err = netdiag_pa.validate(cfg, cmd["op"], cmd.get("ip"), cmd.get("hours"))
+        if not p:
+            return JSONResponse({"text": f"⚠️ {err}\n\n{netdiag_pa.HELP_PA}"})
+        return JSONResponse(await asyncio.to_thread(netdiag_pa.confirm_card, cfg, p))
     target = netdiag.parse_ip(text, cfg) or netdiag.parse_mac(text)
     log.info(f"query user={email} target={target or '-'}")
     if not target:
         return JSONResponse({"text": "Не бачу у повідомленні внутрішнього IP або MAC.\n" + HELP})
     try:
         body = await run_query(cfg, text)
+        ip = netdiag.parse_ip(text, cfg)
+        if ip and "cardsV2" in body and await asyncio.to_thread(pa_allowed, cfg, email):
+            body["cardsV2"][0]["card"]["sections"].append(netdiag_pa.inet_buttons(ip))
     except Exception as e:
         log.exception(f"diagnose failed target={target}: {e}")
         body = {"text": "⚠️ Діагностика впала з помилкою — деталі в журналі netdiag_bot.log."}
     return JSONResponse(body)
+
+
+def pa_allowed(cfg: dict, email: str) -> bool:
+    """Дії на PA — окрема група (типово та сама noc@); allowlist netdiag_allowed_users теж діє."""
+    email = (email or "").strip().lower()
+    if email in {u.strip().lower() for u in cfg.get("netdiag_allowed_users") or []}:
+        return True
+    group = (cfg.get("netdiag_pa_group") or netdiag_pa.DEFAULTS["netdiag_pa_group"]).strip().lower()
+    return bool(EMAIL_RE.match(email)) and email.endswith("@" + cfg.get("netdiag_allowed_domain").lower()) \
+        and in_group(cfg, email, group)
+
+
+def _click_params(event: dict) -> tuple[str, dict]:
+    common = event.get("common") or {}
+    fn = common.get("invokedFunction") or (event.get("action") or {}).get("actionMethodName") or ""
+    params = dict(common.get("parameters") or {})
+    for kv in (event.get("action") or {}).get("parameters") or []:
+        if isinstance(kv, dict) and "key" in kv:
+            params.setdefault(kv["key"], kv.get("value"))
+    return fn, {k: str(v)[:64] for k, v in params.items()}
+
+
+async def card_clicked(cfg: dict, event: dict, email: str) -> dict:
+    fn, prm = _click_params(event)
+    if fn not in ("pa_ask", "pa_confirm", "pa_cancel"):
+        return {}
+    if fn == "pa_cancel":
+        log.info(f"pa-cancel user={email} ip={prm.get('ip')}")
+        return {"actionResponse": {"type": "UPDATE_MESSAGE"}, "text": f"Скасовано ({netdiag._e(prm.get('ip'))})."}
+    if not await asyncio.to_thread(pa_allowed, cfg, email):
+        return {"actionResponse": {"type": "NEW_MESSAGE"}, "text": "⛔ Дії на Palo Alto вам не дозволені."}
+    if not rate_ok(cfg, email):
+        return {"actionResponse": {"type": "NEW_MESSAGE"}, "text": "⏳ Забагато запитів — спробуйте за хвилину."}
+    # параметри кнопки приходять від клієнта — валідуємо так само, як текст
+    p, err = netdiag_pa.validate(cfg, prm.get("op", ""), prm.get("ip"), prm.get("hours"))
+    if not p:
+        return {"actionResponse": {"type": "NEW_MESSAGE"}, "text": f"⚠️ {err}"}
+    if fn == "pa_ask":
+        log.info(f"pa-ask user={email} op={p['op']} ip={p['ip']} (кнопка)")
+        body = await asyncio.to_thread(netdiag_pa.confirm_card, cfg, p)
+        return {"actionResponse": {"type": "NEW_MESSAGE"}, **body}
+    try:
+        age = time.time() - int(prm.get("t", "0"))
+    except ValueError:
+        age = 1e9
+    if not 0 <= age <= 600:
+        return {"actionResponse": {"type": "UPDATE_MESSAGE"}, "text": "⌛ Підтвердження застаріло (> 10 хв) — надішліть команду ще раз."}
+    ok, msg = await asyncio.to_thread(netdiag_pa.execute, cfg, p, email)
+    body = await asyncio.to_thread(netdiag_pa.result_card, cfg, p, ok, msg, email)
+    return {"actionResponse": {"type": "UPDATE_MESSAGE"}, **body}

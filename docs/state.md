@@ -93,7 +93,7 @@ Chat; з 2026-10-19 джерело — **Cortex XDR Public API** напряму,
 | `app.py` | FastAPI: `POST /universal-analysis`, `GET /` (HTML-форма ручного запуску) |
 | `poller.py` | продюсер черги під systemd timer: discovery + матч → `work_queue` (нічого не обробляє) |
 | `tracker.py` | /track: де пристрій востаннє реєструвався (точка Wi-Fi/свіч з RADIUS-подій NPS, DHCP dhcp1, DHCP Palo Alto) + місце на плані з мап Zabbix, інвентарю Zabbix (GPS/site_rack) і файлу будівель `track_buildings.json` (кути будівлі ↔ пікселі планів → масштаб і GPS); реєстр `track_registry.json` поза git |
-| `netdiag.py`, `netdiag_bot.py`, `netdiag_collector.py`, `snmp_v2c.py` | бот діагностики: IP→MAC (ARP ядра/DHCP) → Wi-Fi (WLC SNMP + історія 15 хв) або дріт (FDB усіх свічів → крайовий порт, 802.1X, LLDP) + NPS 6272/6273 з QRadar; свічі й спільноти — з Zabbix; юніти `systemd/netdiag-*.service`, vhost `deploy/nginx2/netdiag.conf` |
+| `netdiag.py`, `netdiag_bot.py`, `netdiag_collector.py`, `netdiag_pa.py`, `snmp_v2c.py` | бот діагностики: IP→MAC (ARP ядра/DHCP) → Wi-Fi (WLC SNMP + історія 15 хв) або дріт (FDB усіх свічів → крайовий порт, 802.1X, LLDP) + NPS 6272/6273 з QRadar; дії на pa-vm (зняти wan-block, tmp-inet на строк) з підтвердженням і аудитом `pa_actions`; свічі й спільноти — з Zabbix; юніти `systemd/netdiag-*.service`, vhost `deploy/nginx2/netdiag.conf` |
 | `queue_db.py` | таблиця `work_queue` в `ai_state.db`; єдиний `ORDER_BY` для claim/position; enqueue/claim_next/mark/sweep/depth |
 | `worker.py` | консюмер черги під systemd timer: claim → `POST /process-one` → DONE/ERROR; sweep low-mag хвоста |
 | `prompts.json` | мапа: ключ опису → `[prompt.md, assignee, query.aql, refset_cleanup?, close_on_empty?]` |
@@ -119,7 +119,8 @@ Chat; з 2026-10-19 джерело — **Cortex XDR Public API** напряму,
 - netdiag: SNMP-спільнота WLC (`netdiag_wlc_community`, BW «SNMP: WLC 3504 community netdiag (mdlwr01)»,
   на WLC обмежена 172.17.65.9/32); ключ SA `netdiag_sa.json` (GCP `me-network-diagnistics`, 640); TLS бота `netdiag_tls/`
   (ключ 640, серт запінений на nginx2 `/etc/nginx/ssl/netdiag-mdlwr01.pem`). Спільноти свічів не
-  зберігаються — читаються з Zabbix у кеш `cache/netdiag_switches.json` (600).
+  зберігаються — читаються з Zabbix у кеш `cache/netdiag_switches.json` (600). Ключ PA для бота —
+  user-id-only `ibm.qradar` (`netdiag_pa_uid_key`; при ротації ключа custom actions оновити й тут).
 
 ## 6. Операційні процедури
 

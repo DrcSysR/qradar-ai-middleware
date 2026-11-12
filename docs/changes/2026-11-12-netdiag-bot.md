@@ -92,6 +92,28 @@ Helpdesk/NOC на скаргу «не працює мережа» має шви�
 ряд RSSI похвилинно (кожне значення своїм кольором, ✕ — клієнта не було на WLC). Усі рядки з
 обладнання екрануються (`html.escape`) перед вставкою в HTML картки.
 
+## Palo Alto: зняти wan-block / дати tmp-inet (того ж дня, на запит користувача)
+
+`netdiag_pa.py` — дії на **pa-vm** (лише VM-300 172.17.64.101; pa440 — ні, рішення 07.08) через User-ID XML
+API (`type=user-id`, uid-message):
+- `розблокуй 1.2.3.4` — unregister тегів `netdiag_pa_unblock_tags` (wan-block) з **публічного** IP; якщо
+  unregister не вдався — register з `timeout=1` (як у формі helpdesk, тег спливає за секунду);
+- `інтернет 172.17.40.25 4г` / `8 год` / `2д` — register `tmp-inet` з `timeout` у секундах, `persistent=1`,
+  лише IP з `netdiag_allowed_networks`, 1 год … 720 год (30 діб — і стеля PAN-OS 2592000 с);
+- під діагностичною карткою внутрішнього IP — кнопки tmp-inet 1 год / 4 год / 8 год / 1 день / 7 днів.
+Кожна дія — через картку підтвердження (кнопки «Підтвердити»/«Скасувати»; підтвердження живе 10 хв,
+після натискання картка замінюється результатом — подвійне натискання неможливе). Клікер авторизується
+наново (`netdiag_pa_group`, типово noc@), параметри кнопки валідуються як недовірений ввід. Аудит —
+таблиця `pa_actions` у `netdiag.db` (ts, user, action, ip, tag, timeout_s, ok, detail) + журнал бота.
+
+Ключ — **user-id-only** ключ `ibm.qradar` (BW «PaloAlto API Key», поле `pa-vm ibm.qradar (user-id only)`;
+найменші права, що дозволяють тегування; admin-ключ боту не дається), у config.json
+`netdiag_pa_uid_key`, передається заголовком X-PAN-KEY (не в query string). TLS до PA — повна перевірка
+корпоративним CA MODERN-CA-G2 (`netdiag_tls/modern-ca-g2.pem`; серт PA має IP SAN 172.17.64.101).
+Перевірено порожнім uid-message: 200 success. Показ поточних тегів IP потребує op-ключа
+(`netdiag_pa_op_key`, порожній) — user-id ключ на op отримує 403; без нього картка пише «теги не читаються».
+Спільний ключ із 9 custom actions QRadar: при його ротації треба оновити й `netdiag_pa_uid_key`.
+
 ## Відкрито (ручні кроки — лише в консолях Google)
 
 1. ✅ зроблено 12.11 — **Google Chat API → Configuration** у проєкті `me-network-diagnistics`: назва/аватар, «Receive 1:1 messages» +
