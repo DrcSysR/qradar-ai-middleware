@@ -442,6 +442,17 @@ def ip_to_mac(cfg: dict, ip: str) -> dict | None:
     return dict(row) if row else None
 
 
+def wifi_by_ip(cfg: dict, ip: str) -> dict | None:
+    """Останній знімок WLC з цим IP (за 10 хв) — запасний шлях IP → MAC поза ARP ядра."""
+    con = db(cfg)
+    try:
+        row = con.execute("SELECT mac, vlan, ts FROM wifi WHERE ip=? AND ts>=? ORDER BY ts DESC LIMIT 1",
+                          (ip, int(time.time()) - 600)).fetchone()
+    finally:
+        con.close()
+    return dict(row) if row else None
+
+
 def mac_to_ips(cfg: dict, mac: str) -> list[str]:
     con = db(cfg)
     try:
@@ -806,6 +817,12 @@ def diagnose_fast(cfg: dict, query: str) -> dict:
         if a:
             res.update(mac=a["mac"], arp=a)
             res["vlan"] = vlan_from_ifname(a.get("ifname", ""))
+        else:
+            # Гостьовий VLAN 500 (172.18.48/21) і VLAN точок маршрутизує Palo Alto, а не ядро MLNX —
+            # ARP там немає. Wi-Fi-клієнтів таких мереж знає WLC (IP є в його таблиці клієнтів).
+            w = wifi_by_ip(cfg, ip)
+            if w:
+                res.update(mac=w["mac"], arp={"mac": w["mac"], "router": "WLC", "ifname": f"vlan{w.get('vlan')}", "ts": w["ts"]})
     if mac and not ip:
         ips = mac_to_ips(cfg, mac)
         res["ip"] = ips[0] if ips else None
@@ -1141,7 +1158,9 @@ def render_card(res: dict, nps: list[dict] | None, notes: list[str], nps_minutes
     sections: list[dict] = []
     if not res.get("mac"):
         sections.append({"header": "❓ Пристрій не знайдено", "widgets": [_para(_c(
-            "Для цього IP немає запису ARP на ядрі (MLNX01/02) — пристрій зараз не в мережі або IP статичний і неактивний.", AMBER))]})
+            "Для цього IP немає ні запису ARP на ядрі (MLNX01/02), ні Wi-Fi-клієнта на WLC — пристрій зараз не в мережі, "
+            "IP статичний і неактивний, або це дротовий пристрій у мережі, яку маршрутизує Palo Alto (гостьовий VLAN 500 / "
+            "172.18.48.0/21) — ARP фаєрвола бот поки не читає.", AMBER))]})
     elif medium in ("wifi", "wifi_gone"):
         sections += _wifi_sections(res)
     elif medium in ("wired", "wifi_unknown"):
