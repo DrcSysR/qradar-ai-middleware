@@ -1,0 +1,100 @@
+# 2026-11-12 — netdiag: Google Chat-бот діагностики підключення пристрою (Wi-Fi / дріт)
+
+**Статус:** код і інфраструктура розгорнуті на mdlwr01 + nginx2; лишились два ручні кроки в консолях
+Google (див. «Відкрито»).
+**Прод:** mdlwr01 — `netdiag-collector.service` (знімки раз на хвилину), `netdiag-bot.service`
+(`https://172.17.61.225:5010`); публікація — `https://netdiag.modern-expo.ua/chat` (nginx2).
+
+## Навіщо
+
+Helpdesk/NOC на скаргу «не працює мережа» має швидко відповісти: де пристрій (точка Wi-Fi чи
+свіч/порт), чи він взагалі авторизувався і чому ні. Раніше це ручний обхід WLC, свічів і NPS-логів.
+Алгоритм від користувача: IP → MAC (DHCP/ARP) → де підключений → розгалуження: Wi-Fi — усе з
+контролера + історія 10–15 хв; дріт — свіч, порт, стан авторизації і причина відмови.
+
+## Що переміряно (12.11.2026)
+
+- **WLC Cisco 3504** (172.17.65.4, AireOS 8.10.196.0, точки в local mode): SNMP v2c працює
+  лише для спільнот, прив'язаних до IP (була лише Zabbix 172.17.6.21 і LibreNMS 172.17.6.173).
+  mdlwr01 має ногу у VLAN 605 (172.17.65.9) → створено **окрему RO-спільноту для
+  172.17.65.9/32** (`config snmp community create/ipaddr/accessmode ro/mode enable`, `save config`);
+  значення — у Bitwarden «SNMP: WLC 3504 community netdiag (mdlwr01)» і в config.json.
+  Повна таблиця клієнтів (~740) + 114 AP + радіо — ~1 с SNMP.
+  Корисні колонки: `bsnMobileStationEntry` (.2 IP, .3 user, .4 AP MAC, .5 slot, .7 SSID, .9 status,
+  .10 reason, .23 **policy-manager state** RUN/8021X_REQD/DHCP_REQD, .29 VLAN, .30 protocol),
+  `bsnMobileStationStatsEntry` (.1 RSSI, .26 SNR, .2/.3 байти), `cldcClientEntry` (.15 uptime,
+  .17 rate, .44 device type), AP — `bsnAPName/Location/Model/IpAddress`, радіо —
+  канал/завантаження/кількість клієнтів.
+- **Ядро MLNX01/02** (172.17.6.1/.2, Cumulus 4.3): ARP усіх користувацьких VLAN (~2900 записів на
+  кожному; HW-STACK тримає лише 172.17.6/64). Інтерфейси `vlanN` / `vlanN-v0` (VRR).
+- **Свічі**: 95→108 SNMP-хостів у групах Zabbix `Switches`/`NetHw`; спільноти різні, частина в
+  макросах шаблонів — розв'язуються з Zabbix API на льоту (кеш `cache/netdiag_switches.json`, 600).
+  **6.117 (HPE-2540-117, сюди ввімкнений WLC) у Zabbix вимкнений, але живий** — тому вимкнені хости
+  не відкидаємо. LLDP-MIB віддають лише HP/Aruba; Huawei HW-STACK і Cumulus по наших
+  спільнотах — ні. На HW-STACK натомість ifAlias аплінків = ім'я сусіднього свіча
+  («HPE-2530-86-R010102:28»). Aruba CX 6100 / Ubiquiti / частина HP 2530 SNMP не відповідають.
+- **NPS у QRadar**: події 6272/6273 (`Success/Failure Audit: Network Policy Server granted/denied
+  access to a user`, лог-сорси XDC0x) містять Calling Station Identifier (MAC), Called Station
+  (AP:SSID), NAS, політику, тип автентифікації, **Reason Code і текст причини**. Пошук по MAC за
+  60 хв — ~2 с.
+
+## Що зроблено
+
+- `snmp_v2c.py` — мінімальний SNMP v2c (GET/GETBULK-walk) на stdlib: на mdlwr01 немає ні net-snmp,
+  ні pysnmp; нова залежність не потрібна. Адаптивний розмір пачки (Huawei не встигає на 40).
+- `netdiag.py` — логіка:
+  1. IP → MAC: знімок ARP ядра (свіжіший 3 хв), інакше живий обхід; запасний шлях — DHCPACK у
+     QRadar (`track_dhcp_logsource`, 24 год).
+  2. MAC є на WLC → **Wi-Fi**: живий GET за індексом MAC (точка, SSID, VLAN, діапазон/канал,
+     RSSI/SNR, rate, стан політик, uptime, тип пристрою, завантаження радіо) + **історія з
+     знімків** за `netdiag_history_minutes` (15): ланцюжок точок (роумінг), RSSI/SNR
+     мін/сер/макс, перепідключення (скинутий uptime), пропущені знімки. Якщо зараз на WLC
+     немає, але був у вікні — «відвалився о HH:MM від точки X».
+  3. Інакше **дріт**: паралельний GET `dot1dTpFdbPort.<mac>` (+ `dot1qTpFdbPort.<vlan>.<mac>`) на
+     всіх свічах (~3–5 с), для кожного хіта — bridge-порт → ifIndex, ifName/ifAlias, up/down,
+     швидкість, помилки, PVID, час останньої зміни, IEEE8021-PAE (стан 802.1X), LLDP-сусід.
+     **Крайовий порт** = хіт, за яким немає іншого свіча-хіта (LLDP-сусід або ifAlias з його
+     іменем); при кількох — спершу свічі з LLDP, ядро в кінці. Сусід за портом: Ubiquiti →
+     «за PoE-свічем Ubiquiti X» без деталей (так попросив користувач), IP-телефон, WLC,
+     невідомий свіч.
+  4. NPS (QRadar): дозволено/відмовлено за 60 хв, остання подія, топ причин відмов.
+  5. Евристики висновків: RSSI ≤ −75/−67, SNR < 20, канал ≥ 60 %, 2.4 ГГц, ≥3 роумінги,
+     перепідключення; порт down, помилки, < 1 Гбіт/с, 802.1X unauthorized, VLAN 500.
+- `netdiag_collector.py` + `netdiag-collector.service` — цикл 60 с: WLC (клієнти, AP, радіо) +
+  ARP ядра → `netdiag.db` (окрема SQLite, не ai_state.db), чистка > 30 хв (ARP — 6 год).
+- `netdiag_bot.py` + `netdiag-bot.service` — FastAPI/uvicorn на `172.17.61.225:5010` з TLS
+  (самопідписаний серт `netdiag_tls/`, nginx2 його пінить). На кожен запит: TCP-джерело лише
+  nginx2 (172.17.61.166), OIDC-токен Google Chat (aud = URL ендпоінта, email
+  `chat@system.gserviceaccount.com`), користувач — `@modern-expo.com` і член **noc@**
+  (Cloud Identity `checkTransitiveMembership`, SA `netdiag-bot@causal-shell-436205-a8`) або
+  `netdiag_allowed_users`; ліміт 6 запитів/хв; IP лише з `netdiag_allowed_networks`. Відповідь
+  синхронна (≤ 26 с бюджету; Chat чекає 30 с).
+- GCP проєкт **alARM** (`causal-shell-436205-a8`, № 664388796935 — порожній до цього; Chat-застосунок
+  бота тривоги живе в іншому проєкті `me-s3-backup-project-79601`, а один проєкт = одна
+  конфігурація Chat app): увімкнено Chat API і Cloud Identity API, SA `netdiag-bot` + ключ
+  (`/opt/qradar-middleware/netdiag_sa.json`, 640 root:qmiddleware).
+- DNS: `netdiag.modern-expo.ua A 188.163.216.105` (зона `modern-expo-ua`, проєкт `me-cloud-dns-zones`).
+- nginx2: `vhosts.d/netdiag.conf` (копія в репо `deploy/nginx2/netdiag.conf`), Let's Encrypt
+  `netdiag.modern-expo.ua`; публічний лише `POST /chat`, `/healthz` — LAN, решта 404.
+- `autoupdate.sh`: після успішного рестарту — `systemctl try-restart netdiag-collector netdiag-bot`.
+
+## Відкрито (ручні кроки — лише в консолях Google)
+
+1. **Google Chat API → Configuration** у проєкті alARM: назва/аватар, «Receive 1:1 messages» +
+   «Join spaces», Connection = **HTTP endpoint URL** `https://netdiag.modern-expo.ua/chat`,
+   Authentication audience = **HTTP endpoint URL**, Visibility = `noc@modern-expo.com`.
+   НЕ вмикати «Build this Chat app as a Workspace add-on» (бот відповідає у форматі класичних
+   подій `MESSAGE`).
+2. **Admin console → Account → Admin roles → Groups Reader** → призначити
+   `netdiag-bot@causal-shell-436205-a8.iam.gserviceaccount.com` (як для SA бота тривоги). До цього
+   перевірка noc@ падає → відмова всім, крім `netdiag_allowed_users`.
+
+## Межі
+
+- Ubiquiti, Aruba CX 6100, частина HP 2530 SNMP не віддають: пристрій за ними видно лише до
+  останнього свіча з SNMP (бот так і пише).
+- Історія Wi-Fi — лише з моменту старту колектора, крок 1 хв (короткі обриви < 1 хв видно як
+  скинутий uptime, не як пропуск).
+- PSK-клієнти (`me_mobile`) у NPS не потрапляють — для них «подій NPS немає» нормально.
+- Zabbix API з mdlwr01 іде на `http://172.17.6.20` (так у `zabbix_url`) — токен по LAN без TLS;
+  успадковано від /track.

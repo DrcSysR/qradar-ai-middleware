@@ -20,6 +20,7 @@ reference set'ами.
 | `qradar-middleware.service` | mdlwr01 (172.17.61.225, **2 vCPU / 2 ГБ RAM**) | FastAPI+gunicorn, 4 воркери uvicorn, `0.0.0.0:5000` |
 | `qradar-poller.timer/.service` | mdlwr01 | oneshot кожні 10 хв (`OnUnitActiveSec=10min`) — продюсер черги |
 | `qradar-worker.timer/.service` | mdlwr01 | oneshot кожні 2 хв (`OnUnitActiveSec=2min`) — консюмер черги, дренаж до порожньої; fcntl-лок `worker.lock` не дає накластися |
+| `netdiag-collector.service` / `netdiag-bot.service` | mdlwr01 (`172.17.61.225:5010` TLS) ← nginx2 `netdiag.modern-expo.ua/chat` | Google Chat-бот діагностики підключення (IP → Wi-Fi/дріт); колектор знімає WLC 3504 + ARP MLNX раз на хвилину в `netdiag.db` |
 | QRadar (event collector, API) | 172.17.61.184 | джерело офенсів і подій, Ariel-пошуки |
 | llm01 (`openai` провайдер) | 172.17.61.251 (корп, SSH) / 10.2.10.1 (внутр., :8080) | tier-1 llama.cpp, qwen2.5-coder-3b, Quadro P620 2 ГБ; **3 слоти × 8192** |
 | Vertex AI | GCP | tier-2 ескалація + manual-режим |
@@ -92,6 +93,7 @@ Chat; з 2026-10-19 джерело — **Cortex XDR Public API** напряму,
 | `app.py` | FastAPI: `POST /universal-analysis`, `GET /` (HTML-форма ручного запуску) |
 | `poller.py` | продюсер черги під systemd timer: discovery + матч → `work_queue` (нічого не обробляє) |
 | `tracker.py` | /track: де пристрій востаннє реєструвався (точка Wi-Fi/свіч з RADIUS-подій NPS, DHCP dhcp1, DHCP Palo Alto) + місце на плані з мап Zabbix, інвентарю Zabbix (GPS/site_rack) і файлу будівель `track_buildings.json` (кути будівлі ↔ пікселі планів → масштаб і GPS); реєстр `track_registry.json` поза git |
+| `netdiag.py`, `netdiag_bot.py`, `netdiag_collector.py`, `snmp_v2c.py` | бот діагностики: IP→MAC (ARP ядра/DHCP) → Wi-Fi (WLC SNMP + історія 15 хв) або дріт (FDB усіх свічів → крайовий порт, 802.1X, LLDP) + NPS 6272/6273 з QRadar; свічі й спільноти — з Zabbix; юніти `systemd/netdiag-*.service`, vhost `deploy/nginx2/netdiag.conf` |
 | `queue_db.py` | таблиця `work_queue` в `ai_state.db`; єдиний `ORDER_BY` для claim/position; enqueue/claim_next/mark/sweep/depth |
 | `worker.py` | консюмер черги під systemd timer: claim → `POST /process-one` → DONE/ERROR; sweep low-mag хвоста |
 | `prompts.json` | мапа: ключ опису → `[prompt.md, assignee, query.aql, refset_cleanup?, close_on_empty?]` |
@@ -104,7 +106,8 @@ Chat; з 2026-10-19 джерело — **Cortex XDR Public API** напряму,
 | `autoupdate.sh`, `deploy.sh` | деплой: pip → смоук-гейт → рестарт → health → rollback |
 
 Стан — `ai_state.db` (SQLite): таблиці `offenses`, `botnet_scan`,
-`falcon_pua_reported`, `cortex_xdr_reported`, `cortex_endpoint_deleted`.
+`falcon_pua_reported`, `cortex_xdr_reported`, `cortex_endpoint_deleted`. Знімки netdiag — окрема
+`netdiag.db` (`wifi`, `radio`, `ap`, `arp`; 30 хв).
 
 ## 5. Доступ і секрети
 
@@ -113,6 +116,10 @@ Chat; з 2026-10-19 джерело — **Cortex XDR Public API** напряму,
   параметри Vertex. Ключ Vertex — окремий JSON поруч, теж не в git.
 - Пароль/токени шукати в Bitwarden (запис по назві сервісу), не в репо.
 - `.gitignore` ігнорує `*.json`, крім `prompts.json` — тримати саме так.
+- netdiag: SNMP-спільнота WLC (`netdiag_wlc_community`, BW «SNMP: WLC 3504 community netdiag (mdlwr01)»,
+  на WLC обмежена 172.17.65.9/32); ключ SA `netdiag_sa.json` (GCP alARM, 640); TLS бота `netdiag_tls/`
+  (ключ 640, серт запінений на nginx2 `/etc/nginx/ssl/netdiag-mdlwr01.pem`). Спільноти свічів не
+  зберігаються — читаються з Zabbix у кеш `cache/netdiag_switches.json` (600).
 
 ## 6. Операційні процедури
 
@@ -224,6 +231,7 @@ health, при провалі відкатує. Негайно — `./deploy.sh`
 
 ## 8. Історія змін
 
+- [2026-11-12 — netdiag: Google Chat-бот діагностики підключення](changes/2026-11-12-netdiag-bot.md)
 - [2026-09-03 — NO_EVENTS: фолбек на генеричний AQL замість тиші](changes/2026-09-03-b-fallback-genericnyi-aql.md)
 - [2026-09-03 — окремий поріг розблокування: пайплайн знімав блок з активних сканерів](changes/2026-09-03-porih-rozblokuvannya.md)
 - [2026-09-02 — розбір черги аналітика: переоцінка 29 офенсів через поточний пайплайн](changes/2026-09-02-b-cherga-analityka.md)

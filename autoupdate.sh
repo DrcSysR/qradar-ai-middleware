@@ -17,6 +17,7 @@
 APP_DIR="/opt/qradar-middleware"
 LOG_FILE="$APP_DIR/autoupdate.log"
 SERVICE="qradar-middleware"
+EXTRA_SERVICES="netdiag-collector netdiag-bot"
 HEALTH_URL="http://127.0.0.1:5000/"
 HEALTH_TIMEOUT=10
 HEALTH_RETRIES=6
@@ -116,6 +117,10 @@ for i in $(seq 1 "$HEALTH_RETRIES"); do
 done
 
 if [ "$HEALTHY" -eq 1 ]; then
+    # Супутні служби з того самого коду (netdiag): перезапуск лише якщо вже запущені
+    for extra in $EXTRA_SERVICES; do
+        systemctl try-restart "$extra" >> "$LOG_FILE" 2>&1 || log "⚠️ try-restart $extra не вдався"
+    done
     log "✅ Оновлено до $(git rev-parse --short HEAD). Сервіс відповідає."
     log "---------------------------------------------------"
     exit 0

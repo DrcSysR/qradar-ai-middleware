@@ -231,6 +231,32 @@ SCHEMA = {
     "pa_api_key":                         (str,  ""),
     "track_pa_dhcp_enabled":              (bool, True),
 
+    # --- netdiag: Google Chat-бот діагностики підключення (netdiag*.py; запис 2026-11-12) ---
+    # Свічі й SNMP-спільноти — із Zabbix (zabbix_url + токен вище); спільнота WLC — окрема
+    # RO, на WLC обмежена IP mdlwr01 172.17.65.9 (BW «SNMP: WLC 3504 community netdiag (mdlwr01)»).
+    "netdiag_db":                         (str,  "/opt/qradar-middleware/netdiag.db"),
+    "netdiag_wlc_host":                   (str,  "172.17.65.4"),
+    "netdiag_wlc_community":              (str,  ""),
+    "netdiag_arp_routers":                (list, ["172.17.6.1", "172.17.6.2"]),
+    "netdiag_zabbix_groups":              (list, ["Switches", "NetHw"]),
+    "netdiag_poll_seconds":               (NUM,  60),
+    "netdiag_keep_minutes":               (NUM,  30),
+    "netdiag_history_minutes":            (NUM,  15),
+    "netdiag_switch_cache_minutes":       (NUM,  60),
+    "netdiag_snmp_timeout":               (NUM,  1.0),
+    "netdiag_snmp_workers":               (int,  32),
+    "netdiag_nps_minutes":                (int,  60),
+    "netdiag_allowed_networks":           (list, ["172.17.0.0/16", "172.18.48.0/21", "192.168.48.0/21", "172.20.22.0/23"]),
+    "netdiag_trusted_proxies":            (list, ["172.17.61.166"]),
+    "netdiag_chat_audience":              (str,  "https://netdiag.modern-expo.ua/chat"),
+    "netdiag_allowed_domain":             (str,  "modern-expo.com"),
+    "netdiag_allowed_group":              (str,  "noc@modern-expo.com"),
+    "netdiag_allowed_users":              (list, []),
+    "netdiag_sa_key_file":                (str,  "/opt/qradar-middleware/netdiag_sa.json"),
+    "netdiag_rate_per_minute":            (int,  6),
+    "netdiag_dhcp_hours":                 (int,  24),
+    "netdiag_reply_budget_seconds":       (NUM,  26),
+
     # --- cdn_allowlist_update.py ---
     "cdn_allowlist_providers":            (list, []),
     "cdn_allowlist_static_cidrs":         (list, []),

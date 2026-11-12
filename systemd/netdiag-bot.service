@@ -1,0 +1,24 @@
+[Unit]
+Description=netdiag: Google Chat-бот діагностики підключення (https://netdiag.modern-expo.ua/chat via nginx2)
+After=network-online.target netdiag-collector.service
+Wants=network-online.target
+
+[Service]
+User=qmiddleware
+Group=qmiddleware
+WorkingDirectory=/opt/qradar-middleware
+Environment="HOME=/opt/qradar-middleware"
+# Слухаємо лише LAN-адресу; доступ — тільки nginx2 (172.17.61.166), перевіряється ще й у коді.
+# TLS: самопідписаний серт mdlwr01 (netdiag_tls/), nginx2 пінить його через proxy_ssl_trusted_certificate.
+ExecStart=/opt/qradar-middleware/venv/bin/uvicorn netdiag_bot:app --host 172.17.61.225 --port 5010 --workers 1 \
+  --ssl-certfile /opt/qradar-middleware/netdiag_tls/cert.pem --ssl-keyfile /opt/qradar-middleware/netdiag_tls/key.pem \
+  --no-server-header --log-level warning
+Restart=always
+RestartSec=5
+NoNewPrivileges=yes
+PrivateTmp=yes
+ProtectSystem=full
+ProtectHome=yes
+
+[Install]
+WantedBy=multi-user.target

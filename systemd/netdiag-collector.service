@@ -1,0 +1,19 @@
+[Unit]
+Description=netdiag: знімки WLC 3504 (клієнти/радіо) і ARP ядра раз на хвилину -> netdiag.db
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+User=qmiddleware
+Group=qmiddleware
+WorkingDirectory=/opt/qradar-middleware
+ExecStart=/opt/qradar-middleware/venv/bin/python /opt/qradar-middleware/netdiag_collector.py
+Restart=always
+RestartSec=10
+NoNewPrivileges=yes
+PrivateTmp=yes
+ProtectSystem=full
+ProtectHome=yes
+
+[Install]
+WantedBy=multi-user.target

@@ -34,3 +34,8 @@ config.json.bad
 .claude/
 # Кеш трекінгу (/track): індекс точок і фони мап із Zabbix
 cache/
+# netdiag: БД знімків WLC/ARP і TLS-ключ бота (секрет)
+netdiag.db
+netdiag.db-shm
+netdiag.db-wal
+netdiag_tls/
