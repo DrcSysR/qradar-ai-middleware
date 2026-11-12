@@ -155,6 +155,59 @@ def authorized(cfg: dict, email: str) -> bool:
     return bool(group) and EMAIL_RE.match(group) is not None and in_group(cfg, email, group)
 
 
+# ============================================================================ Chat API (асинхронні відповіді)
+CHAT_SCOPE = "https://www.googleapis.com/auth/chat.bot"
+SPACE_RE = re.compile(r"^spaces/[A-Za-z0-9_-]{1,64}$")
+THREAD_RE = re.compile(r"^spaces/[A-Za-z0-9_-]{1,64}/threads/[A-Za-z0-9_-]{1,64}$")
+_chat_session = None
+_bg_tasks: set = set()
+
+
+def _chat(cfg: dict):
+    global _chat_session
+    with _ci_lock:
+        if _chat_session is None:
+            from google.auth.transport.requests import AuthorizedSession
+            from google.oauth2 import service_account
+            creds = service_account.Credentials.from_service_account_file(cfg.get("netdiag_sa_key_file"), scopes=[CHAT_SCOPE])
+            _chat_session = AuthorizedSession(creds)
+        return _chat_session
+
+
+def chat_post(cfg: dict, space: str, body: dict, thread: str = "") -> bool:
+    """Повідомлення від імені застосунку (SA проєкту Chat app, scope chat.bot) — для відповідей,
+    які не вкладаються в синхронний таймаут Chat (діалог чекає лише ~8 с)."""
+    if not SPACE_RE.match(space or ""):
+        log.error("chat_post: некоректний space")
+        return False
+    msg = {k: v for k, v in body.items() if k in ("text", "cardsV2", "fallbackText")}
+    params = {}
+    if thread and THREAD_RE.match(thread):
+        msg["thread"] = {"name": thread}
+        params["messageReplyOption"] = "REPLY_MESSAGE_FALLBACK_TO_NEW_THREAD"
+    try:
+        r = _chat(cfg).post(f"https://chat.googleapis.com/v1/{space}/messages", params=params, json=msg, timeout=20)
+    except Exception as e:
+        log.error(f"chat_post: {type(e).__name__}")
+        return False
+    if r.status_code >= 300:
+        log.error(f"chat_post HTTP {r.status_code}: {r.text[:300]}")
+        return False
+    return True
+
+
+def spawn(coro) -> None:
+    t = asyncio.create_task(coro)
+    _bg_tasks.add(t)
+    t.add_done_callback(_bg_tasks.discard)
+
+
+async def diag_async(cfg: dict, raw: str, pa: bool, space: str, thread: str, email: str) -> None:
+    body = await diag_body(cfg, raw, pa)
+    if not await asyncio.to_thread(chat_post, cfg, space, body, thread):
+        log.error(f"async diag result not delivered user={email}")
+
+
 _rate: dict[str, list[float]] = {}
 
 
@@ -342,7 +395,16 @@ async def card_clicked(cfg: dict, event: dict, email: str) -> dict:
             return ui.dialog_error("Забагато запитів — спробуйте за хвилину.") if fn == "submit_diag" \
                 else {**new, "text": "⏳ Забагато запитів — спробуйте за хвилину."}
         log.info(f"query user={email} target={target} via={fn}")
-        return {**new, **(await diag_body(cfg, raw, pa))}
+        # Діалог/кнопку Chat чекає лише кілька секунд, а діагностика з NPS — 5–10 с: відповідаємо одразу,
+        # результат доставляємо окремим повідомленням через Chat API.
+        space = (event.get("space") or {}).get("name", "")
+        thread = ((event.get("message") or {}).get("thread") or {}).get("name", "")
+        spawn(diag_async(cfg, raw, pa, space, thread, email))
+        note = f"🔎 Діагностую {target}… результат прийде окремим повідомленням за кілька секунд."
+        if fn == "submit_diag":
+            return {"actionResponse": {"type": "DIALOG", "dialogAction": {"actionStatus": {
+                "statusCode": "OK", "userFacingMessage": note}}}}
+        return {**new, "text": note}
 
     # --- дії на Palo Alto з діалогів
     if fn in ("submit_inet", "submit_unblock"):
