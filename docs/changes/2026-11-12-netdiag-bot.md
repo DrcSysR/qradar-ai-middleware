@@ -66,13 +66,16 @@ Helpdesk/NOC на скаргу «не працює мережа» має шви�
   (самопідписаний серт `netdiag_tls/`, nginx2 його пінить). На кожен запит: TCP-джерело лише
   nginx2 (172.17.61.166), OIDC-токен Google Chat (aud = URL ендпоінта, email
   `chat@system.gserviceaccount.com`), користувач — `@modern-expo.com` і член **noc@**
-  (Cloud Identity `checkTransitiveMembership`, SA `netdiag-bot@causal-shell-436205-a8`) або
+  (Cloud Identity `checkTransitiveMembership`, SA `netdiag-bot@me-network-diagnistics`) або
   `netdiag_allowed_users`; ліміт 6 запитів/хв; IP лише з `netdiag_allowed_networks`. Відповідь
   синхронна (≤ 26 с бюджету; Chat чекає 30 с).
-- GCP проєкт **alARM** (`causal-shell-436205-a8`, № 664388796935 — порожній до цього; Chat-застосунок
-  бота тривоги живе в іншому проєкті `me-s3-backup-project-79601`, а один проєкт = одна
-  конфігурація Chat app): увімкнено Chat API і Cloud Identity API, SA `netdiag-bot` + ключ
-  (`/opt/qradar-middleware/netdiag_sa.json`, 640 root:qmiddleware).
+- GCP: окремий проєкт **`me-network-diagnistics`** («ME Network Diagnistics», № 862146426046, організація
+  modern-expo.com, без білінгу) — один проєкт = одна конфігурація Chat app, а Chat-застосунок бота
+  тривоги вже живе в `me-s3-backup-project-79601`. Увімкнено Chat API і Cloud Identity API, SA
+  `netdiag-bot` + ключ (`/opt/qradar-middleware/netdiag_sa.json`, 640 root:qmiddleware). Спершу
+  все це було зроблено в alARM (`causal-shell-436205-a8`) — там уже є інший застосунок (Firebase),
+  тому перенесено: SA видалено, Chat/Cloud Identity API вимкнено (до 12.11 вони там не були
+  ввімкнені — перевірено аудит-логом), alARM у вихідному стані.
 - DNS: `netdiag.modern-expo.ua A 188.163.216.105` (зона `modern-expo-ua`, проєкт `me-cloud-dns-zones`).
 - nginx2: `vhosts.d/netdiag.conf` (копія в репо `deploy/nginx2/netdiag.conf`), Let's Encrypt
   `netdiag.modern-expo.ua`; публічний лише `POST /chat`, `/healthz` — LAN, решта 404.
@@ -80,13 +83,13 @@ Helpdesk/NOC на скаргу «не працює мережа» має шви�
 
 ## Відкрито (ручні кроки — лише в консолях Google)
 
-1. **Google Chat API → Configuration** у проєкті alARM: назва/аватар, «Receive 1:1 messages» +
+1. **Google Chat API → Configuration** у проєкті `me-network-diagnistics`: назва/аватар, «Receive 1:1 messages» +
    «Join spaces», Connection = **HTTP endpoint URL** `https://netdiag.modern-expo.ua/chat`,
    Authentication audience = **HTTP endpoint URL**, Visibility = `noc@modern-expo.com`.
    НЕ вмикати «Build this Chat app as a Workspace add-on» (бот відповідає у форматі класичних
    подій `MESSAGE`).
 2. **Admin console → Account → Admin roles → Groups Reader** → призначити
-   `netdiag-bot@causal-shell-436205-a8.iam.gserviceaccount.com` (як для SA бота тривоги). До цього
+   `netdiag-bot@me-network-diagnistics.iam.gserviceaccount.com` (як для SA бота тривоги). До цього
    перевірка noc@ падає → відмова всім, крім `netdiag_allowed_users`.
 
 ## Межі

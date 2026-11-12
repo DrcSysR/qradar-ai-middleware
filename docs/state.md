@@ -117,7 +117,7 @@ Chat; з 2026-10-19 джерело — **Cortex XDR Public API** напряму,
 - Пароль/токени шукати в Bitwarden (запис по назві сервісу), не в репо.
 - `.gitignore` ігнорує `*.json`, крім `prompts.json` — тримати саме так.
 - netdiag: SNMP-спільнота WLC (`netdiag_wlc_community`, BW «SNMP: WLC 3504 community netdiag (mdlwr01)»,
-  на WLC обмежена 172.17.65.9/32); ключ SA `netdiag_sa.json` (GCP alARM, 640); TLS бота `netdiag_tls/`
+  на WLC обмежена 172.17.65.9/32); ключ SA `netdiag_sa.json` (GCP `me-network-diagnistics`, 640); TLS бота `netdiag_tls/`
   (ключ 640, серт запінений на nginx2 `/etc/nginx/ssl/netdiag-mdlwr01.pem`). Спільноти свічів не
   зберігаються — читаються з Zabbix у кеш `cache/netdiag_switches.json` (600).
 
