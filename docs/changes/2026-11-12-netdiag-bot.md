@@ -81,14 +81,25 @@ Helpdesk/NOC на скаргу «не працює мережа» має шви�
   `netdiag.modern-expo.ua`; публічний лише `POST /chat`, `/healthz` — LAN, решта 404.
 - `autoupdate.sh`: після успішного рестарту — `systemctl try-restart netdiag-collector netdiag-bot`.
 
+## Вигляд відповіді (того ж дня, за відгуком користувача)
+
+Відповідь — картка Google Chat (`cardsV2`, `netdiag.render_card`), а не текст одним абзацом:
+заголовок (IP · MAC · Wi-Fi/кабель), розділи з іконками — Wi-Fi / Сигнал і стан / Історія /
+Висновок / Авторизація NPS (для кабелю — Кабельне підключення / Стан порту). Значення
+забарвлені за рівнем: зелений норма, помаранчевий гранично, червоний погано — RSSI (> −67 /
+−67…−75 / < −75 dBm), SNR (≥ 25 / 15…25 / < 15 dB), завантаження каналу (< 40 / < 60 / ≥ 60 %),
+швидкість порту (< 1 Гбіт/с), помилки, VLAN 500, 802.1X, стан RUN, відмови NPS. Історія Wi-Fi —
+ряд RSSI похвилинно (кожне значення своїм кольором, ✕ — клієнта не було на WLC). Усі рядки з
+обладнання екрануються (`html.escape`) перед вставкою в HTML картки.
+
 ## Відкрито (ручні кроки — лише в консолях Google)
 
-1. **Google Chat API → Configuration** у проєкті `me-network-diagnistics`: назва/аватар, «Receive 1:1 messages» +
+1. ✅ зроблено 12.11 — **Google Chat API → Configuration** у проєкті `me-network-diagnistics`: назва/аватар, «Receive 1:1 messages» +
    «Join spaces», Connection = **HTTP endpoint URL** `https://netdiag.modern-expo.ua/chat`,
    Authentication audience = **HTTP endpoint URL**, Visibility = `noc@modern-expo.com`.
    НЕ вмикати «Build this Chat app as a Workspace add-on» (бот відповідає у форматі класичних
    подій `MESSAGE`).
-2. **Admin console → Account → Admin roles → Groups Reader** → призначити
+2. ✅ зроблено 12.11 — **Admin console → Account → Admin roles → Groups Reader** → призначити
    `netdiag-bot@me-network-diagnistics.iam.gserviceaccount.com` (як для SA бота тривоги). До цього
    перевірка noc@ падає → відмова всім, крім `netdiag_allowed_users`.
 

@@ -172,13 +172,16 @@ def _qradar(cfg: dict) -> tuple[str, dict]:
     return f"{cfg['qradar_url']}/api", {"SEC": cfg["qradar_token"], "Accept": "application/json", "Version": "20.0"}
 
 
-async def run_query(cfg: dict, text: str) -> str:
+async def run_query(cfg: dict, text: str) -> dict:
+    """Повна діагностика → тіло відповіді Chat (cardsV2 + fallbackText)."""
     deadline = time.monotonic() + float(cfg.get("netdiag_reply_budget_seconds"))
     res = await asyncio.to_thread(netdiag.diagnose_fast, cfg, text)
     if res.get("error") == "no_target":
-        return netdiag.render_fast(res)
+        return {"text": netdiag.render_fast(res)}
     api, headers = _qradar(cfg)
-    extra = []
+    notes: list[str] = []
+    nps = None
+    minutes = int(cfg.get("netdiag_nps_minutes") or 60)
     # QRadar — самопідписаний серт (як і в app.py/tracker), трафік лише в LAN
     async with httpx.AsyncClient(verify=False, timeout=20) as client:
         if not res.get("mac") and res.get("ip"):
@@ -190,27 +193,20 @@ async def run_query(cfg: dict, text: str) -> str:
                 for e in ev:
                     m = netdiag.DHCP_RE.search(e.get("p") or "")
                     if m and m.group(1) == res["ip"]:
-                        extra.append(f"📒 DHCP: остання видача {res['ip']} → `{m.group(2)}`"
+                        notes.append(f"📒 DHCP: остання видача {res['ip']} → {m.group(2)}"
                                      + (f" ({m.group(3)})" if m.group(3) else "")
                                      + f" о {time.strftime('%d.%m %H:%M', time.localtime(int(e['ts']) // 1000))}")
                         res = await asyncio.to_thread(netdiag.diagnose_fast, cfg, f"{res['ip']} {m.group(2)}")
                         break
                 else:
-                    extra.append(f"📒 DHCP: за {cfg.get('netdiag_dhcp_hours')} год видач цього IP немає — адреса статична або не з наших пулів.")
-        body = netdiag.render_fast(res)
+                    notes.append(f"📒 DHCP: за {cfg.get('netdiag_dhcp_hours')} год видач цього IP немає — адреса статична або не з наших пулів.")
         mac = res.get("mac")
         if mac:
             left = deadline - time.monotonic()
-            minutes = int(cfg.get("netdiag_nps_minutes") or 60)
             if left > 4:
                 ev = await tracker.run_aql(client, api, headers, netdiag.nps_aql(mac, minutes), min(left - 2, 20))
-                if ev is None:
-                    extra.append("🔐 NPS: QRadar не відповів вчасно — авторизацію не перевірено.")
-                else:
-                    extra.append(netdiag.render_nps([netdiag.parse_nps(e) for e in ev], minutes))
-            else:
-                extra.append("🔐 NPS: не встиг перевірити (ліміт часу відповіді).")
-    return "\n".join([body, *extra])
+                nps = None if ev is None else [netdiag.parse_nps(e) for e in ev]
+    return netdiag.render_card(res, nps, notes, minutes)
 
 
 HELP = ("Я діагностую підключення пристрою. Надішліть його *IP* (або MAC), напр. `172.17.104.25`.\n"
@@ -261,8 +257,8 @@ async def chat(request: Request):
     if not target:
         return JSONResponse({"text": "Не бачу у повідомленні внутрішнього IP або MAC.\n" + HELP})
     try:
-        reply = await run_query(cfg, text)
+        body = await run_query(cfg, text)
     except Exception as e:
         log.exception(f"diagnose failed target={target}: {e}")
-        reply = "⚠️ Діагностика впала з помилкою — деталі в журналі netdiag_bot.log."
-    return JSONResponse({"text": reply[:3900]})
+        body = {"text": "⚠️ Діагностика впала з помилкою — деталі в журналі netdiag_bot.log."}
+    return JSONResponse(body)

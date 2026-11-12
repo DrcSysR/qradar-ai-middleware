@@ -531,7 +531,9 @@ def summarize_history(hist: list[dict]) -> dict:
             "reconnects": reconnects, "states": states,
             "rssi": (min(rssi), round(sum(rssi) / len(rssi)), max(rssi)) if rssi else None,
             "snr": (min(snr), round(sum(snr) / len(snr)), max(snr)) if snr else None,
-            "first": hist[0]["ts"], "last": hist[-1]["ts"]}
+            "first": hist[0]["ts"], "last": hist[-1]["ts"],
+            # похвилинний ряд для картки: (ts, rssi | None якщо клієнта не було, точка)
+            "series": [(r["ts"], None if r.get("absent") else r.get("rssi"), r.get("ap_name", "")) for r in hist]}
 
 
 def wifi_verdict(cur: dict | None, summ: dict) -> list[str]:
@@ -927,22 +929,230 @@ def render_fast(res: dict) -> str:
     return "\n".join(lines)
 
 
-def render_nps(events: list[dict], minutes: int) -> str:
-    if not events:
-        return f"🔐 *NPS (RADIUS)*: за {minutes} хв подій для цього MAC немає — автентифікація через NPS не йде (PSK/статичний порт) або пристрій не пробував."
-    ok = [e for e in events if e["ok"]]
-    bad = [e for e in events if not e["ok"]]
-    lines = [f"🔐 *NPS (RADIUS) за {minutes} хв*: дозволено {len(ok)}, відмовлено {len(bad)}"]
-    last = events[0]
+# ============================================================================ картка Google Chat (cardsV2)
+GREEN, AMBER, RED, GREY = "#188038", "#E37400", "#D93025", "#5F6368"
+
+
+def _e(x) -> str:
+    """Екранування значень з обладнання (імена AP, ifAlias, логіни) перед вставкою в HTML картки."""
+    import html
+    return html.escape("" if x is None else str(x), quote=False)
+
+
+def _c(text, color: str) -> str:
+    return f'<font color="{color}">{text}</font>'
+
+
+def lvl_rssi(v) -> str:
+    if not isinstance(v, int) or v >= 0:
+        return GREY
+    return GREEN if v > -67 else AMBER if v > -75 else RED
+
+
+def lvl_snr(v) -> str:
+    if not isinstance(v, int) or v <= 0:
+        return GREY
+    return GREEN if v >= 25 else AMBER if v >= 15 else RED
+
+
+def lvl_util(v) -> str:
+    if not isinstance(v, int):
+        return GREY
+    return GREEN if v < 40 else AMBER if v < 60 else RED
+
+
+def _rssi_word(v) -> str:
+    if not isinstance(v, int) or v >= 0:
+        return ""
+    return "відмінний" if v > -60 else "добрий" if v > -67 else "слабкий" if v > -75 else "дуже слабкий"
+
+
+def _row(label: str, text: str, icon: str | None = None, bottom: str | None = None) -> dict:
+    w = {"decoratedText": {"topLabel": label, "text": text, "wrapText": True}}
+    if icon:
+        w["decoratedText"]["startIcon"] = {"materialIcon": {"name": icon}}
+    if bottom:
+        w["decoratedText"]["bottomLabel"] = bottom
+    return w
+
+
+def _para(text: str) -> dict:
+    return {"textParagraph": {"text": text}}
+
+
+def _verdict_color(v: str) -> str:
+    if v.startswith("✅"):
+        return GREEN
+    if v.startswith(("⛔", "🔌", "❓")):
+        return RED
+    if v.startswith("ℹ️"):
+        return GREY
+    return AMBER
+
+
+def _wifi_sections(res: dict) -> list[dict]:
+    w = res["wifi"]
+    gone = res.get("medium") == "wifi_gone"
+    band = "2.4 ГГц" if w.get("slot") == 0 else "5 ГГц" if w.get("slot") == 1 else f"radio {w.get('slot')}"
+    loc = w.get("ap_location")
+    loc = loc if loc and loc not in ("default location",) else ""
+    conn = [
+        _row("Точка доступу", f"<b>{_e(w.get('ap_name') or w.get('ap_mac'))}</b>", "wifi", _e(loc) or None),
+        _row("Мережа", f"SSID <b>{_e(w.get('ssid'))}</b> · VLAN {_e(w.get('vlan'))}", "lan"),
+        _row("Радіо", f"{band}" + (f" · канал {w['channel']}" if w.get("channel") else "")
+             + (f" · {PROTO_NAMES[w['proto']]}" if w.get("proto") in PROTO_NAMES else ""), "settings_input_antenna"),
+    ]
+    who = " · ".join(x for x in [_e(w.get("user")) if w.get("user") else "",
+                                  _e(w.get("devtype")) if w.get("devtype") not in (None, "", "Unclassified") else ""] if x)
+    if who:
+        conn.append(_row("Пристрій / користувач", who, "devices"))
+    if not gone:
+        conn.append(_row("Підключений", fmt_ago(w.get("uptime")), "schedule"))
+    sections = [{"header": "📡 Wi-Fi" + (" — зараз НЕ підключений" if gone else ""), "widgets": conn}]
+
+    rssi, snr, util = w.get("rssi"), w.get("snr"), w.get("util")
+    sig = [
+        _row("Сигнал (RSSI)", _c(f"<b>{_e(rssi)} dBm</b> — {_rssi_word(rssi)}", lvl_rssi(rssi)), "signal_cellular_alt",
+             "норма ≥ −67 · слабкий −67…−75 · погано < −75"),
+        _row("Шум (SNR)", _c(f"<b>{_e(snr)} dB</b>", lvl_snr(snr)), "graphic_eq", "норма ≥ 25 · гранично 15…25 · погано < 15"),
+    ]
+    if util is not None:
+        sig.append(_row("Завантаження каналу", _c(f"<b>{util}%</b>", lvl_util(util))
+                        + f" · клієнтів на радіо {_e(w.get('ap_users'))}", "network_check"))
+    if w.get("rate"):
+        sig.append(_row("Швидкість (rate / MCS)", _e(w.get("rate")), "speed"))
+    pm = w.get("pm_state") or ""
+    st_txt = _c(f"<b>{_e(pm or '?')}</b>", GREEN if pm == "RUN" else RED)
+    if pm and pm != "RUN":
+        st_txt += " — " + _e(PM_HINT.get(pm, "не завершив підключення"))
+    elif pm == "RUN":
+        st_txt += " — повністю підключений"
+    sig.append(_row("Стан на контролері", st_txt, "verified" if pm == "RUN" else "error"))
+    sections.append({"header": "📶 Сигнал і стан" + (" (останній знімок)" if gone else ""), "widgets": sig})
+
+    h = res.get("history") or {}
+    if h.get("snapshots"):
+        mins = round((h["last"] - h["first"]) / 60) or 1
+        hw = []
+        series = h.get("series") or []
+        if series:
+            cells = []
+            for ts, r, _ap in series[-15:]:
+                cells.append(_c("✕", RED) if r is None else _c(str(r), lvl_rssi(r)))
+            hw.append(_row(f"RSSI похвилинно ({hhmm(series[max(0, len(series) - 15)][0])} → {hhmm(series[-1][0])})",
+                           " ".join(cells), "show_chart", "✕ — клієнта не було на WLC"))
+        if h.get("rssi"):
+            mn, avg, mx = h["rssi"]
+            hw.append(_row("RSSI мін / сер / макс",
+                           f"{_c(mn, lvl_rssi(mn))} / {_c(avg, lvl_rssi(avg))} / {_c(mx, lvl_rssi(mx))} dBm"
+                           + (f" · SNR мін {_c(h['snr'][0], lvl_snr(h['snr'][0]))} dB" if h.get("snr") else ""), "insights"))
+        path = " → ".join(f"<b>{_e(a[1])}</b> ({hhmm(a[0])})" for a in h.get("aps", [])) or "—"
+        hw.append(_row("Точки за вікно", path, "route"))
+        bad = h.get("roams", 0) >= 3 or h.get("reconnects", 0) or h.get("absent", 0) >= 2
+        hw.append(_row("Стабільність",
+                       _c(f"роумінгів {h.get('roams', 0)} · перепідключень {h.get('reconnects', 0)} · "
+                          f"пропусків {h.get('absent', 0)}", AMBER if bad else GREEN), "sync_problem" if bad else "check_circle"))
+        sections.append({"header": f"🕒 Історія {mins} хв ({h['present']}/{h['snapshots']} знімків)", "widgets": hw})
+    else:
+        sections.append({"header": "🕒 Історія", "widgets": [_para(_c("Ще немає знімків (колектор знімає раз на хвилину).", GREY))]})
+    return sections
+
+
+def _wired_sections(res: dict) -> list[dict]:
+    tr = res.get("wired") or {}
+    e = tr.get("edge")
+    b = tr.get("behind") or {}
+    if not e:
+        if tr.get("found"):
+            txt = "MAC видно лише на транзитних портах: " + ", ".join(f"{_e(p['switch'])} {_e(p['port'])}" for p in tr.get("path", [])[:4])
+        else:
+            txt = tr.get("error") or "MAC не знайдено в жодній таблиці комутації — пристрій неактивний або за свічем без SNMP."
+        return [{"header": "🔌 Кабельне підключення", "widgets": [_para(_c(_e(txt), AMBER))]}]
+    conn = []
+    if b.get("kind") == "ubiquiti":
+        conn.append(_row("За PoE-свічем Ubiquiti", f"<b>{_e(b.get('sysname') or '?')}</b>", "router",
+                         "Ubiquiti без SNMP — порт не деталізується"))
+    conn.append(_row("Комутатор", f"<b>{_e(e['switch'])}</b> ({_e(e['ip'])})", "router"))
+    conn.append(_row("Порт", f"<b>{_e(e['ifname'])}</b>" + (f" «{_e(e['alias'])}»" if e.get("alias") else ""), "settings_ethernet"))
+    if e.get("location"):
+        conn.append(_row("Місце", _e(e["location"]), "place"))
+    if b.get("kind") == "phone":
+        conn.append(_row("Через", f"IP-телефон {_e(b.get('sysname'))}", "phone"))
+    elif b.get("kind") == "switch":
+        conn.append(_row("За портом", _c(f"некерований/невідомий свіч {_e(b.get('sysname') or b.get('sysdesc', '')[:40])}", AMBER), "device_hub"))
+    sections = [{"header": "🔌 Кабельне підключення", "widgets": conn}]
+    if b.get("kind") != "ubiquiti":
+        oper = e.get("oper")
+        sp = e.get("speed")
+        errs = (e.get("in_err") or 0) + (e.get("out_err") or 0)
+        st = [
+            _row("Стан порту", _c(f"<b>{_e(oper)}</b>", GREEN if oper == "up" else RED) + f" ({_e(e.get('admin'))})"
+                 + f" · змінився {fmt_ago(e.get('changed_ago_s'))} тому", "power"),
+            _row("Швидкість", _c(f"<b>{sp} Мбіт/с</b>", GREEN if isinstance(sp, int) and sp >= 1000 else AMBER)
+                 if isinstance(sp, int) else "?", "speed"),
+            _row("VLAN", _c(f"<b>{_e(e.get('pvid'))}</b>", RED if e.get("pvid") == 500 else GREY)
+                 + (" — Unauthenticated" if e.get("pvid") == 500 else ""), "lan"),
+            _row("Помилки in / out", _c(f"{_e(e.get('in_err'))} / {_e(e.get('out_err'))}",
+                                        RED if errs > 1000 else AMBER if errs > 0 else GREEN), "error_outline"),
+        ]
+        dx = e.get("dot1x") or {}
+        if dx.get("pae"):
+            ok = dx.get("port") == "authorized" or dx.get("pae") in ("authenticated", "forceAuth")
+            st.append(_row("802.1X", _c(f"<b>{_e(dx.get('pae'))}</b> / {_e(dx.get('port') or '?')}", GREEN if ok else RED),
+                           "verified_user" if ok else "gpp_bad"))
+        sections.append({"header": "⚙️ Стан порту", "widgets": st})
+    return sections
+
+
+def _nps_section(nps: list[dict] | None, minutes: int) -> dict:
+    if nps is None:
+        return {"header": "🔐 Авторизація (NPS)", "widgets": [_para(_c("QRadar не відповів вчасно — не перевірено.", GREY))]}
+    if not nps:
+        return {"header": f"🔐 Авторизація (NPS, {minutes} хв)", "widgets": [_para(_c(
+            "Подій немає — автентифікація через NPS не йде (PSK / статичний порт) або пристрій не пробував.", GREY))]}
+    ok = [e for e in nps if e["ok"]]
+    bad = [e for e in nps if not e["ok"]]
+    last = nps[0]
     place = last["called"].split(":")[0] if ":" in last["called"] else last["nas_id"]
-    lines.append(f"Остання: {'✅ доступ дано' if last['ok'] else '⛔ відмова'} о {hhmm(last['ts'] // 1000)} · "
-                 f"`{last['account']}` · {last['auth_type']}"
-                 + (f"/{last['eap']}" if last.get("eap") and last["eap"] != "-" else "")
-                 + f" · політика `{last['policy']}` · через {place} ({last['client']})")
-    if bad:
-        reasons: dict[tuple, int] = {}
-        for e in bad:
-            reasons[(e["reason_code"], e["reason"][:140])] = reasons.get((e["reason_code"], e["reason"][:140]), 0) + 1
-        for (code, text), n in sorted(reasons.items(), key=lambda x: -x[1])[:3]:
-            lines.append(f"• Reason {code} ×{n}: {text}")
-    return "\n".join(lines)
+    w = [
+        _row("Підсумок", _c(f"дозволено {len(ok)}", GREEN) + " · " + _c(f"відмовлено {len(bad)}", RED if bad else GREY), "fact_check"),
+        _row(f"Остання подія о {hhmm(last['ts'] // 1000)}",
+             _c("<b>✅ доступ дано</b>", GREEN) if last["ok"] else _c("<b>⛔ відмова</b>", RED),
+             "verified_user" if last["ok"] else "gpp_bad",
+             _e(f"{last['account']} · {last['auth_type']}" + (f"/{last['eap']}" if last.get("eap") and last["eap"] != "-" else "")
+                + f" · політика {last['policy']} · через {place} ({last['client']})")),
+    ]
+    reasons: dict[tuple, int] = {}
+    for e in bad:
+        k = (e["reason_code"], e["reason"][:160])
+        reasons[k] = reasons.get(k, 0) + 1
+    for (code, text), n in sorted(reasons.items(), key=lambda x: -x[1])[:3]:
+        w.append(_row(f"Причина відмови · Reason {_e(code)} × {n}", _c(_e(text), RED), "report"))
+    return {"header": f"🔐 Авторизація (NPS, {minutes} хв)", "widgets": w}
+
+
+def render_card(res: dict, nps: list[dict] | None, notes: list[str], nps_minutes: int) -> dict:
+    """Відповідь бота як cardsV2 + fallbackText (сповіщення/старі клієнти)."""
+    medium = res.get("medium")
+    kind = {"wifi": "Wi-Fi", "wifi_gone": "Wi-Fi (відключився)", "wired": "кабель",
+            "wifi_unknown": "Wi-Fi (не асоціювався)"}.get(medium, "не знайдено")
+    header = {"title": f"Діагностика {res.get('ip') or res.get('mac') or ''}",
+              "subtitle": (f"MAC {res['mac']} · " if res.get("mac") else "") + kind}
+    sections: list[dict] = []
+    if not res.get("mac"):
+        sections.append({"header": "❓ Пристрій не знайдено", "widgets": [_para(_c(
+            "Для цього IP немає запису ARP на ядрі (MLNX01/02) — пристрій зараз не в мережі або IP статичний і неактивний.", AMBER))]})
+    elif medium in ("wifi", "wifi_gone"):
+        sections += _wifi_sections(res)
+    elif medium in ("wired", "wifi_unknown"):
+        sections += _wired_sections(res)
+    verdict = res.get("verdict") or []
+    if verdict:
+        sections.append({"header": "🩺 Висновок", "widgets": [_para("<br>".join(_c(_e(v), _verdict_color(v)) for v in verdict))]})
+    if res.get("mac"):
+        sections.append(_nps_section(nps, nps_minutes))
+    if notes:
+        sections.append({"widgets": [_para("<br>".join(_c(_e(n), GREY) for n in notes))]})
+    fallback = f"Діагностика {res.get('ip') or ''}: {kind}"
+    return {"fallbackText": fallback[:200],
+            "cardsV2": [{"cardId": "netdiag", "card": {"header": header, "sections": sections}}]}
