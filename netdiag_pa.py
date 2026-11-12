@@ -279,13 +279,6 @@ def result_card(cfg: dict, p: dict, ok: bool, msg: str, user: str) -> dict:
         "sections": [{"widgets": widgets}]}}]}
 
 
-def inet_buttons(ip: str) -> dict:
-    """Кнопки «дати інтернет» під діагностичною карткою внутрішнього IP."""
-    return {"header": "🌐 Palo Alto: тимчасовий інтернет (tmp-inet)", "collapsible": False, "widgets": [
-        {"buttonList": {"buttons": [_btn(lbl, "pa_ask", {"op": "inet", "ip": ip, "hours": h})
-                                    for lbl, h in (("1 год", 1), ("4 год", 4), ("8 год", 8), ("1 день", 24), ("7 днів", 168))]}}]}
-
-
 HELP_PA = ("*Palo Alto (pa-vm):*\n"
            "• `розблокуй 1.2.3.4` — зняти wan-block із зовнішнього IP\n"
            "• `інтернет 172.17.40.25 4г` (або `8 год`, `2д`) — тег tmp-inet внутрішньому IP на строк\n"
