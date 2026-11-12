@@ -188,20 +188,21 @@ def registered_tags(cfg: dict, ip: str) -> dict[str, int | None] | None:
 
 
 # ============================================================================ дії + аудит
-def audit(cfg: dict, user: str, action: str, ip: str, tag: str, timeout_s: int | None, ok: bool, detail: str) -> None:
+def audit(cfg: dict, user: str, action: str, ip: str, tag: str, timeout_s: int | None, ok: bool, detail: str,
+          aid: str = "") -> None:
     try:
         con = netdiag.db(cfg)
         con.execute(AUDIT_SQL)
         con.execute("INSERT INTO pa_actions VALUES(?,?,?,?,?,?,?,?)",
-                    (int(time.time()), user, action, ip, tag, timeout_s, int(ok), detail[:300]))
+                    (int(time.time()), user, action, ip, tag, timeout_s, int(ok), (f"#{aid} " if aid else "") + detail[:290]))
         con.commit()
         con.close()
     except Exception as e:
         log.error(f"audit pa_actions: {e}")
-    log.info(f"PA {action} ip={ip} tag={tag} timeout={timeout_s} user={user} ok={ok} {detail[:120]}")
+    log.info(f"[#{aid}] PA {action} ip={ip} tag={tag} timeout={timeout_s} user={user} ok={ok} {detail[:120]}")
 
 
-def execute(cfg: dict, p: dict, user: str) -> tuple[bool, str]:
+def execute(cfg: dict, p: dict, user: str, aid: str = "") -> tuple[bool, str]:
     if p["op"] == "unblock":
         results = []
         all_ok = True
@@ -211,14 +212,14 @@ def execute(cfg: dict, p: dict, user: str) -> tuple[bool, str]:
                 # як у формі helpdesk: перереєстрація з timeout=1 — тег спливе за секунду
                 ok2, msg2 = uid_call(cfg, "register", p["ip"], tag, 1)
                 ok, msg = ok2, (msg2 if ok2 else f"{msg}; {msg2}")
-            audit(cfg, user, "unblock", p["ip"], tag, None, ok, msg)
+            audit(cfg, user, "unblock", p["ip"], tag, None, ok, msg, aid)
             all_ok &= ok
             results.append(f"{tag}: {'знято' if ok else 'помилка — ' + msg}")
         return all_ok, "; ".join(results)
     tag = pcfg(cfg, "netdiag_pa_inet_tag")
     secs = p["hours"] * 3600
     ok, msg = uid_call(cfg, "register", p["ip"], tag, secs)
-    audit(cfg, user, "inet", p["ip"], tag, secs, ok, msg)
+    audit(cfg, user, "inet", p["ip"], tag, secs, ok, msg, aid)
     return ok, (f"{tag} на {human_hours(p['hours'])}" if ok else f"помилка — {msg}")
 
 

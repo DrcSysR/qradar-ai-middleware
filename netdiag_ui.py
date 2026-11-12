@@ -66,16 +66,18 @@ def result_actions(ip: str | None, pa: bool) -> dict:
     """Секція з кнопками під карткою діагностики."""
     btns = []
     if ip:
-        btns.append(button("Перевірити ще раз", "run_diag", {"ip": ip}, icon="refresh"))
+        btns.append(button("Перевірити ще раз", "run_diag", {"ip": ip, "ctx": "thread"}, icon="refresh"))
         if pa:
-            btns.append(button("Інтернет…", "dlg_inet", {"ip": ip}, dialog=True, icon="public"))
+            btns.append(button("Інтернет…", "dlg_inet", {"ip": ip, "ctx": "thread"}, dialog=True, icon="public"))
     btns.append(button("Меню", "show_home", icon="menu"))
     return {"widgets": [{"buttonList": {"buttons": btns}}]}
 
 
 # ============================================================================ діалоги
-def _dialog(title: str, widgets: list, submit_fn: str, submit_text: str) -> dict:
-    widgets = widgets + [{"buttonList": {"buttons": [button(submit_text, submit_fn, icon="check", filled=True)]}}]
+def _dialog(title: str, widgets: list, submit_fn: str, submit_text: str, ctx: str = "") -> dict:
+    # ctx="thread": діалог відкрито з картки результату → відповідь у її тред; інакше — новий тред
+    params = {"ctx": "thread"} if ctx == "thread" else None
+    widgets = widgets + [{"buttonList": {"buttons": [button(submit_text, submit_fn, params, icon="check", filled=True)]}}]
     return {"actionResponse": {"type": "DIALOG", "dialogAction": {"dialog": {"body": {
         "header": {"title": title}, "sections": [{"widgets": widgets}]}}}}}
 
@@ -87,29 +89,29 @@ def _ip_input(name: str, label: str, hint: str, value: str = "") -> dict:
     return w
 
 
-def dlg_diag(prefill: str = "") -> dict:
+def dlg_diag(prefill: str = "", ctx: str = "") -> dict:
     return _dialog("🔎 Діагностика підключення", [
         _ip_input("ip", "IP або MAC пристрою", "напр. 172.17.104.25 або aa:bb:cc:dd:ee:ff", prefill),
         {"textParagraph": {"text": netdiag._c("Wi-Fi: точка, сигнал, історія 15 хв · кабель: свіч, порт, 802.1X · NPS", netdiag.GREY)}},
-    ], "submit_diag", "Діагностувати")
+    ], "submit_diag", "Діагностувати", ctx)
 
 
-def dlg_inet(prefill_ip: str = "") -> dict:
+def dlg_inet(prefill_ip: str = "", ctx: str = "") -> dict:
     items = [{"text": t, "value": str(h), "selected": h == 4} for t, h in INET_CHOICES]
     return _dialog("🌐 Тимчасовий інтернет (tmp-inet)", [
         _ip_input("ip", "Внутрішній IP", "напр. 172.17.40.25", prefill_ip),
         {"selectionInput": {"name": "hours", "label": "Строк", "type": "DROPDOWN", "items": items}},
         _ip_input("custom_hours", "Або свій строк, год (необов'язково)", "напр. 36 — перекриває вибір зі списку"),
         {"textParagraph": {"text": netdiag._c("Тег спливе сам. Лише pa-vm. Дія журналюється.", netdiag.GREY)}},
-    ], "submit_inet", "Застосувати")
+    ], "submit_inet", "Застосувати", ctx)
 
 
-def dlg_unblock(prefill_ip: str = "") -> dict:
+def dlg_unblock(prefill_ip: str = "", ctx: str = "") -> dict:
     tags = ", ".join(netdiag_pa.DEFAULTS["netdiag_pa_unblock_tags"])
     return _dialog("🧱 Зняти блокування з зовнішнього IP", [
         _ip_input("ip", "Публічний IP", "напр. 160.238.125.164 (домашній IP співробітника)", prefill_ip),
         {"textParagraph": {"text": netdiag._c(f"Буде знято тег(и): {tags} на pa-vm. Дія журналюється.", netdiag.GREY)}},
-    ], "submit_unblock", "Зняти блокування")
+    ], "submit_unblock", "Зняти блокування", ctx)
 
 
 def dialog_error(msg: str) -> dict:

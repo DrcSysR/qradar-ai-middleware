@@ -25,6 +25,7 @@ import asyncio
 import logging
 import os
 import re
+import secrets
 import threading
 import time
 from logging.handlers import RotatingFileHandler
@@ -174,7 +175,7 @@ def _chat(cfg: dict):
         return _chat_session
 
 
-def chat_post(cfg: dict, space: str, body: dict, thread: str = "") -> bool:
+def chat_post(cfg: dict, space: str, body: dict, thread: str = "", thread_key: str = "") -> bool:
     """Повідомлення від імені застосунку (SA проєкту Chat app, scope chat.bot) — для відповідей,
     які не вкладаються в синхронний таймаут Chat (діалог чекає лише ~8 с)."""
     if not SPACE_RE.match(space or ""):
@@ -184,6 +185,10 @@ def chat_post(cfg: dict, space: str, body: dict, thread: str = "") -> bool:
     params = {}
     if thread and THREAD_RE.match(thread):
         msg["thread"] = {"name": thread}
+        params["messageReplyOption"] = "REPLY_MESSAGE_FALLBACK_TO_NEW_THREAD"
+    elif thread_key and re.fullmatch(r"[a-z0-9-]{4,40}", thread_key):
+        # окремий тред на дію: ключ = ID дії (той самий, що в журналі)
+        msg["thread"] = {"threadKey": thread_key}
         params["messageReplyOption"] = "REPLY_MESSAGE_FALLBACK_TO_NEW_THREAD"
     try:
         r = _chat(cfg).post(f"https://chat.googleapis.com/v1/{space}/messages", params=params, json=msg, timeout=20)
@@ -202,10 +207,22 @@ def spawn(coro) -> None:
     t.add_done_callback(_bg_tasks.discard)
 
 
-async def diag_async(cfg: dict, raw: str, pa: bool, space: str, thread: str, email: str) -> None:
-    body = await diag_body(cfg, raw, pa)
-    if not await asyncio.to_thread(chat_post, cfg, space, body, thread):
-        log.error(f"async diag result not delivered user={email}")
+def tag_action(body: dict, aid: str) -> dict:
+    """ID дії в підзаголовок картки — щоб тред у чаті зіставлявся з рядками журналу."""
+    try:
+        h = body["cardsV2"][0]["card"].setdefault("header", {})
+        h["subtitle"] = (h.get("subtitle", "") + f" · дія #{aid}").lstrip(" ·")
+    except (KeyError, IndexError, TypeError):
+        pass
+    return body
+
+
+async def diag_async(cfg: dict, raw: str, pa: bool, space: str, thread: str, email: str, aid: str) -> None:
+    t0 = time.monotonic()
+    body = tag_action(await diag_body(cfg, raw, pa), aid)
+    ok = await asyncio.to_thread(chat_post, cfg, space, body, thread, aid)
+    log.info(f"[#{aid}] diag done user={email} delivered={ok} in {time.monotonic() - t0:.1f}s"
+             + (" thread=card" if thread else " thread=new"))
 
 
 _rate: dict[str, list[float]] = {}
@@ -368,19 +385,21 @@ def _click_params(event: dict) -> tuple[str, dict]:
 
 async def card_clicked(cfg: dict, event: dict, email: str) -> dict:
     fn, prm = _click_params(event)
+    aid = secrets.token_hex(3)  # ID дії: ключ треду + мітка в журналі
     if event.get("isDialogEvent") and event.get("dialogEventType") == "CANCEL_DIALOG":
         return ui.dialog_close()
     pa = await asyncio.to_thread(pa_allowed, cfg, email)
     new = {"actionResponse": {"type": "NEW_MESSAGE"}}
 
     # --- відкрити діалоги / меню
+    ctx = "thread" if prm.get("ctx") == "thread" else ""
     if fn == "dlg_diag":
-        return ui.dlg_diag(prm.get("ip", ""))
+        return ui.dlg_diag(prm.get("ip", ""), ctx)
     if fn in ("dlg_inet", "dlg_unblock"):
         if not pa:
             return {**new, "text": "⛔ Дії на Palo Alto вам не дозволені."}
         ip = netdiag_pa.parse_ipv4(prm.get("ip", "")) or ""
-        return ui.dlg_inet(ip) if fn == "dlg_inet" else ui.dlg_unblock(ip)
+        return ui.dlg_inet(ip, ctx) if fn == "dlg_inet" else ui.dlg_unblock(ip, ctx)
     if fn == "show_home":
         return {**new, **ui.home(email, pa)}
 
@@ -394,12 +413,13 @@ async def card_clicked(cfg: dict, event: dict, email: str) -> dict:
         if not rate_ok(cfg, email):
             return ui.dialog_error("Забагато запитів — спробуйте за хвилину.") if fn == "submit_diag" \
                 else {**new, "text": "⏳ Забагато запитів — спробуйте за хвилину."}
-        log.info(f"query user={email} target={target} via={fn}")
+        log.info(f"[#{aid}] diag start user={email} target={target} via={fn}")
         # Діалог/кнопку Chat чекає лише кілька секунд, а діагностика з NPS — 5–10 с: відповідаємо одразу,
         # результат доставляємо окремим повідомленням через Chat API.
         space = (event.get("space") or {}).get("name", "")
-        thread = ((event.get("message") or {}).get("thread") or {}).get("name", "")
-        spawn(diag_async(cfg, raw, pa, space, thread, email))
+        # з меню — новий тред на кожну дію; з кнопок картки результату — у її тред
+        thread = ((event.get("message") or {}).get("thread") or {}).get("name", "") if ctx == "thread" else ""
+        spawn(diag_async(cfg, raw, pa, space, thread, email, aid))
         note = f"🔎 Діагностую {target}… результат прийде окремим повідомленням за кілька секунд."
         if fn == "submit_diag":
             return {"actionResponse": {"type": "DIALOG", "dialogAction": {"actionStatus": {
@@ -419,13 +439,17 @@ async def card_clicked(cfg: dict, event: dict, email: str) -> dict:
             p, err = netdiag_pa.validate(cfg, "unblock", ui.form_value(event, "ip"))
         if not p:
             return ui.dialog_error(err)
-        ok, msg = await asyncio.to_thread(netdiag_pa.execute, cfg, p, email)
+        log.info(f"[#{aid}] pa start user={email} op={p['op']} ip={p['ip']}" + (f" hours={p['hours']}" if p.get("hours") else ""))
+        ok, msg = await asyncio.to_thread(netdiag_pa.execute, cfg, p, email, aid)
         body = await asyncio.to_thread(netdiag_pa.result_card, cfg, p, ok, msg, email)
         body["cardsV2"][0]["card"]["sections"].append(ui.result_actions(p["ip"] if p["op"] == "inet" else None, pa))
-        # як і діагностика — у тред повідомлення, з якого відкрили діалог (відповідь на сам діалог Chat кладе в головний чат)
+        # з меню — новий тред на кожну дію; з кнопок картки результату — у її тред
         space = (event.get("space") or {}).get("name", "")
-        thread = ((event.get("message") or {}).get("thread") or {}).get("name", "")
-        if await asyncio.to_thread(chat_post, cfg, space, body, thread):
+        thread = ((event.get("message") or {}).get("thread") or {}).get("name", "") if ctx == "thread" else ""
+        tag_action(body, aid)
+        delivered = await asyncio.to_thread(chat_post, cfg, space, body, thread, aid)
+        log.info(f"[#{aid}] pa done ok={ok} delivered={delivered}" + (" thread=card" if thread else " thread=new"))
+        if delivered:
             return {"actionResponse": {"type": "DIALOG", "dialogAction": {"actionStatus": {
                 "statusCode": "OK", "userFacingMessage": ("✅ " if ok else "⛔ ") + msg[:200]}}}}
         return {**new, **body}
