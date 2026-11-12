@@ -252,6 +252,7 @@ async def chat(request: Request):
         log.info(f"deny user={email or '?'}")
         return JSONResponse({"text": "⛔ У вас немає доступу до діагностики мережі. Зверніться до NOC."})
     if etype == "ADDED_TO_SPACE" or not text.strip() or text.strip().lower() in ("help", "/help", "допомога", "?"):
+        log.info(f"help user={email} event={etype}")
         return JSONResponse({"text": HELP})
     if not rate_ok(cfg, email):
         return JSONResponse({"text": "⏳ Забагато запитів — спробуйте за хвилину."})
