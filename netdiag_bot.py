@@ -422,6 +422,12 @@ async def card_clicked(cfg: dict, event: dict, email: str) -> dict:
         ok, msg = await asyncio.to_thread(netdiag_pa.execute, cfg, p, email)
         body = await asyncio.to_thread(netdiag_pa.result_card, cfg, p, ok, msg, email)
         body["cardsV2"][0]["card"]["sections"].append(ui.result_actions(p["ip"] if p["op"] == "inet" else None, pa))
+        # як і діагностика — у тред повідомлення, з якого відкрили діалог (відповідь на сам діалог Chat кладе в головний чат)
+        space = (event.get("space") or {}).get("name", "")
+        thread = ((event.get("message") or {}).get("thread") or {}).get("name", "")
+        if await asyncio.to_thread(chat_post, cfg, space, body, thread):
+            return {"actionResponse": {"type": "DIALOG", "dialogAction": {"actionStatus": {
+                "statusCode": "OK", "userFacingMessage": ("✅ " if ok else "⛔ ") + msg[:200]}}}}
         return {**new, **body}
 
     # --- текстові команди: картка підтвердження
