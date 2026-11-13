@@ -25,6 +25,7 @@ import urllib.parse
 import httpx
 
 import netdiag
+import netdiag_oui
 import snmp_v2c as snmp
 
 log = logging.getLogger("netdiag_wired")
@@ -127,8 +128,9 @@ def port_macs(cfg: dict, sw_ip: str, bport: int | None, own_mac: str) -> dict | 
         macs = []
         for m, vl in sorted(found.items()):
             row = con.execute("SELECT ip FROM arp WHERE mac=? ORDER BY ts DESC LIMIT 1", (m,)).fetchone()
+            v = netdiag_oui.vendor(cfg, m)
             macs.append({"mac": m, "vlans": sorted(vl), "ip": row["ip"] if row else "",
-                         "local": bool(int(m[:2], 16) & 2), "self": m == own_mac})
+                         "local": v["local"], "self": m == own_mac, "vendor": v["vendor"], "kind": v["kind"]})
     finally:
         con.close()
     macs.sort(key=lambda x: (not x["self"], x["mac"]))
@@ -287,6 +289,14 @@ def hints(edge: dict, mau: dict, ln: dict | None, pm: dict | None = None) -> lis
             out.append(f"⚠️ За портом {pm['count']} MAC-адрес" + (f" у {len(pm['vlans'])} VLAN" if len(pm.get("vlans") or []) > 1 else "")
                        + " — схоже на некерований свіч/хаб або міст (ПК із віртуалками, спільний доступ, точка доступу «під столом»). "
                        "Такі пристрої ламають 802.1X, дають петлі й ділять швидкість порту.")
+        routers = sorted({x["vendor"] for x in pm.get("macs", []) if x.get("kind") == "router" and not x["self"]})
+        if routers:
+            out.append(f"⚠️ Серед MAC за портом — {', '.join(routers)[:80]}: схоже на домашній свіч/роутер/точку доступу, "
+                       "поставлений на робочому місці.")
+        vms = [x for x in pm.get("macs", []) if x.get("kind") == "vm"]
+        if vms:
+            out.append(f"ℹ️ MAC віртуальних машин за портом ×{len(vms)} ({', '.join(sorted({x['vendor'] or 'VM' for x in vms}))[:60]}) — "
+                       "ПК працює як міст для віртуалок.")
         if pm.get("local_admin") and pm["count"] >= 2:
             out.append(f"ℹ️ Локально адміністрованих MAC {pm['local_admin']} — віртуальні адаптери/мости (Hyper-V, VirtualBox, Docker) "
                        "або рандомізовані MAC пристроїв за мостом.")
@@ -344,8 +354,8 @@ def hints(edge: dict, mau: dict, ln: dict | None, pm: dict | None = None) -> lis
 def facts_lines(edge: dict, mau: dict, ln: dict | None, nb: dict | None, pm: dict | None = None) -> list[str]:
     L = []
     if pm is not None:
-        lst = ", ".join(f"{x['mac']}" + (f" ({x['ip']})" if x.get("ip") else "") + (" — цей пристрій" if x["self"] else "")
-                        + (" [локальний]" if x["local"] else "") for x in pm.get("macs", [])[:8])
+        lst = ", ".join(f"{x['mac']}" + (f" {x['vendor']}" if x.get("vendor") else "") + (f" ({x['ip']})" if x.get("ip") else "")
+                        + (" — цей пристрій" if x["self"] else "") for x in pm.get("macs", [])[:8])
         lldp = ", ".join(f"{n.get('sysname') or '?'}" + (" (телефон)" if n.get("phone") else " (свіч)" if n.get("bridge") else "")
                          for n in edge.get("lldp") or [])
         L.append(f"Пристроїв за портом зараз (FDB свіча): {pm.get('count', 0)}"

@@ -38,6 +38,7 @@ from fastapi.responses import JSONResponse
 
 import netdiag
 import netdiag_ai
+import netdiag_oui
 import netdiag_pa
 import netdiag_wired
 import netdiag_ui as ui
@@ -391,7 +392,10 @@ async def ai_run_wifi(cfg: dict, job: dict) -> None:
         log.info(f"[#{job['id']}] ai llm ok={bool(llm)} err={err or '-'} {llm_s:.0f}s attempts={attempts}")
     timing = {"queue": job["started"] - job["created"], "collect": t1 - t0, "llm": llm_s}
     ips = sorted(set((sf.get("ips") or []) + ((dh or {}).get("ips") or [])))
-    body = netdiag_ai.render(job, netdiag_ai.facts_lines(sf, dh, np_, loc, pa), hint_lines, llm, err, timing,
+    dv = await asyncio.to_thread(netdiag_oui.vendor, cfg, mac)
+    body = netdiag_ai.render(job, [f"Пристрій: вендор за MAC — {dv['vendor'] or 'невідомий'}"
+                                   + (f"; WLC визначає тип як {sf['devtype']}" if sf.get("devtype") else "") + "."]
+                             + netdiag_ai.facts_lines(sf, dh, np_, loc, pa), hint_lines, llm, err, timing,
                              netdiag_ai.model_label(cfg), others, owned, ips, mins, "Wi-Fi")
     body["cardsV2"][0]["card"]["sections"].append(ui.result_actions(ip or mac, False))
     ok = await asyncio.to_thread(chat_post, cfg, job["space"], body, job.get("thread") or "")
@@ -473,7 +477,9 @@ async def ai_run_wired(cfg: dict, job: dict) -> None:
     hint_lines += netdiag_ai.common_hints(dh, np_, pa)
     if not hint_lines:
         hint_lines.append("✅ За правилами явних проблем за вікно не видно.")
-    facts = netdiag_wired.facts_lines(edge, mau, ln, nb, pm) + netdiag_ai._qradar_lines(dh, np_, None, pa)
+    dv = await asyncio.to_thread(netdiag_oui.vendor, cfg, mac)
+    facts = [f"Пристрій: вендор за MAC — {dv['vendor'] or 'невідомий'}" + (f" (тип: {dv['kind']})" if dv.get("kind") else "") + "."] \
+        + netdiag_wired.facts_lines(edge, mau, ln, nb, pm) + netdiag_ai._qradar_lines(dh, np_, None, pa)
     t1 = time.monotonic()
     llm, err, llm_s, attempts = await netdiag_ai.ask_llm(cfg, netdiag_ai.build_prompt(
         ["Підключення: КАБЕЛЬ."] + facts, hint_lines, job.get("complaint") or "other", job.get("details") or ""))

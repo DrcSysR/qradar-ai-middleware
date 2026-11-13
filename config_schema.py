@@ -261,6 +261,8 @@ SCHEMA = {
     "netdiag_ai_minutes":                 (int,  60),
     # Кабельна аналітика (netdiag_wired.py): LibreNMS — події/syslog/стан порту, NetBox — розташування свіча.
     # Токени — секрети, лише config.json (BW «API: LibreNMS», «API: netbox.modern-expo.com»; токен NetBox прив'язаний до IP).
+    "netdiag_oui_url":                    (str,  "https://www.wireshark.org/download/automated/data/manuf.gz"),
+    "netdiag_oui_refresh_days":           (NUM,  30),
     "netdiag_librenms_url":               (str,  "http://172.17.61.230"),
     "netdiag_librenms_token":             (str,  ""),
     "netdiag_netbox_url":                 (str,  "https://netbox.modern-expo.com"),
