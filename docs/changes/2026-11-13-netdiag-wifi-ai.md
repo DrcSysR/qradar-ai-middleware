@@ -94,3 +94,9 @@
 
 - `git revert` і push;
 - таблицю `ai_jobs` і ключ `ai_vertex_latest` у `collector` можна лишити.
+
+## Доповнення (того ж дня)
+
+Права ключа SA Vertex виправлено: `chown root:qmiddleware && chmod 640 me-vertex-ai-studio-666353d9e1df.json`
+(було 644 root:root). Перевірено від `qmiddleware`: токен для `netdiag_ai._vertex_token` і завантаження як у
+`app.py` (тріаж) — OK; `nobody` прочитати не може. Ключ читають лише юніти під `qmiddleware` і `root` (botnet-scan).
