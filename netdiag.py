@@ -51,7 +51,7 @@ DEFAULTS = {
     "netdiag_arp_routers": ["172.17.6.1", "172.17.6.2"],
     "netdiag_zabbix_groups": ["Switches", "NetHw"],
     "netdiag_poll_seconds": 60,
-    "netdiag_keep_minutes": 30,
+    "netdiag_keep_minutes": 70,      # ≥ вікна розширеної аналітики (netdiag_ai_minutes = 60) + запас
     "netdiag_history_minutes": 15,
     "netdiag_switch_cache_minutes": 60,
     "netdiag_snmp_timeout": 1.0,

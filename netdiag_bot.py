@@ -36,6 +36,7 @@ from fastapi import FastAPI, Request
 from fastapi.responses import JSONResponse
 
 import netdiag
+import netdiag_ai
 import netdiag_pa
 import netdiag_ui as ui
 import tracker
@@ -331,12 +332,109 @@ async def run_query(cfg: dict, text: str) -> dict:
             if left > 4:
                 ev = await tracker.run_aql(client, api, headers, netdiag.nps_aql(mac, minutes), min(left - 2, 20))
                 nps = None if ev is None else [netdiag.parse_nps(e) for e in ev]
-    return netdiag.render_card(res, nps, notes, minutes)
+    body = netdiag.render_card(res, nps, notes, minutes)
+    # wifi_unknown: MAC за WLC, але без асоціації — типова скарга «не підключається»
+    if res.get("medium") in ("wifi", "wifi_gone", "wifi_unknown") and res.get("mac"):
+        body["_ai"] = {"mac": res["mac"], "ip": res.get("ip") or ""}   # для кнопки розширеної аналітики
+    return body
 
 
 HELP = ("Я діагностую підключення пристрою. Надішліть його *IP* (або MAC), напр. `172.17.104.25`.\n"
         "Покажу: Wi-Fi чи кабель; для Wi-Fi — точку, SSID, сигнал/SNR, стан на контролері і історію за 15 хв; "
         "для кабелю — свіч, порт, швидкість, помилки, 802.1X; і що каже NPS (чому не авторизувався).")
+
+
+# ============================================================================ розширена аналітика: обробник черги
+_ai_wake = asyncio.Event()
+
+
+async def ai_run(cfg: dict, job: dict) -> None:
+    """Одна задача: факти (знімки + QRadar DHCP/NPS) → llm01 → картка в тред."""
+    t0 = time.monotonic()
+    mins = int(netdiag_ai.opt(cfg, "netdiag_ai_minutes"))
+    mac, ip = job["mac"], job.get("ip") or ""
+    now = int(time.time())
+    sf = await asyncio.to_thread(netdiag_ai.snapshot_facts, cfg, mac, mins)
+    loc = await asyncio.to_thread(netdiag_ai.location_facts, cfg, mac, sf.get("ap_macs") or [], mins)
+    api, headers = _qradar(cfg)
+    async with httpx.AsyncClient(verify=False, timeout=20) as client:
+        q = [tracker.run_aql(client, api, headers, netdiag_ai.dhcp_mac_aql(mac, mins), 60),
+             tracker.run_aql(client, api, headers, netdiag.nps_aql(mac, mins), 60)]
+        if ip:
+            q += [tracker.run_aql(client, api, headers, netdiag_ai.dhcp_ip_aql(ip, mins), 60),
+                  tracker.run_aql(client, api, headers, netdiag_ai.pa_aql(ip, mins), 90)]
+        got = await asyncio.gather(*q, return_exceptions=True)
+    got = [None if isinstance(g, BaseException) else g for g in got] + [None, None]
+    dh = netdiag_ai.dhcp_facts(got[0], mac)
+    np_ = netdiag_ai.nps_facts(got[1])
+    others, owned, pa = None, None, None
+    if ip:
+        acks = netdiag_ai.ip_acks(got[2], ip)
+        others = netdiag_ai.ip_other_macs(acks, mac)
+        if acks is not None:
+            owned = netdiag_ai.ip_ownership(acks, mac, now - mins * 60, now, ip in (sf.get("ips") or []))
+            pa = netdiag_ai.pa_facts(got[3], owned)
+    hint_lines = netdiag_ai.hints(sf, dh, np_, loc, pa)
+    t1 = time.monotonic()
+    llm, err, llm_s = None, "для пристрою немає жодних даних за вікно", 0.0
+    if sf.get("present") or (dh and dh.get("events")) or (np_ and (np_.get("granted") or np_.get("denied"))) \
+            or (pa and pa.get("events")):
+        prompt = netdiag_ai.build_prompt(netdiag_ai.facts_lines(sf, dh, np_, loc, pa), hint_lines,
+                                         job.get("complaint") or "other", job.get("details") or "")
+        llm, err, llm_s, attempts = await netdiag_ai.ask_llm(cfg, prompt)
+        log.info(f"[#{job['id']}] ai llm ok={bool(llm)} err={err or '-'} {llm_s:.0f}s attempts={attempts}")
+    timing = {"queue": job["started"] - job["created"], "collect": t1 - t0, "llm": llm_s}
+    body = netdiag_ai.render(job, sf, dh, np_, others, hint_lines, llm, err, timing, netdiag_ai.model_label(cfg),
+                             loc, pa, owned)
+    body["cardsV2"][0]["card"]["sections"].append(ui.result_actions(ip or mac, False))
+    ok = await asyncio.to_thread(chat_post, cfg, job["space"], body, job.get("thread") or "")
+    await asyncio.to_thread(netdiag_ai.finish, cfg, job["id"], netdiag_ai.DONE if ok else netdiag_ai.ERROR,
+                            f"llm={'ok' if llm else err} delivered={ok}")
+    log.info(f"[#{job['id']}] ai done user={job.get('email')} mac={mac} delivered={ok} in {time.monotonic() - t0:.0f}s")
+
+
+async def ai_worker() -> None:
+    """Одна задача за раз (llm01 і так одна; черга — порядок і пріоритет людини над тріажем)."""
+    try:
+        n = await asyncio.to_thread(netdiag_ai.recover, conf())
+        if n:
+            log.info(f"ai worker: {n} незавершених задач повернуто в чергу")
+    except Exception as e:
+        log.error(f"ai worker recover: {type(e).__name__}: {e}")
+    while True:
+        try:
+            cfg = conf()
+            job, expired = await asyncio.to_thread(netdiag_ai.claim, cfg)
+            for x in expired:
+                await asyncio.to_thread(chat_post, cfg, x["space"], {"text": (
+                    f"⌛ Аналітика {x.get('ip') or x['mac']} (дія #{x['id']}) не дочекалась черги — запустіть ще раз."
+                )}, x.get("thread") or "")
+            if not job:
+                _ai_wake.clear()
+                try:
+                    await asyncio.wait_for(_ai_wake.wait(), timeout=30)
+                except asyncio.TimeoutError:
+                    pass
+                continue
+            log.info(f"[#{job['id']}] ai start mac={job['mac']} waited={job['started'] - job['created']}s")
+            try:
+                await ai_run(cfg, job)
+            except Exception as e:
+                log.exception(f"[#{job['id']}] ai failed: {e}")
+                await asyncio.to_thread(netdiag_ai.finish, cfg, job["id"], netdiag_ai.ERROR, f"{type(e).__name__}: {e}")
+                await asyncio.to_thread(chat_post, cfg, job["space"], {"text": (
+                    f"⚠️ Аналітика {job.get('ip') or job['mac']} (дія #{job['id']}) впала з помилкою — деталі в журналі бота."
+                )}, job.get("thread") or "")
+        except asyncio.CancelledError:
+            raise
+        except Exception as e:
+            log.error(f"ai worker loop: {type(e).__name__}: {e}")
+            await asyncio.sleep(10)
+
+
+@app.on_event("startup")
+async def _start_ai_worker():
+    spawn(ai_worker())
 
 
 # ============================================================================ HTTP
@@ -410,9 +508,10 @@ async def diag_body(cfg: dict, text: str, pa: bool) -> dict:
     except Exception as e:
         log.exception(f"diagnose failed: {e}")
         return {"text": "⚠️ Діагностика впала з помилкою — деталі в журналі netdiag_bot.log."}
+    ai = body.pop("_ai", None)
     if "cardsV2" in body:
         body["cardsV2"][0]["card"]["sections"].append(
-            ui.result_actions(netdiag.parse_ip(text, cfg) or netdiag.parse_mac(text), pa))
+            ui.result_actions(netdiag.parse_ip(text, cfg) or netdiag.parse_mac(text), pa, ai))
     return body
 
 
@@ -478,6 +577,40 @@ async def card_clicked(cfg: dict, event: dict, email: str) -> dict:
             return {"actionResponse": {"type": "DIALOG", "dialogAction": {"actionStatus": {
                 "statusCode": "OK", "userFacingMessage": note}}}}
         return {**new, "text": note}
+
+    # --- розширена аналітика Wi-Fi: діалог «на що скарга» → черга → результат окремим повідомленням у той самий тред
+    if fn == "dlg_ai":
+        mac = netdiag.parse_mac(prm.get("mac", ""))
+        if not mac:
+            return {**new, "text": "⚠️ Немає MAC пристрою — запустіть діагностику ще раз."}
+        return ui.dlg_ai(mac, netdiag.parse_ip(prm.get("ip", ""), cfg) or "")
+    if fn == "submit_ai":
+        mac = netdiag.parse_mac(prm.get("mac", ""))
+        ip = netdiag.parse_ip(prm.get("ip", ""), cfg) or ""
+        if not mac:
+            return ui.dialog_error("Немає MAC пристрою — запустіть діагностику ще раз.")
+        if not rate_ok(cfg, email):
+            return ui.dialog_error("Забагато запитів — спробуйте за хвилину.")
+        complaint = ui.form_value(event, "complaint") or "other"
+        details = ui.form_text(event, "details")
+        space = (event.get("space") or {}).get("name", "")
+        thread = ((event.get("message") or {}).get("thread") or {}).get("name", "")
+        job, pos, why = await asyncio.to_thread(netdiag_ai.enqueue, cfg, mac, ip, space, thread, email, complaint, details)
+        log.info(f"[#{job['id'] if job else '-'}] ai enqueue user={email} mac={mac} ip={ip or '-'} complaint={complaint} "
+                 f"pos={pos} {why or 'new'}")
+        if why == "full":
+            return ui.dialog_error(f"Черга аналітики заповнена ({pos} задач) — спробуйте пізніше.")
+        _ai_wake.set()
+        mins = int(netdiag_ai.opt(cfg, "netdiag_ai_minutes"))
+        local = str(netdiag_ai.opt(cfg, "netdiag_ai_provider")).lower() == "openai"
+        eta = max(1, pos) * (2 if local else 1)
+        head = (f"🧠 Аналітика {mac} уже в черзі (дія #{job['id']})" if why == "dup"
+                else f"🧠 Розширену аналітику {ip or mac} (MAC {mac}, {mins} хв) поставлено в чергу, дія #{job['id']}")
+        where = "виконується зараз" if pos == 0 else f"позиція {pos}"
+        note = (f"{head}: {where}. Результат прийде в цей тред орієнтовно за ~{eta} хв"
+                + (" (локальна LLM, на час аналізу тріаж QRadar на паузі)." if local else "."))
+        return {"actionResponse": {"type": "DIALOG", "dialogAction": {"actionStatus": {
+            "statusCode": "OK", "userFacingMessage": note[:250]}}}}
 
     # --- дії на Palo Alto з діалогів
     if fn in ("submit_inet", "submit_unblock"):

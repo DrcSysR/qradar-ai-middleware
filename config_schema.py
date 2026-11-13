@@ -240,7 +240,7 @@ SCHEMA = {
     "netdiag_arp_routers":                (list, ["172.17.6.1", "172.17.6.2"]),
     "netdiag_zabbix_groups":              (list, ["Switches", "NetHw"]),
     "netdiag_poll_seconds":               (NUM,  60),
-    "netdiag_keep_minutes":               (NUM,  30),
+    "netdiag_keep_minutes":               (NUM,  70),
     "netdiag_history_minutes":            (NUM,  15),
     "netdiag_switch_cache_minutes":       (NUM,  60),
     "netdiag_snmp_timeout":               (NUM,  1.0),
@@ -256,6 +256,22 @@ SCHEMA = {
     "netdiag_rate_per_minute":            (int,  6),
     "netdiag_dhcp_hours":                 (int,  24),
     "netdiag_reply_budget_seconds":       (NUM,  26),
+    # Розширена аналітика Wi-Fi (netdiag_ai.py, 2026-11-13): факти за годину по MAC → LLM через власну чергу
+    # ai_jobs у netdiag.db. Провайдер vertex (типово; знеособлені факти) або openai = llm01 (тоді hold:chat).
+    "netdiag_ai_minutes":                 (int,  60),
+    "netdiag_ai_provider":                (str,  "vertex"),
+    "netdiag_ai_vertex_model":            (str,  ""),    # порожньо = найновіша GA родини (автовибір, кеш у netdiag.db)
+    "netdiag_ai_vertex_family":           (str,  "flash-lite"),   # найдешевша родина
+    "netdiag_ai_model_refresh_days":      (NUM,  30),
+    "netdiag_ai_vertex_key_file":         (str,  "/opt/qradar-middleware/me-vertex-ai-studio-666353d9e1df.json"),
+    "netdiag_ai_model":                   (str,  ""),
+    "netdiag_ai_max_tokens":              (int,  450),
+    "netdiag_ai_llm_timeout":             (NUM,  300),
+    "netdiag_ai_wait_seconds":            (NUM,  240),
+    "netdiag_ai_hold_seconds":            (NUM,  360),
+    "netdiag_ai_grace_seconds":           (NUM,  15),
+    "netdiag_ai_queue_max":               (int,  10),
+    "netdiag_ai_job_ttl_minutes":         (NUM,  30),
     # Palo Alto pa-vm (netdiag_pa.py): зняти wan-block / дати tmp-inet через User-ID API. Ключ — user-id
     # (BW «PaloAlto API Key»), op-ключ — необов'язковий, лише щоб показувати поточні теги IP.
     "netdiag_pa_host":                    (str,  "172.17.64.101"),

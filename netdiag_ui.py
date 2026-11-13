@@ -4,7 +4,8 @@
   🔎 Діагностика IP   → поле IP/MAC                   → картка діагностики (NEW_MESSAGE)
   🌐 Інтернет         → IP + строк (список) / свої год → tmp-inet на pa-vm  → картка результату
   🧱 Зняти wan-block  → публічний IP                   → unregister wan-block → картка результату
-Під карткою діагностики — «🔄 Перевірити ще раз» і «🌐 Інтернет…» (діалог з уже підставленим IP).
+Під карткою діагностики — «🔄 Перевірити ще раз» і «🌐 Інтернет…» (діалог з уже підставленим IP);
+для Wi-Fi — «🧠 Розширена аналітика» (черга до llm01, `netdiag_ai.py`).
 
 Діалог — сам по собі підтвердження: людина бачить поля і тисне «Застосувати». Помилки вводу
 повертаються в той самий діалог (actionStatus INVALID_ARGUMENT + текст), він не закривається.
@@ -62,9 +63,13 @@ def home(email: str, pa: bool) -> dict:
                 "sections": [{"widgets": widgets}]}}]}
 
 
-def result_actions(ip: str | None, pa: bool) -> dict:
-    """Секція з кнопками під карткою діагностики."""
+def result_actions(ip: str | None, pa: bool, ai: dict | None = None) -> dict:
+    """Секція з кнопками під карткою діагностики. ai = {"mac", "ip"} — лише для Wi-Fi: кнопка розширеної
+    аналітики несе MAC, знайдений під час діагностики (аналіз іде за MAC, не за IP)."""
     btns = []
+    if ai and ai.get("mac"):
+        btns.append(button("Розширена аналітика", "dlg_ai", {"mac": ai["mac"], "ip": ai.get("ip") or ""},
+                           dialog=True, icon="psychology", filled=True))
     if ip:
         btns.append(button("Перевірити ще раз", "run_diag", {"ip": ip}, icon="refresh"))
         if pa:
@@ -74,8 +79,8 @@ def result_actions(ip: str | None, pa: bool) -> dict:
 
 
 # ============================================================================ діалоги
-def _dialog(title: str, widgets: list, submit_fn: str, submit_text: str) -> dict:
-    widgets = widgets + [{"buttonList": {"buttons": [button(submit_text, submit_fn, icon="check", filled=True)]}}]
+def _dialog(title: str, widgets: list, submit_fn: str, submit_text: str, params: dict | None = None) -> dict:
+    widgets = widgets + [{"buttonList": {"buttons": [button(submit_text, submit_fn, params, icon="check", filled=True)]}}]
     return {"actionResponse": {"type": "DIALOG", "dialogAction": {"dialog": {"body": {
         "header": {"title": title}, "sections": [{"widgets": widgets}]}}}}}
 
@@ -112,6 +117,20 @@ def dlg_unblock(prefill_ip: str = "") -> dict:
     ], "submit_unblock", "Зняти блокування")
 
 
+def dlg_ai(mac: str, ip: str = "") -> dict:
+    """Скарга перед розширеною аналітикою: фокусує висновок LLM (обриви / не підключається / повільно)."""
+    import netdiag_ai
+    items = [{"text": t[:1].upper() + t[1:], "value": k, "selected": k == "drops"} for k, t in netdiag_ai.COMPLAINTS.items()]
+    return _dialog(f"🧠 Розширена аналітика {ip or mac}", [
+        {"selectionInput": {"name": "complaint", "label": "На що скаржаться", "type": "RADIO_BUTTON", "items": items}},
+        {"textInput": {"name": "details", "label": "Деталі (необов'язково)", "type": "MULTIPLE_LINE",
+                       "hintText": "Який застосунок, де саме (кабінет/цех), коли почалось"}},
+        {"textParagraph": {"text": netdiag._c(
+            f"Аналіз за MAC {mac} за останню годину: Wi-Fi (пристрій і інші клієнти точки), DHCP, NPS, Palo Alto. "
+            "Результат прийде окремим повідомленням у цей тред.", netdiag.GREY)}},
+    ], "submit_ai", "Аналізувати", {"mac": mac, "ip": ip})
+
+
 def dialog_error(msg: str) -> dict:
     return {"actionResponse": {"type": "DIALOG", "dialogAction": {"actionStatus": {
         "statusCode": "INVALID_ARGUMENT", "userFacingMessage": msg[:250]}}}}
@@ -125,3 +144,10 @@ def form_value(event: dict, name: str) -> str:
     fi = ((event.get("common") or {}).get("formInputs") or {}).get(name) or {}
     vals = ((fi.get("stringInputs") or {}).get("value")) or []
     return str(vals[0]).strip()[:64] if vals else ""
+
+
+def form_text(event: dict, name: str, limit: int = 300) -> str:
+    """Як form_value, але для довшого вільного тексту (деталі скарги)."""
+    fi = ((event.get("common") or {}).get("formInputs") or {}).get(name) or {}
+    vals = ((fi.get("stringInputs") or {}).get("value")) or []
+    return " ".join(str(vals[0]).split())[:limit] if vals else ""
