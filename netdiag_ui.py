@@ -125,7 +125,7 @@ def dlg_ai(mac: str, ip: str = "", extra: dict | None = None) -> dict:
     keys = netdiag_ai.WIRED_COMPLAINTS if wired else netdiag_ai.WIFI_COMPLAINTS
     items = [{"text": netdiag_ai.COMPLAINTS[k][:1].upper() + netdiag_ai.COMPLAINTS[k][1:], "value": k, "selected": k == keys[0]}
              for k in keys]
-    what = (f"кабель: свіч {extra.get('sw')}, порт {extra.get('ifn')} — події й syslog порту (LibreNMS), автоузгодження з карткою, "
+    what = (f"кабель: свіч {extra.get('sw')}, порт {extra.get('ifn')} — події й syslog порту (LibreNMS), автоузгодження з карткою, кількість пристроїв на порту, "
             "інші порти свіча, DHCP, 802.1X/NPS, Palo Alto") if wired else \
         "Wi-Fi (пристрій і інші клієнти точки), DHCP, NPS, Palo Alto"
     return _dialog(f"🧠 Розширена аналітика {ip or mac}", [

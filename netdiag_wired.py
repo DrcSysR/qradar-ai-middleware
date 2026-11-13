@@ -102,6 +102,40 @@ def mau_info(cfg: dict, sw_ip: str, ifindex: int, link_mbps: int | None = None) 
     return out
 
 
+# ============================================================================ SNMP: скільки пристроїв за портом
+def port_macs(cfg: dict, sw_ip: str, bport: int | None, own_mac: str) -> dict | None:
+    """Усі MAC, які свіч зараз бачить за цим портом (FDB). > 1 без IP-телефона — міні-свіч/хаб, міст, віртуалки."""
+    info = (netdiag.switches(cfg) or {}).get(sw_ip) or {}
+    if not bport or not info.get("community"):
+        return None
+    s = snmp.Session(sw_ip, info["community"], timeout=3, retries=1)
+    found: dict[str, set] = {}
+    try:
+        for oid, v in s.walk(netdiag.O_DOT1Q_FDB_PORT, limit=30000):      # .<vlan>.<mac6> = bport
+            if v == bport:
+                p = oid.split(".")
+                found.setdefault(netdiag.oid_mac(p[-6:]), set()).add(int(p[-7]))
+        if not found:                                                      # старі свічі без Q-BRIDGE
+            for oid, v in s.walk(netdiag.O_DOT1D_FDB_PORT, limit=30000):
+                if v == bport:
+                    found.setdefault(netdiag.oid_mac(oid.split(".")[-6:]), set())
+    except snmp.SnmpError as e:
+        log.warning(f"FDB {sw_ip}: {e}")
+        return None
+    con = netdiag.db(cfg)
+    try:
+        macs = []
+        for m, vl in sorted(found.items()):
+            row = con.execute("SELECT ip FROM arp WHERE mac=? ORDER BY ts DESC LIMIT 1", (m,)).fetchone()
+            macs.append({"mac": m, "vlans": sorted(vl), "ip": row["ip"] if row else "",
+                         "local": bool(int(m[:2], 16) & 2), "self": m == own_mac})
+    finally:
+        con.close()
+    macs.sort(key=lambda x: (not x["self"], x["mac"]))
+    return {"count": len(macs), "macs": macs[:12], "vlans": sorted({v for x in macs for v in x["vlans"]}),
+            "local_admin": sum(1 for x in macs if x["local"]), "own_seen": any(x["self"] for x in macs)}
+
+
 # ============================================================================ LibreNMS
 def _lnms(cfg: dict, path: str, **q):
     tok = _clean_token(opt(cfg, "netdiag_librenms_token"))
@@ -240,8 +274,24 @@ def netbox_facts(cfg: dict, sw_ip: str, ifname: str) -> dict | None:
 
 
 # ============================================================================ ознаки + текст
-def hints(edge: dict, mau: dict, ln: dict | None) -> list[str]:
+def hints(edge: dict, mau: dict, ln: dict | None, pm: dict | None = None) -> list[str]:
     out = []
+    if pm and pm.get("count", 0) >= 2:
+        phone = any(n.get("phone") for n in edge.get("lldp") or [])
+        bridge_lldp = [n.get("sysname") for n in edge.get("lldp") or [] if n.get("bridge") and not n.get("phone") and not n.get("ap")]
+        if bridge_lldp:
+            out.append(f"⚠️ За портом LLDP-сусід-свіч ({', '.join(x for x in bridge_lldp if x)[:60]}) і {pm['count']} MAC — підключено ще один свіч.")
+        elif pm["count"] == 2 and phone:
+            out.append("ℹ️ За портом 2 MAC і IP-телефон за LLDP — телефон + ПК, це норма.")
+        elif pm["count"] >= 3 or not phone:
+            out.append(f"⚠️ За портом {pm['count']} MAC-адрес" + (f" у {len(pm['vlans'])} VLAN" if len(pm.get("vlans") or []) > 1 else "")
+                       + " — схоже на некерований свіч/хаб або міст (ПК із віртуалками, спільний доступ, точка доступу «під столом»). "
+                       "Такі пристрої ламають 802.1X, дають петлі й ділять швидкість порту.")
+        if pm.get("local_admin") and pm["count"] >= 2:
+            out.append(f"ℹ️ Локально адміністрованих MAC {pm['local_admin']} — віртуальні адаптери/мости (Hyper-V, VirtualBox, Docker) "
+                       "або рандомізовані MAC пристроїв за мостом.")
+    if pm and pm.get("count") and not pm.get("own_seen"):
+        out.append("ℹ️ Самого пристрою за цим портом свіч зараз не бачить (FDB) — він вимкнений або переїхав.")
     p = (ln or {}).get("port") or {}
     speed = edge.get("speed") or p.get("speed_mbps")
     if edge.get("oper") == "down" or p.get("oper") == "down":
@@ -291,8 +341,16 @@ def hints(edge: dict, mau: dict, ln: dict | None) -> list[str]:
     return out
 
 
-def facts_lines(edge: dict, mau: dict, ln: dict | None, nb: dict | None) -> list[str]:
+def facts_lines(edge: dict, mau: dict, ln: dict | None, nb: dict | None, pm: dict | None = None) -> list[str]:
     L = []
+    if pm is not None:
+        lst = ", ".join(f"{x['mac']}" + (f" ({x['ip']})" if x.get("ip") else "") + (" — цей пристрій" if x["self"] else "")
+                        + (" [локальний]" if x["local"] else "") for x in pm.get("macs", [])[:8])
+        lldp = ", ".join(f"{n.get('sysname') or '?'}" + (" (телефон)" if n.get("phone") else " (свіч)" if n.get("bridge") else "")
+                         for n in edge.get("lldp") or [])
+        L.append(f"Пристроїв за портом зараз (FDB свіча): {pm.get('count', 0)}"
+                 + (f", VLAN {', '.join(map(str, pm['vlans']))}" if pm.get("vlans") else "") + (f": {lst}" if lst else "")
+                 + (f"; LLDP-сусіди: {lldp}" if lldp else "; LLDP-сусідів немає") + ".")
     loc = " · ".join(x for x in [(nb or {}).get("site"), (nb or {}).get("location"), (nb or {}).get("rack") and f"шафа {nb['rack']}",
                                  ((ln or {}).get("device") or {}).get("location")] if x)
     L.append(f"Свіч {edge.get('switch')} ({((ln or {}).get('device') or {}).get('hardware') or edge.get('sysname') or ''}), порт "

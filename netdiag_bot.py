@@ -456,22 +456,24 @@ async def ai_run_wired(cfg: dict, job: dict) -> None:
     ln_t = asyncio.to_thread(netdiag_wired.librenms_facts, cfg, edge["ip"], ifname, edge.get("bport"), ifindex, mins)
     nb_t = asyncio.to_thread(netdiag_wired.netbox_facts, cfg, edge["ip"], ifname)
     q_t = _qradar_common(cfg, mac, ip, mins, now, False)
-    got = await asyncio.gather(mau_t, ln_t, nb_t, q_t, return_exceptions=True)
-    for name, g in zip(("MAU", "LibreNMS", "NetBox", "QRadar"), got):
+    pm_t = asyncio.to_thread(netdiag_wired.port_macs, cfg, edge["ip"], edge.get("bport") or (int(ctx["bp"]) if ctx.get("bp") else None), mac)
+    got = await asyncio.gather(mau_t, ln_t, nb_t, q_t, pm_t, return_exceptions=True)
+    for name, g in zip(("MAU", "LibreNMS", "NetBox", "QRadar", "FDB"), got):
         if isinstance(g, BaseException):
             log.warning(f"[#{job['id']}] ai(wired) {name} failed: {type(g).__name__}: {g}")
     mau = got[0] if isinstance(got[0], dict) else {}
     ln = None if isinstance(got[1], BaseException) else got[1]
     nb = None if isinstance(got[2], BaseException) else got[2]
     dh, np_, others, owned, pa = got[3] if not isinstance(got[3], BaseException) else (None, None, None, None, None)
-    hint_lines = netdiag_wired.hints(edge, mau, ln)
+    pm = got[4] if isinstance(got[4], dict) else None
+    hint_lines = netdiag_wired.hints(edge, mau, ln, pm)
     if dh and dh.get("grants", 0) >= 6 and (dh.get("grant_regular_pct") or 0) >= 50:
         hint_lines.append(f"⚠️ DHCP видає адресу заново {dh['grants']} разів, кожні ~{dh.get('grant_period_s')} с — пристрій "
                           "регулярно перепідключається (лінк або мережевий стек ПК).")
     hint_lines += netdiag_ai.common_hints(dh, np_, pa)
     if not hint_lines:
         hint_lines.append("✅ За правилами явних проблем за вікно не видно.")
-    facts = netdiag_wired.facts_lines(edge, mau, ln, nb) + netdiag_ai._qradar_lines(dh, np_, None, pa)
+    facts = netdiag_wired.facts_lines(edge, mau, ln, nb, pm) + netdiag_ai._qradar_lines(dh, np_, None, pa)
     t1 = time.monotonic()
     llm, err, llm_s, attempts = await netdiag_ai.ask_llm(cfg, netdiag_ai.build_prompt(
         ["Підключення: КАБЕЛЬ."] + facts, hint_lines, job.get("complaint") or "other", job.get("details") or ""))

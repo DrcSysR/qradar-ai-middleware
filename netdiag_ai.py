@@ -76,6 +76,13 @@ def opt(cfg: dict, key: str):
 def _db(cfg: dict):
     con = netdiag.db(cfg)
     con.executescript(SCHEMA_SQL)
+    # CREATE TABLE IF NOT EXISTS не додає колонок у вже створену таблицю (13.11: прод мав ai_jobs від Wi-Fi-версії
+    # без medium/ctx → «table ai_jobs has no column named medium»). Доводимо схему до поточної.
+    have = {r[1] for r in con.execute("PRAGMA table_info(ai_jobs)")}
+    for col in ("complaint", "details", "medium", "ctx"):
+        if col not in have:
+            con.execute(f"ALTER TABLE ai_jobs ADD COLUMN {col} TEXT")
+    con.commit()
     return con
 
 
@@ -787,6 +794,9 @@ SYSTEM_PROMPT = (
     "• лінк падає періодично → кабель/розетка; енергозбереження мережевої карти (Energy Efficient Ethernet/Green Ethernet, "
     "«дозволити вимкнення для економії енергії»), сон/гібернація ПК; якщо падають і інші порти свіча — живлення/свіч/шафа.\n"
     "• порт завантажений > 70% або вихідні відкидання → насичення: 100-мегабітний лінк, мікросплески, аплінк.\n"
+    "• кілька MAC за портом без IP-телефона або LLDP-сусід-свіч → некерований свіч/хаб, міст (ПК з віртуалками, спільний доступ "
+    "до мережі) чи «своя» точка доступу: знайти пристрій на робочому місці, прибрати або замінити керованим; такі пристрої ламають "
+    "802.1X (блокування порту), дають петлі/шторми і ділять швидкість. IP-телефон + ПК = 2 MAC — норма.\n"
     "• VLAN 500 / «Blocked by AAA» / 802.1X unauthorized / відмови NPS → автентифікація 802.1X/MAB: сертифікат/обліковий запис ПК, "
     "реєстрація MAC (MAB), політика NPS.\n"
     "• «немає інтернету»: немає DHCP-адреси (APIPA 169.254) → DHCP/VLAN; відхилення Palo Alto в зону WAN без жодної дозволеної "
