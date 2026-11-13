@@ -115,6 +115,8 @@ Chat; з 2026-10-19 джерело — **Cortex XDR Public API** напряму,
 - `config.json` — **гітіґнорений**, містить QRadar SEC-токен, webhook Google Chat,
   параметри Vertex. Ключ Vertex — окремий JSON поруч, теж не в git.
 - Пароль/токени шукати в Bitwarden (запис по назві сервісу), не в репо.
+- QRadar SEC-токен (`qradar_token`) і `qradar_url` — BW «API: QRadar», кастомні поля `Token` (прихований) і `URL`
+  (з 13.11; раніше «QRadar API token» з токеном у нотатках). Код читає лише `config.json`, тож назва запису на роботу не впливає.
 - `.gitignore` ігнорує `*.json`, крім `prompts.json` — тримати саме так.
 - netdiag: SNMP-спільнота WLC (`netdiag_wlc_community`, BW «SNMP: WLC 3504 community netdiag (mdlwr01)»,
   на WLC обмежена 172.17.65.9/32); ключ SA `netdiag_sa.json` (GCP `me-network-diagnistics`, 640); TLS бота `netdiag_tls/`
