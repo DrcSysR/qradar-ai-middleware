@@ -14,6 +14,7 @@ AI-тріаж офенсів QRadar: сервіс читає офенс, під�
 
 | Дата | Запис |
 |---|---|
+| 2026-11-13 | [Захист публічних ендпоінтів чат-ботів: кеш сертифікатів Google у netdiag, сповіщення про дії на PA, /api/ext/* панелі alarm — лише LAN](changes/2026-11-13-netdiag-endpoint-hardening.md) |
 | 2026-11-12 | [netdiag: Google Chat-бот діагностики підключення пристрою за IP (Wi-Fi WLC 3504 / свіч-порт-802.1X / NPS)](changes/2026-11-12-netdiag-bot.md) |
 | 2026-11-05 | [Cortex XDR: автоматичне видалення ендпоінтів, що мовчать 15 днів і більше (cortex_endpoint_cleanup.py, щодня 10:00)](changes/2026-11-05-cortex-endpoint-cleanup.md) |
 | 2026-10-26 | [лінза remote_thread_injection: агент Cortex XDR (137 FP «Confirmed Credential Access»), Bing Wallpaper, Intel DPTF, Opera, eDrawings, MasterD; 157 офенсів аналітика закрито](changes/2026-10-26-remote-thread-cortex-xdr-fp.md) |

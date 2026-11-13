@@ -14,6 +14,7 @@
   1. джерело TCP — лише `netdiag_trusted_proxies` (nginx2); інакше 403;
   2. Bearer — OIDC-токен Google з aud = `netdiag_chat_audience`, iss accounts.google.com,
      email chat@system.gserviceaccount.com (режим автентифікації «HTTP endpoint URL»);
+     формат JWT/kid перевіряється до будь-якої мережі, ключі Google кешуються (`_google_certs`);
   3. користувач (event.user, HUMAN) — у домені `netdiag_allowed_domain` і в групі
      `netdiag_allowed_group` (Cloud Identity, SA з роллю Groups Reader) або в списку
      `netdiag_allowed_users`. Усе інше — відмова (deny by default);
@@ -90,10 +91,67 @@ def _google_request():
     return _greq
 
 
-def verify_chat_token(token: str, audience: str) -> bool:
-    from google.oauth2 import id_token
+# Ключі Google кешуються (Cache-Control max-age), а сміття відсіюється ДО мережі: інакше кожен
+# зовнішній запит з `Bearer <будь-що>` змушував бота качати сертифікати з googleapis (DoS-підсилювач).
+GOOGLE_CERTS_URL = "https://www.googleapis.com/oauth2/v1/certs"
+JWT_RE = re.compile(r"^[A-Za-z0-9_-]{10,2000}\.[A-Za-z0-9_-]{10,4000}\.[A-Za-z0-9_-]{10,1000}$")
+CERTS_MIN_REFRESH = 60          # не частіше раз на хвилину на невідомий kid (ротація ключів Google)
+_certs_lock = threading.Lock()
+_certs: dict[str, str] = {}
+_certs_exp = 0.0
+_certs_fetched = 0.0
+
+
+def _jwt_kid(token: str) -> str | None:
+    """kid з заголовка JWT, якщо це схоже на RS256-токен Google; інакше None (без жодних мережевих звернень)."""
+    import base64
+    import json
+    if len(token) > 7000 or not JWT_RE.match(token):
+        return None
     try:
-        claims = id_token.verify_oauth2_token(token, _google_request(), audience=audience, clock_skew_in_seconds=30)
+        h = token.split(".", 1)[0]
+        hdr = json.loads(base64.urlsafe_b64decode(h + "=" * (-len(h) % 4)))
+    except Exception:
+        return None
+    if not isinstance(hdr, dict) or hdr.get("alg") != "RS256":
+        return None
+    kid = hdr.get("kid")
+    return kid if isinstance(kid, str) and re.fullmatch(r"[A-Za-z0-9_-]{8,64}", kid) else None
+
+
+def _google_certs(kid: str) -> dict[str, str]:
+    """Кеш сертифікатів Google. Невідомий kid при свіжому кеші перекачує не частіше CERTS_MIN_REFRESH."""
+    global _certs, _certs_exp, _certs_fetched
+    with _certs_lock:
+        now = time.time()
+        if kid in _certs and now < _certs_exp:
+            return _certs
+        if now - _certs_fetched < CERTS_MIN_REFRESH:   # і після невдалої спроби — теж пауза
+            return _certs
+        _certs_fetched = now
+        r = _google_request().session.get(GOOGLE_CERTS_URL, timeout=10)
+        r.raise_for_status()
+        certs = r.json()
+        if not isinstance(certs, dict) or not certs:
+            raise ValueError("empty certs")
+        m = re.search(r"max-age=(\d+)", r.headers.get("Cache-Control", ""))
+        _certs = {str(k): str(v) for k, v in certs.items()}
+        _certs_exp = now + min(int(m.group(1)) if m else 3600, 6 * 3600)
+        return _certs
+
+
+def verify_chat_token(token: str, audience: str) -> bool:
+    from google.auth import jwt
+    kid = _jwt_kid(token)
+    if not kid:
+        log.warning("chat token rejected: malformed")
+        return False
+    try:
+        certs = _google_certs(kid)
+        if kid not in certs:
+            log.warning("chat token rejected: unknown kid")
+            return False
+        claims = jwt.decode(token, certs={kid: certs[kid]}, audience=audience, clock_skew_in_seconds=30)
     except Exception as e:  # будь-яка помилка перевірки = відмова
         log.warning(f"chat token rejected: {type(e).__name__}")
         return False

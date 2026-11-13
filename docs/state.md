@@ -121,6 +121,7 @@ Chat; з 2026-10-19 джерело — **Cortex XDR Public API** напряму,
   (ключ 640, серт запінений на nginx2 `/etc/nginx/ssl/netdiag-mdlwr01.pem`). Спільноти свічів не
   зберігаються — читаються з Zabbix у кеш `cache/netdiag_switches.json` (600). Ключ PA для бота —
   user-id-only `ibm.qradar` (`netdiag_pa_uid_key`; при ротації ключа custom actions оновити й тут).
+  Вебхук сповіщень про дії на PA — `netdiag_pa_notify_webhook` (секрет).
 
 ## 6. Операційні процедури
 

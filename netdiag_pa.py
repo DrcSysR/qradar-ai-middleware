@@ -22,6 +22,7 @@ import ipaddress
 import logging
 import re
 import ssl
+import threading
 import time
 import xml.etree.ElementTree as ET
 
@@ -202,7 +203,7 @@ def audit(cfg: dict, user: str, action: str, ip: str, tag: str, timeout_s: int |
     log.info(f"[#{aid}] PA {action} ip={ip} tag={tag} timeout={timeout_s} user={user} ok={ok} {detail[:120]}")
 
 
-def execute(cfg: dict, p: dict, user: str, aid: str = "") -> tuple[bool, str]:
+def _execute(cfg: dict, p: dict, user: str, aid: str) -> tuple[bool, str]:
     if p["op"] == "unblock":
         results = []
         all_ok = True
@@ -221,6 +222,46 @@ def execute(cfg: dict, p: dict, user: str, aid: str = "") -> tuple[bool, str]:
     ok, msg = uid_call(cfg, "register", p["ip"], tag, secs)
     audit(cfg, user, "inet", p["ip"], tag, secs, ok, msg, aid)
     return ok, (f"{tag} на {human_hours(p['hours'])}" if ok else f"помилка — {msg}")
+
+
+def execute(cfg: dict, p: dict, user: str, aid: str = "") -> tuple[bool, str]:
+    ok, text = _execute(cfg, p, user, aid)
+    notify(cfg, user, p, ok, text, aid)
+    return ok, text
+
+
+# ============================================================================ сповіщення
+# Кожна зміна на PA з бота дублюється в окремий простір Chat (вебхук `netdiag_pa_notify_webhook`, секрет у
+# config.json): якщо акаунт із noc@ зламано і ним знімають wan-block / відкривають інтернет — це видно одразу,
+# а не лише в pa_actions. Порожній ключ = вимкнено.
+WEBHOOK_RE = re.compile(r"^https://chat\.googleapis\.com/v1/spaces/[A-Za-z0-9_-]+/messages\?[A-Za-z0-9_=&%.-]+$")
+
+
+def _notify_text(user: str, p: dict, ok: bool, text: str, aid: str) -> str:
+    what = "зняття wan-block" if p["op"] == "unblock" else "tmp-inet"
+    mark = "✅" if ok else "⚠️ НЕВДАЛО"
+    return (f"🔐 *netdiag → pa-vm*: {what} {mark}\n"
+            f"IP: `{p['ip']}` · хто: {user or '?'} · дія #{aid or '-'}\n{text[:300]}")
+
+
+def notify(cfg: dict, user: str, p: dict, ok: bool, text: str, aid: str = "") -> None:
+    url = (cfg.get("netdiag_pa_notify_webhook") or "").strip()
+    if not url:
+        return
+    if not WEBHOOK_RE.match(url):
+        log.error("netdiag_pa_notify_webhook: не схоже на вебхук Google Chat — сповіщення не надіслано")
+        return
+    body = {"text": _notify_text(user, p, ok, text, aid)}
+
+    def _send():
+        try:
+            r = httpx.post(url, json=body, timeout=10)
+            if r.status_code != 200:
+                log.warning(f"[#{aid}] PA notify HTTP {r.status_code}")
+        except Exception as e:  # URL (з ключем) у журнал не пишемо
+            log.warning(f"[#{aid}] PA notify failed: {type(e).__name__}")
+
+    threading.Thread(target=_send, daemon=True).start()
 
 
 # ============================================================================ картки
