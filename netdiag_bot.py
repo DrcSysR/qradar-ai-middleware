@@ -23,6 +23,7 @@
 from __future__ import annotations
 
 import asyncio
+import json
 import logging
 import os
 import re
@@ -38,6 +39,7 @@ from fastapi.responses import JSONResponse
 import netdiag
 import netdiag_ai
 import netdiag_pa
+import netdiag_wired
 import netdiag_ui as ui
 import tracker
 
@@ -336,6 +338,10 @@ async def run_query(cfg: dict, text: str) -> dict:
     # wifi_unknown: MAC за WLC, але без асоціації — типова скарга «не підключається»
     if res.get("medium") in ("wifi", "wifi_gone", "wifi_unknown") and res.get("mac"):
         body["_ai"] = {"mac": res["mac"], "ip": res.get("ip") or ""}   # для кнопки розширеної аналітики
+    elif res.get("medium") == "wired" and res.get("mac") and ((res.get("wired") or {}).get("edge") or {}).get("ip"):
+        e = res["wired"]["edge"]
+        body["_ai"] = {"mac": res["mac"], "ip": res.get("ip") or "", "m": "wired", "sw": e["ip"],
+                       "ifn": str(e.get("ifname") or "")[:48], "ifi": str(e.get("ifindex") or ""), "bp": str(e.get("bport") or "")}
     return body
 
 
@@ -348,8 +354,8 @@ HELP = ("Я діагностую підключення пристрою. Над
 _ai_wake = asyncio.Event()
 
 
-async def ai_run(cfg: dict, job: dict) -> None:
-    """Одна задача: факти (знімки + QRadar DHCP/NPS) → llm01 → картка в тред."""
+async def ai_run_wifi(cfg: dict, job: dict) -> None:
+    """Wi-Fi: знімки WLC + локація + QRadar DHCP/NPS/PA → LLM → картка в тред."""
     t0 = time.monotonic()
     mins = int(netdiag_ai.opt(cfg, "netdiag_ai_minutes"))
     mac, ip = job["mac"], job.get("ip") or ""
@@ -384,13 +390,108 @@ async def ai_run(cfg: dict, job: dict) -> None:
         llm, err, llm_s, attempts = await netdiag_ai.ask_llm(cfg, prompt)
         log.info(f"[#{job['id']}] ai llm ok={bool(llm)} err={err or '-'} {llm_s:.0f}s attempts={attempts}")
     timing = {"queue": job["started"] - job["created"], "collect": t1 - t0, "llm": llm_s}
-    body = netdiag_ai.render(job, sf, dh, np_, others, hint_lines, llm, err, timing, netdiag_ai.model_label(cfg),
-                             loc, pa, owned)
+    ips = sorted(set((sf.get("ips") or []) + ((dh or {}).get("ips") or [])))
+    body = netdiag_ai.render(job, netdiag_ai.facts_lines(sf, dh, np_, loc, pa), hint_lines, llm, err, timing,
+                             netdiag_ai.model_label(cfg), others, owned, ips, mins, "Wi-Fi")
     body["cardsV2"][0]["card"]["sections"].append(ui.result_actions(ip or mac, False))
     ok = await asyncio.to_thread(chat_post, cfg, job["space"], body, job.get("thread") or "")
     await asyncio.to_thread(netdiag_ai.finish, cfg, job["id"], netdiag_ai.DONE if ok else netdiag_ai.ERROR,
                             f"llm={'ok' if llm else err} delivered={ok}")
     log.info(f"[#{job['id']}] ai done user={job.get('email')} mac={mac} delivered={ok} in {time.monotonic() - t0:.0f}s")
+
+
+async def _qradar_common(cfg: dict, mac: str, ip: str, mins: int, now: int, seen_ip_on_wlc: bool):
+    """DHCP за MAC, NPS, власність IP і Palo Alto — спільне для Wi-Fi і кабелю."""
+    api, headers = _qradar(cfg)
+    async with httpx.AsyncClient(verify=False, timeout=20) as client:
+        q = [tracker.run_aql(client, api, headers, netdiag_ai.dhcp_mac_aql(mac, mins), 60),
+             tracker.run_aql(client, api, headers, netdiag.nps_aql(mac, mins), 60)]
+        if ip:
+            q += [tracker.run_aql(client, api, headers, netdiag_ai.dhcp_ip_aql(ip, mins), 60),
+                  tracker.run_aql(client, api, headers, netdiag_ai.pa_aql(ip, mins), 90)]
+        got = await asyncio.gather(*q, return_exceptions=True)
+    got = [None if isinstance(g, BaseException) else g for g in got] + [None, None]
+    dh = netdiag_ai.dhcp_facts(got[0], mac)
+    np_ = netdiag_ai.nps_facts(got[1])
+    others, owned, pa = None, None, None
+    if ip:
+        acks = netdiag_ai.ip_acks(got[2], ip)
+        others = netdiag_ai.ip_other_macs(acks, mac)
+        if acks is not None:
+            owned = netdiag_ai.ip_ownership(acks, mac, now - mins * 60, now, seen_ip_on_wlc)
+            pa = netdiag_ai.pa_facts(got[3], owned)
+    return dh, np_, others, owned, pa
+
+
+async def ai_run_wired(cfg: dict, job: dict) -> None:
+    """Кабель: порт (SNMP + MAU), LibreNMS (події/syslog порту й свіча), NetBox (місце), QRadar DHCP/NPS/PA → LLM → картка."""
+    t0 = time.monotonic()
+    mins = int(netdiag_ai.opt(cfg, "netdiag_ai_minutes"))
+    now = int(time.time())
+    mac, ip = job["mac"], job.get("ip") or ""
+    try:
+        ctx = json.loads(job.get("ctx") or "{}")
+    except ValueError:
+        ctx = {}
+    notes = []
+    tr = await asyncio.to_thread(netdiag.wired_trace, cfg, mac, None)
+    edge = tr.get("edge") if tr.get("found") else None
+    if edge and ctx.get("sw") and (edge.get("ip") != ctx["sw"] or (ctx.get("ifn") and edge.get("ifname") != ctx["ifn"])):
+        notes.append(f"Пристрій зараз на {edge.get('switch')} {edge.get('ifname')} (під час діагностики був на {ctx['sw']} {ctx.get('ifn')}).")
+    if not edge and ctx.get("sw") and ctx.get("bp"):
+        info = (netdiag.switches(cfg) or {}).get(ctx["sw"]) or {}
+        d = await asyncio.to_thread(netdiag._safe_port, ctx["sw"], info, int(ctx["bp"]), float(netdiag.opt(cfg, "netdiag_snmp_timeout")))
+        edge = {"ip": ctx["sw"], "switch": info.get("name", ctx["sw"]), **(d or {})}
+        notes.append("Зараз MAC на свічах не видно — дані взято за портом, де він був під час діагностики.")
+    if not edge:
+        await asyncio.to_thread(chat_post, cfg, job["space"], {"text": (
+            f"⚠️ Аналітика {ip or mac} (дія #{job['id']}): не вдалося визначити порт підключення — запустіть діагностику ще раз.")},
+            job.get("thread") or "")
+        await asyncio.to_thread(netdiag_ai.finish, cfg, job["id"], netdiag_ai.ERROR, "no edge port")
+        return
+    ifindex = edge.get("ifindex") or (int(ctx["ifi"]) if ctx.get("ifi") else None)
+    ifname = edge.get("ifname") or ctx.get("ifn") or ""
+    link = edge.get("speed") if isinstance(edge.get("speed"), int) else None
+    mau_t = asyncio.to_thread(netdiag_wired.mau_info, cfg, edge["ip"], ifindex, link) if ifindex else asyncio.sleep(0, result={})
+    ln_t = asyncio.to_thread(netdiag_wired.librenms_facts, cfg, edge["ip"], ifname, edge.get("bport"), ifindex, mins)
+    nb_t = asyncio.to_thread(netdiag_wired.netbox_facts, cfg, edge["ip"], ifname)
+    q_t = _qradar_common(cfg, mac, ip, mins, now, False)
+    got = await asyncio.gather(mau_t, ln_t, nb_t, q_t, return_exceptions=True)
+    for name, g in zip(("MAU", "LibreNMS", "NetBox", "QRadar"), got):
+        if isinstance(g, BaseException):
+            log.warning(f"[#{job['id']}] ai(wired) {name} failed: {type(g).__name__}: {g}")
+    mau = got[0] if isinstance(got[0], dict) else {}
+    ln = None if isinstance(got[1], BaseException) else got[1]
+    nb = None if isinstance(got[2], BaseException) else got[2]
+    dh, np_, others, owned, pa = got[3] if not isinstance(got[3], BaseException) else (None, None, None, None, None)
+    hint_lines = netdiag_wired.hints(edge, mau, ln)
+    if dh and dh.get("grants", 0) >= 6 and (dh.get("grant_regular_pct") or 0) >= 50:
+        hint_lines.append(f"⚠️ DHCP видає адресу заново {dh['grants']} разів, кожні ~{dh.get('grant_period_s')} с — пристрій "
+                          "регулярно перепідключається (лінк або мережевий стек ПК).")
+    hint_lines += netdiag_ai.common_hints(dh, np_, pa)
+    if not hint_lines:
+        hint_lines.append("✅ За правилами явних проблем за вікно не видно.")
+    facts = netdiag_wired.facts_lines(edge, mau, ln, nb) + netdiag_ai._qradar_lines(dh, np_, None, pa)
+    t1 = time.monotonic()
+    llm, err, llm_s, attempts = await netdiag_ai.ask_llm(cfg, netdiag_ai.build_prompt(
+        ["Підключення: КАБЕЛЬ."] + facts, hint_lines, job.get("complaint") or "other", job.get("details") or ""))
+    log.info(f"[#{job['id']}] ai(wired) llm ok={bool(llm)} err={err or '-'} {llm_s:.0f}s attempts={attempts}")
+    timing = {"queue": job["started"] - job["created"], "collect": t1 - t0, "llm": llm_s}
+    body = netdiag_ai.render(job, facts, hint_lines, llm, err, timing, netdiag_ai.model_label(cfg), others, owned,
+                             (dh or {}).get("ips"), mins, "кабель", notes)
+    body["cardsV2"][0]["card"]["sections"].append(ui.result_actions(ip or mac, False))
+    ok = await asyncio.to_thread(chat_post, cfg, job["space"], body, job.get("thread") or "")
+    await asyncio.to_thread(netdiag_ai.finish, cfg, job["id"], netdiag_ai.DONE if ok else netdiag_ai.ERROR,
+                            f"wired llm={'ok' if llm else err} delivered={ok}")
+    log.info(f"[#{job['id']}] ai(wired) done user={job.get('email')} mac={mac} sw={edge['ip']} port={ifname} "
+             f"delivered={ok} in {time.monotonic() - t0:.0f}s")
+
+
+async def ai_run(cfg: dict, job: dict) -> None:
+    if job.get("medium") == "wired":
+        await ai_run_wired(cfg, job)
+    else:
+        await ai_run_wifi(cfg, job)
 
 
 async def ai_worker() -> None:
@@ -535,6 +636,25 @@ def _click_params(event: dict) -> tuple[str, dict]:
     return fn, {k: str(v)[:64] for k, v in params.items()}
 
 
+IFNAME_RE = re.compile(r"^[A-Za-z0-9/._:\- ]{1,48}$")
+
+
+def _ai_ctx(cfg: dict, prm: dict) -> dict:
+    """Контекст порту з параметрів кнопки — недовірений ввід: свіч має бути в нашому списку, решта — за форматом."""
+    if prm.get("m") != "wired":
+        return {}
+    sw = netdiag.parse_ip(prm.get("sw", ""), cfg) or ""
+    if not sw or sw not in (netdiag.switches(cfg) or {}):
+        return {}
+    ctx = {"m": "wired", "sw": sw}
+    if IFNAME_RE.match(prm.get("ifn", "")):
+        ctx["ifn"] = prm["ifn"]
+    for k in ("ifi", "bp"):
+        if str(prm.get(k, "")).isdigit():
+            ctx[k] = str(int(prm[k]))
+    return ctx
+
+
 async def card_clicked(cfg: dict, event: dict, email: str) -> dict:
     fn, prm = _click_params(event)
     aid = secrets.token_hex(3)  # ID дії: ключ треду + мітка в журналі
@@ -583,7 +703,7 @@ async def card_clicked(cfg: dict, event: dict, email: str) -> dict:
         mac = netdiag.parse_mac(prm.get("mac", ""))
         if not mac:
             return {**new, "text": "⚠️ Немає MAC пристрою — запустіть діагностику ще раз."}
-        return ui.dlg_ai(mac, netdiag.parse_ip(prm.get("ip", ""), cfg) or "")
+        return ui.dlg_ai(mac, netdiag.parse_ip(prm.get("ip", ""), cfg) or "", _ai_ctx(cfg, prm))
     if fn == "submit_ai":
         mac = netdiag.parse_mac(prm.get("mac", ""))
         ip = netdiag.parse_ip(prm.get("ip", ""), cfg) or ""
@@ -595,7 +715,12 @@ async def card_clicked(cfg: dict, event: dict, email: str) -> dict:
         details = ui.form_text(event, "details")
         space = (event.get("space") or {}).get("name", "")
         thread = ((event.get("message") or {}).get("thread") or {}).get("name", "")
-        job, pos, why = await asyncio.to_thread(netdiag_ai.enqueue, cfg, mac, ip, space, thread, email, complaint, details)
+        ctx = await asyncio.to_thread(_ai_ctx, cfg, prm)
+        medium = "wired" if ctx.get("m") == "wired" else "wifi"
+        allowed = netdiag_ai.WIRED_COMPLAINTS if medium == "wired" else netdiag_ai.WIFI_COMPLAINTS
+        complaint = complaint if complaint in allowed else "other"
+        job, pos, why = await asyncio.to_thread(netdiag_ai.enqueue, cfg, mac, ip, space, thread, email, complaint, details,
+                                                medium, ctx)
         log.info(f"[#{job['id'] if job else '-'}] ai enqueue user={email} mac={mac} ip={ip or '-'} complaint={complaint} "
                  f"pos={pos} {why or 'new'}")
         if why == "full":

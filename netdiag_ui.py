@@ -68,7 +68,7 @@ def result_actions(ip: str | None, pa: bool, ai: dict | None = None) -> dict:
     аналітики несе MAC, знайдений під час діагностики (аналіз іде за MAC, не за IP)."""
     btns = []
     if ai and ai.get("mac"):
-        btns.append(button("Розширена аналітика", "dlg_ai", {"mac": ai["mac"], "ip": ai.get("ip") or ""},
+        btns.append(button("Розширена аналітика", "dlg_ai", {k: v for k, v in ai.items() if v not in (None, "")},
                            dialog=True, icon="psychology", filled=True))
     if ip:
         btns.append(button("Перевірити ще раз", "run_diag", {"ip": ip}, icon="refresh"))
@@ -117,18 +117,24 @@ def dlg_unblock(prefill_ip: str = "") -> dict:
     ], "submit_unblock", "Зняти блокування")
 
 
-def dlg_ai(mac: str, ip: str = "") -> dict:
-    """Скарга перед розширеною аналітикою: фокусує висновок LLM (обриви / не підключається / повільно)."""
+def dlg_ai(mac: str, ip: str = "", extra: dict | None = None) -> dict:
+    """Скарга перед розширеною аналітикою: фокусує висновок LLM. extra = контекст кнопки (m=wired, sw, ifn, ifi, bp)."""
     import netdiag_ai
-    items = [{"text": t[:1].upper() + t[1:], "value": k, "selected": k == "drops"} for k, t in netdiag_ai.COMPLAINTS.items()]
+    extra = extra or {}
+    wired = extra.get("m") == "wired"
+    keys = netdiag_ai.WIRED_COMPLAINTS if wired else netdiag_ai.WIFI_COMPLAINTS
+    items = [{"text": netdiag_ai.COMPLAINTS[k][:1].upper() + netdiag_ai.COMPLAINTS[k][1:], "value": k, "selected": k == keys[0]}
+             for k in keys]
+    what = (f"кабель: свіч {extra.get('sw')}, порт {extra.get('ifn')} — події й syslog порту (LibreNMS), автоузгодження з карткою, "
+            "інші порти свіча, DHCP, 802.1X/NPS, Palo Alto") if wired else \
+        "Wi-Fi (пристрій і інші клієнти точки), DHCP, NPS, Palo Alto"
     return _dialog(f"🧠 Розширена аналітика {ip or mac}", [
         {"selectionInput": {"name": "complaint", "label": "На що скаржаться", "type": "RADIO_BUTTON", "items": items}},
         {"textInput": {"name": "details", "label": "Деталі (необов'язково)", "type": "MULTIPLE_LINE",
                        "hintText": "Який застосунок, де саме (кабінет/цех), коли почалось"}},
         {"textParagraph": {"text": netdiag._c(
-            f"Аналіз за MAC {mac} за останню годину: Wi-Fi (пристрій і інші клієнти точки), DHCP, NPS, Palo Alto. "
-            "Результат прийде окремим повідомленням у цей тред.", netdiag.GREY)}},
-    ], "submit_ai", "Аналізувати", {"mac": mac, "ip": ip})
+            f"Аналіз за MAC {mac} за останню годину: {what}. Результат прийде окремим повідомленням у цей тред.", netdiag.GREY)}},
+    ], "submit_ai", "Аналізувати", {"mac": mac, "ip": ip, **extra})
 
 
 def dialog_error(msg: str) -> dict:

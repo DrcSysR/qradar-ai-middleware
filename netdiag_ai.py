@@ -63,7 +63,7 @@ SCHEMA_SQL = """
 CREATE TABLE IF NOT EXISTS ai_jobs (
   id TEXT PRIMARY KEY, mac TEXT NOT NULL, ip TEXT, space TEXT, thread TEXT, email TEXT,
   status TEXT NOT NULL, created INTEGER NOT NULL, started INTEGER, finished INTEGER, info TEXT,
-  complaint TEXT, details TEXT);
+  complaint TEXT, details TEXT, medium TEXT, ctx TEXT);
 CREATE INDEX IF NOT EXISTS ai_jobs_status ON ai_jobs(status, created);
 """
 
@@ -92,13 +92,17 @@ def position(con, job: dict) -> int:
 COMPLAINTS = {
     "drops": "обривається додаток / зв'язок",
     "connect": "не вдається підключитись до Wi-Fi",
-    "slow": "повільно працює",
+    "slow": "повільно / недостатня швидкість",
+    "no_inet": "значок «немає інтернету» / немає доступу",
+    "reconnects": "періодичні перепідключення",
     "other": "загальна перевірка",
 }
+WIFI_COMPLAINTS = ("drops", "connect", "slow", "other")
+WIRED_COMPLAINTS = ("slow", "no_inet", "reconnects", "drops", "other")
 
 
 def enqueue(cfg: dict, mac: str, ip: str, space: str, thread: str, email: str,
-            complaint: str = "other", details: str = "") -> tuple[dict | None, int, str]:
+            complaint: str = "other", details: str = "", medium: str = "wifi", ctx: dict | None = None) -> tuple[dict | None, int, str]:
     """→ (задача, позиція, '' | 'dup' | 'full'). Той самий MAC у черзі/в роботі — не дублюємо."""
     con = _db(cfg)
     try:
@@ -115,8 +119,9 @@ def enqueue(cfg: dict, mac: str, ip: str, space: str, thread: str, email: str,
             return None, n, "full"
         job = {"id": secrets.token_hex(3), "mac": mac, "ip": ip or "", "space": space, "thread": thread,
                "email": email, "status": QUEUED, "created": int(time.time()),
-               "complaint": complaint if complaint in COMPLAINTS else "other", "details": (details or "")[:300]}
-        cols = ("id", "mac", "ip", "space", "thread", "email", "status", "created", "complaint", "details")
+               "complaint": complaint if complaint in COMPLAINTS else "other", "details": (details or "")[:300],
+               "medium": "wired" if medium == "wired" else "wifi", "ctx": json.dumps(ctx or {}, ensure_ascii=False)[:500]}
+        cols = ("id", "mac", "ip", "space", "thread", "email", "status", "created", "complaint", "details", "medium", "ctx")
         con.execute(f"INSERT INTO ai_jobs({','.join(cols)}) VALUES({','.join('?' * len(cols))})", tuple(job[k] for k in cols))
         con.execute("DELETE FROM ai_jobs WHERE status NOT IN (?,?) AND created<?", (QUEUED, RUNNING, int(time.time()) - 7 * 86400))
         con.execute("COMMIT")
@@ -460,7 +465,8 @@ def pa_facts(events: list[dict] | None, owned: list[tuple[int, int]]) -> dict | 
         return None
     inside = lambda t: any(a <= t <= b for a, b in owned)  # noqa: E731
     f = {"sessions": 0, "allowed": 0, "denied": 0, "end_reasons": {}, "denied_top": {}, "apps": {},
-         "url_blocked": {}, "threats": {}, "events": 0, "outside": 0}
+         "url_blocked": {}, "threats": {}, "events": 0, "outside": 0,
+         "wan_allowed": 0, "wan_denied": 0, "dns_allowed": 0, "dns_denied": 0, "wan_deny_rules": {}}
     for e in events:
         ts = int(e.get("ts") or 0) // 1000
         if not inside(ts):
@@ -475,6 +481,16 @@ def pa_facts(events: list[dict] | None, owned: list[tuple[int, int]]) -> dict | 
         f["events"] += 1
         if cat == "TRAFFIC":
             f["sessions"] += 1
+            to_wan = (kv.get("DestinationZone") or "").upper() == "WAN"
+            is_dns = app in ("dns", "dns-base") or kv.get("dstPort") == "53"
+            ok = action == "allow"
+            if to_wan:
+                f["wan_allowed" if ok else "wan_denied"] += 1
+                if not ok:
+                    r = kv.get("RuleName") or "?"
+                    f["wan_deny_rules"][r] = f["wan_deny_rules"].get(r, 0) + 1
+            if is_dns:
+                f["dns_allowed" if ok else "dns_denied"] += 1
             if action == "allow":
                 f["allowed"] += 1
                 er = kv.get("SessionEndReason") or "?"
@@ -506,6 +522,7 @@ def pa_facts(events: list[dict] | None, owned: list[tuple[int, int]]) -> dict | 
     f["url_blocked"] = top(f["url_blocked"], 3)
     f["threats"] = top(f["threats"], 3)
     f["apps"] = dict(sorted(((k, v) for k, v in f["apps"].items()), key=lambda x: -x[1][1])[:6])
+    f["wan_deny_rule"] = max(f["wan_deny_rules"], key=f["wan_deny_rules"].get) if f["wan_deny_rules"] else ""
     return f
 
 
@@ -572,12 +589,6 @@ def hints(sf: dict, dh: dict | None, np_: dict | None, loc: list[dict] | None = 
         out.append("⛔ Клієнт потрапляв у exclusion list WLC.")
     if sf.get("absent_inside", 0) >= 3 and sf.get("reconnects", 0) < 2:
         out.append(f"💤 Зникав з WLC {sf['absent_inside']} разів без частих перепідключень — сон/вихід із зони.")
-    if np_ and np_.get("denied"):
-        out.append(f"🔐 NPS відмовляв {np_['denied']} разів: " + "; ".join(np_["reasons"].keys()))
-    if dh and dh.get("counts", {}).get("NAK"):
-        out.append(f"🌐 DHCP NAK ×{dh['counts']['NAK']} — пристрій просить чужу/застарілу адресу.")
-    if dh and dh.get("counts", {}).get("DISCOVER", 0) >= 5 and not dh.get("counts", {}).get("ACK"):
-        out.append("🌐 DHCP DISCOVER без ACK — адресу не отримує.")
     # повільно: застарілі швидкості / мала пропускна
     if (sf.get("legacy_rate_pct") or 0) >= 50:
         out.append(f"🐢 Пристрій {sf['legacy_rate_pct']}% часу на застарілих швидкостях 802.11a/g "
@@ -593,6 +604,21 @@ def hints(sf: dict, dh: dict | None, np_: dict | None, loc: list[dict] | None = 
             elif sf.get("reconnects", 0) >= 4 or (dh and dh.get("grants", 0) >= 6):
                 out.append(f"📍 Інші клієнти {lc['ap']} {lc['band']} ГГц стабільні ({lc['unstable']}/{lc['clients']} нестабільних) — "
                            "проблема, ймовірно, в самому ПРИСТРОЇ.")
+    out += common_hints(dh, np_, pa)
+    if not out:
+        out.append("✅ За правилами явних проблем за вікно не видно.")
+    return out
+
+
+def common_hints(dh: dict | None, np_: dict | None, pa: dict | None) -> list[str]:
+    """Ознаки з QRadar (NPS, DHCP, Palo Alto) — спільні для Wi-Fi і кабелю."""
+    out = []
+    if np_ and np_.get("denied"):
+        out.append(f"🔐 NPS відмовляв {np_['denied']} разів: " + "; ".join(np_["reasons"].keys()))
+    if dh and dh.get("counts", {}).get("NAK"):
+        out.append(f"🌐 DHCP NAK ×{dh['counts']['NAK']} — пристрій просить чужу/застарілу адресу.")
+    if dh and dh.get("counts", {}).get("DISCOVER", 0) >= 5 and not dh.get("counts", {}).get("ACK"):
+        out.append("🌐 DHCP DISCOVER без ACK — адресу не отримує.")
     # Palo Alto: обриви додатків
     if pa and pa.get("sessions"):
         if pa.get("denied", 0) >= 10:
@@ -611,8 +637,17 @@ def hints(sf: dict, dh: dict | None, np_: dict | None, loc: list[dict] | None = 
             out.append("🛡 Загрози на PA: " + "; ".join(f"{k} ×{v}" for k, v in pa["threats"].items()) + ".")
         if pa.get("url_blocked"):
             out.append("🚫 Заблоковано URL-категорії: " + ", ".join(f"{k} ×{v}" for k, v in pa["url_blocked"].items()) + ".")
-    if not out:
-        out.append("✅ За правилами явних проблем за вікно не видно.")
+    if pa and pa.get("sessions"):
+        # «немає інтернету»: у WAN нічого не пускають / DNS не проходить
+        if pa.get("wan_denied", 0) >= 5 and pa.get("wan_allowed", 0) == 0:
+            out.append(f"🚫 Жодної дозволеної сесії в інтернет, відхилено {pa['wan_denied']} (правило «{pa.get('wan_deny_rule') or '?'}») — "
+                       "IP не має дозволу на вихід (тег адреси на PA: srv/adm/gen-inet або тимчасовий tmp-inet).")
+        elif pa.get("wan_denied", 0) >= 20 and pa.get("wan_allowed", 0) < pa["wan_denied"]:
+            out.append(f"🚫 В інтернет більше відхилено ({pa['wan_denied']}), ніж дозволено ({pa['wan_allowed']}) — частина сервісів заборонена політикою.")
+        if pa.get("dns_denied", 0) >= 3 and not pa.get("dns_allowed"):
+            out.append(f"🌐 DNS-запити відхилено ({pa['dns_denied']}) і жодного дозволеного — без DNS Windows показує «немає інтернету».")
+    if dh is not None and not dh.get("events") and pa is not None and not pa.get("events"):
+        out.append("ℹ️ За вікно немає ні DHCP-подій, ні трафіку через Palo Alto для цього пристрою/IP.")
     return out
 
 
@@ -692,7 +727,10 @@ def _qradar_lines(dh: dict | None, np_: dict | None, loc: list[dict] | None, pa:
     elif not pa.get("events"):
         L.append("Palo Alto: подій для цього IP у вікні, коли IP належав пристрою, немає.")
     else:
-        L.append(f"Palo Alto (лише коли IP належав пристрою): сесій {pa['sessions']}, дозволено {pa['allowed']}, відхилено {pa['denied']}.")
+        L.append(f"Palo Alto (лише коли IP належав пристрою): сесій {pa['sessions']}, дозволено {pa['allowed']}, відхилено {pa['denied']}; "
+                 f"в інтернет (зона WAN) дозволено {pa.get('wan_allowed', 0)} / відхилено {pa.get('wan_denied', 0)}"
+                 + (f" (правило «{pa['wan_deny_rule']}»)" if pa.get("wan_deny_rule") else "")
+                 + f"; DNS дозволено {pa.get('dns_allowed', 0)} / відхилено {pa.get('dns_denied', 0)}.")
         if pa.get("end_reasons"):
             L.append("PA причини завершення дозволених сесій: " + ", ".join(f"{k} ×{v}" for k, v in pa["end_reasons"].items()) + ".")
         if pa.get("denied_top"):
@@ -708,7 +746,8 @@ def _qradar_lines(dh: dict | None, np_: dict | None, loc: list[dict] | None, pa:
 
 # ============================================================================ LLM
 SYSTEM_PROMPT = (
-    "Ти досвідчений інженер корпоративного Wi-Fi (контролер Cisco WLC 3504, 802.1X через NPS, DHCP). "
+    "Ти досвідчений інженер корпоративної мережі: Wi-Fi (контролер Cisco WLC 3504) і кабель (комутатори HP/Aruba/Huawei), "
+    "802.1X/MAB через NPS, DHCP, файрвол Palo Alto (вихід в інтернет лише для адрес із тегом). "
     "Тобі дають факти про ОДИН пристрій (за MAC) за останню годину і ознаки, пораховані правилами. "
     "Пиши українською, коротко і конкретно. Спирайся ЛИШЕ на надані факти, нічого не вигадуй; якщо фактів "
     "недостатньо — так і скажи. Якщо проблем немає — скажи, що проблем не видно. "
@@ -740,6 +779,19 @@ SYSTEM_PROMPT = (
     "SSL-дешифрування; aged-out для довгих сесій → тайм-аут простою (keepalive); заблоковані URL-категорії → політика URL.\n"
     "• «не підключається»: пристрою немає в таблиці WLC або стани 8021X_REQD/DHCP_REQD, відмови NPS, exclusion, DHCP без ACK → "
     "профіль Wi-Fi/пароль/сертифікат на пристрої, обліковий запис/група, пул DHCP.\n"
+    "КАБЕЛЬ:\n"
+    "• мережева карта рекламує 1 Гбіт/с, а лінк 100/10 Мбіт/с, або швидкість лінку стрибає → у кабелі/розетці/патч-корді працюють не "
+    "всі пари: перевірити/замінити патч-корд, переобжати розетку, протестувати лінію тестером; інший порт свіча для перевірки.\n"
+    "• помилки прийому/FCS → кабель, розетка, наводки, мережева карта; late collisions або half duplex → duplex mismatch "
+    "(виставити автоузгодження з обох боків).\n"
+    "• лінк падає періодично → кабель/розетка; енергозбереження мережевої карти (Energy Efficient Ethernet/Green Ethernet, "
+    "«дозволити вимкнення для економії енергії»), сон/гібернація ПК; якщо падають і інші порти свіча — живлення/свіч/шафа.\n"
+    "• порт завантажений > 70% або вихідні відкидання → насичення: 100-мегабітний лінк, мікросплески, аплінк.\n"
+    "• VLAN 500 / «Blocked by AAA» / 802.1X unauthorized / відмови NPS → автентифікація 802.1X/MAB: сертифікат/обліковий запис ПК, "
+    "реєстрація MAC (MAB), політика NPS.\n"
+    "• «немає інтернету»: немає DHCP-адреси (APIPA 169.254) → DHCP/VLAN; відхилення Palo Alto в зону WAN без жодної дозволеної "
+    "сесії → адреса не має тегу виходу в інтернет (srv/adm/gen-inet або tmp-inet через бота); DNS відхилено → DNS; "
+    "якщо трафік в інтернет іде, а значок є — перевірка NCSI Windows (msftconnecttest) блокується/дешифрується.\n"
     "Відповідай саме на скаргу користувача, якщо вона вказана; якщо факти не пояснюють скаргу — так і скажи і порадь, що зібрати ще."
 )
 
@@ -990,11 +1042,11 @@ async def ask_llm01(cfg: dict, prompt: str) -> tuple[dict | None, str, float, in
 
 
 # ============================================================================ картка
-def render(job: dict, sf: dict, dh: dict | None, np_: dict | None, others: list[dict] | None,
-           hint_lines: list[str], llm: dict | None, llm_err: str, timing: dict, label: str = "",
-           loc: list[dict] | None = None, pa: dict | None = None, owned: list[tuple[int, int]] | None = None) -> dict:
+def render(job: dict, facts: list[str], hint_lines: list[str], llm: dict | None, llm_err: str, timing: dict,
+           label: str = "", others: list[dict] | None = None, owned: list[tuple[int, int]] | None = None,
+           ips: list[str] | None = None, minutes: int = 60, title: str = "Wi-Fi", extra_bind: list[str] | None = None) -> dict:
     _e, _c, _row, _para = netdiag._e, netdiag._c, netdiag._row, netdiag._para
-    mins = int(sf.get("minutes") or 60)
+    mins = int(minutes or 60)
     sections = []
     comp = COMPLAINTS.get(job.get("complaint") or "other", COMPLAINTS["other"])
     sections.append({"widgets": [_para(f"Скарга: <b>{_e(comp)}</b>" + (f" — «{_e(job['details'])}»" if job.get("details") else ""))]})
@@ -1014,9 +1066,8 @@ def render(job: dict, sf: dict, dh: dict | None, np_: dict | None, others: list[
     sections.append({"header": "🔎 Ознаки (правила)", "widgets": [_para("<br>".join(
         _c(_e(h), netdiag._verdict_color(h)) for h in hint_lines))]})
     sections.append({"header": f"📊 Факти за {mins} хв", "collapsible": True, "uncollapsibleWidgetsCount": 1,
-                     "widgets": [_para("<br>".join(_e(x) for x in facts_lines(sf, dh, np_, loc, pa)))]})
-    bind = [f"Аналіз — лише за MAC <b>{_e(job['mac'])}</b>."]
-    ips = sorted(set((sf.get("ips") or []) + ((dh or {}).get("ips") or [])))
+                     "widgets": [_para("<br>".join(_e(x) for x in facts))]})
+    bind = [f"Аналіз — лише за MAC <b>{_e(job['mac'])}</b>."] + [_e(x) for x in (extra_bind or [])]
     if ips:
         bind.append(f"IP цього MAC за вікно: {_e(', '.join(ips))}.")
     if others:
@@ -1034,7 +1085,7 @@ def render(job: dict, sf: dict, dh: dict | None, np_: dict | None, others: list[
     sections.append({"header": "🔗 Прив'язка IP / MAC", "widgets": [_para("<br>".join(bind))]})
     sections.append({"widgets": [_para(_c(
         f"Черга {timing.get('queue', 0):.0f} с · збір {timing.get('collect', 0):.0f} с · LLM {timing.get('llm', 0):.0f} с", netdiag.GREY))]})
-    header = {"title": f"Розширена аналітика Wi-Fi {job.get('ip') or job['mac']}",
+    header = {"title": f"Розширена аналітика ({title}) {job.get('ip') or job['mac']}",
               "subtitle": f"MAC {job['mac']} · {mins} хв · дія #{job['id']}"}
-    return {"fallbackText": f"Розширена аналітика Wi-Fi {job.get('ip') or job['mac']}",
+    return {"fallbackText": f"Розширена аналітика ({title}) {job.get('ip') or job['mac']}",
             "cardsV2": [{"cardId": "netdiag_ai", "card": {"header": header, "sections": sections}}]}

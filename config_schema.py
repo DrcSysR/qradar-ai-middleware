@@ -259,6 +259,12 @@ SCHEMA = {
     # Розширена аналітика Wi-Fi (netdiag_ai.py, 2026-11-13): факти за годину по MAC → LLM через власну чергу
     # ai_jobs у netdiag.db. Провайдер vertex (типово; знеособлені факти) або openai = llm01 (тоді hold:chat).
     "netdiag_ai_minutes":                 (int,  60),
+    # Кабельна аналітика (netdiag_wired.py): LibreNMS — події/syslog/стан порту, NetBox — розташування свіча.
+    # Токени — секрети, лише config.json (BW «API: LibreNMS», «API: netbox.modern-expo.com»; токен NetBox прив'язаний до IP).
+    "netdiag_librenms_url":               (str,  "http://172.17.61.230"),
+    "netdiag_librenms_token":             (str,  ""),
+    "netdiag_netbox_url":                 (str,  "https://netbox.modern-expo.com"),
+    "netdiag_netbox_token":               (str,  ""),
     "netdiag_ai_provider":                (str,  "vertex"),
     "netdiag_ai_vertex_model":            (str,  ""),    # порожньо = найновіша GA родини (автовибір, кеш у netdiag.db)
     "netdiag_ai_vertex_family":           (str,  "flash-lite"),   # найдешевша родина
