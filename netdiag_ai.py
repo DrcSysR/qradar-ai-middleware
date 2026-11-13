@@ -1053,6 +1053,34 @@ async def ask_llm01(cfg: dict, prompt: str) -> tuple[dict | None, str, float, in
 
 
 # ============================================================================ картка
+# Групи фактів у картці: (заголовок, префікси рядків). Рядки «– …» належать до групи попереднього рядка.
+FACT_GROUPS = [
+    ("🧾 Пристрій", ("Пристрій:",)),
+    ("🏢 Свіч і розташування", ("Свіч ", "NetBox:", "Свіч загалом")),
+    ("🔌 Порт і лінк", ("Зараз (SNMP)", "Автоузгодження", "LibreNMS")),
+    ("🖧 Пристрої на порту", ("Пристроїв за портом",)),
+    ("📜 Події та syslog порту", ("Події порту", "Подій порту", "Syslog свіча про порт")),
+    ("📶 Wi-Fi пристрою", ("Вікно:", "SSID", "Точки:", "RSSI", "SNR", "Перепідключень", "Стани не RUN", "Швидкість підключення",
+                          "Трафік пристрою", "Коди причин WLC")),
+    ("📍 Точки й локація", ("Радіо ", "Локація ")),
+    ("🌐 DHCP і 802.1X/NPS", ("DHCP", "NPS")),
+    ("🧱 Palo Alto", ("Palo Alto", "PA ")),
+]
+
+
+def group_facts(facts: list[str]) -> list[tuple[str, list[str]]]:
+    buckets: dict[str, list[str]] = {}
+    cur = "ℹ️ Інше"
+    for line in facts:
+        if line.startswith("Підключення:"):
+            continue
+        if not line.startswith("– "):
+            cur = next((t for t, pre in FACT_GROUPS if line.startswith(pre)), "ℹ️ Інше")
+        buckets.setdefault(cur, []).append(line)
+    order = [t for t, _ in FACT_GROUPS] + ["ℹ️ Інше"]
+    return [(t, buckets[t]) for t in order if t in buckets]
+
+
 def render(job: dict, facts: list[str], hint_lines: list[str], llm: dict | None, llm_err: str, timing: dict,
            label: str = "", others: list[dict] | None = None, owned: list[tuple[int, int]] | None = None,
            ips: list[str] | None = None, minutes: int = 60, title: str = "Wi-Fi", extra_bind: list[str] | None = None) -> dict:
@@ -1076,8 +1104,12 @@ def render(job: dict, facts: list[str], hint_lines: list[str], llm: dict | None,
             f"LLM не дала висновку ({_e(llm_err or 'невідомо')}). Нижче — ознаки й факти, пораховані без неї.", netdiag.AMBER))]})
     sections.append({"header": "🔎 Ознаки (правила)", "widgets": [_para("<br>".join(
         _c(_e(h), netdiag._verdict_color(h)) for h in hint_lines))]})
-    sections.append({"header": f"📊 Факти за {mins} хв", "collapsible": True, "uncollapsibleWidgetsCount": 1,
-                     "widgets": [_para("<br>".join(_e(x) for x in facts))]})
+    for title_, lines in group_facts(facts):
+        sec = {"header": f"{title_}", "widgets": [_para(_e(x) if not x.startswith("– ") else
+                                                        "&nbsp;&nbsp;" + _e(x)) for x in lines]}
+        if len(lines) > 4:
+            sec.update(collapsible=True, uncollapsibleWidgetsCount=3)
+        sections.append(sec)
     bind = [f"Аналіз — лише за MAC <b>{_e(job['mac'])}</b>."] + [_e(x) for x in (extra_bind or [])]
     if ips:
         bind.append(f"IP цього MAC за вікно: {_e(', '.join(ips))}.")

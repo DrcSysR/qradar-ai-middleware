@@ -235,8 +235,19 @@ def librenms_facts(cfg: dict, sw_ip: str, ifname: str, bport: int | None, ifinde
                                     if "ifOperStatus" in (e.get("message") or "") and "-> down" in (e.get("message") or "")})
     sl = (_lnms(cfg, f"/logs/syslog/{urllib.parse.quote(sw_ip)}", limit=1000, sortorder="DESC", **{"from": fr}) or {}).get("logs", [])
     pats = _port_tokens(ifname or "", bport, ifindex)
-    f["syslog_port"] = [{"t": (s.get("timestamp") or "")[11:16], "m": re.sub(r"\s+", " ", s.get("msg") or "")[:120]}
-                        for s in reversed(sl) if any(p.search(s.get("msg") or "") for p in pats)][-20:]
+    # однакові повідомлення (свіч повторює «off-line / Blocked by AAA» щохвилини) → один рядок «ЧЧ:ММ–ЧЧ:ММ текст ×N»
+    agg: dict[str, dict] = {}
+    for s_ in reversed(sl):                                   # від старих до нових
+        msg = re.sub(r"\s+", " ", s_.get("msg") or "")[:120]
+        if not any(p.search(msg) for p in pats):
+            continue
+        t = (s_.get("timestamp") or "")[11:16]
+        a = agg.setdefault(msg, {"first": t, "last": t, "n": 0})
+        a["last"], a["n"] = t, a["n"] + 1
+    f["syslog_port_total"] = sum(a["n"] for a in agg.values())
+    f["syslog_port"] = [{"t": a["first"] if a["first"] == a["last"] else f"{a['first']}–{a['last']}",
+                         "m": m + (f" ×{a['n']}" if a["n"] > 1 else ""), "last": a["last"]}
+                        for m, a in sorted(agg.items(), key=lambda kv: kv[1]["last"])][-12:]
     notable: dict[str, int] = {}
     for s in sl:
         for rx, label in SW_NOTABLE:
@@ -337,6 +348,9 @@ def hints(edge: dict, mau: dict, ln: dict | None, pm: dict | None = None) -> lis
     dx = edge.get("dot1x") or {}
     if dx.get("port") == "unauthorized":
         out.append(f"🔐 802.1X на порту: {dx.get('pae')} / unauthorized — пристрій не авторизований (див. NPS).")
+    if any(re.search(r"(?i)excessive link|link.?flap|flapping", s["m"]) for s in (ln or {}).get("syslog_port", [])):
+        out.append("⛔ Свіч сам фіксує надмірні переключення лінку на цьому порту (excessive link state transitions / flapping) — "
+                   "кабель/розетка/карта.")
     if any("AAA" in s["m"] for s in (ln or {}).get("syslog_port", [])):
         out.append("🔐 Свіч пише «Blocked by AAA» для цього порту — автентифікація 802.1X/MAB не проходить.")
     if (ln or {}).get("other_ports_flapped", 0) >= 5:
@@ -354,13 +368,14 @@ def hints(edge: dict, mau: dict, ln: dict | None, pm: dict | None = None) -> lis
 def facts_lines(edge: dict, mau: dict, ln: dict | None, nb: dict | None, pm: dict | None = None) -> list[str]:
     L = []
     if pm is not None:
-        lst = ", ".join(f"{x['mac']}" + (f" {x['vendor']}" if x.get("vendor") else "") + (f" ({x['ip']})" if x.get("ip") else "")
-                        + (" — цей пристрій" if x["self"] else "") for x in pm.get("macs", [])[:8])
         lldp = ", ".join(f"{n.get('sysname') or '?'}" + (" (телефон)" if n.get("phone") else " (свіч)" if n.get("bridge") else "")
                          for n in edge.get("lldp") or [])
         L.append(f"Пристроїв за портом зараз (FDB свіча): {pm.get('count', 0)}"
-                 + (f", VLAN {', '.join(map(str, pm['vlans']))}" if pm.get("vlans") else "") + (f": {lst}" if lst else "")
+                 + (f", VLAN {', '.join(map(str, pm['vlans']))}" if pm.get("vlans") else "")
                  + (f"; LLDP-сусіди: {lldp}" if lldp else "; LLDP-сусідів немає") + ".")
+        for x in pm.get("macs", [])[:8]:
+            L.append(f"– {x['mac']}" + (f" · {x['vendor']}" if x.get("vendor") else "") + (f" · {x['ip']}" if x.get("ip") else "")
+                     + (" · цей пристрій" if x["self"] else ""))
     loc = " · ".join(x for x in [(nb or {}).get("site"), (nb or {}).get("location"), (nb or {}).get("rack") and f"шафа {nb['rack']}",
                                  ((ln or {}).get("device") or {}).get("location")] if x)
     L.append(f"Свіч {edge.get('switch')} ({((ln or {}).get('device') or {}).get('hardware') or edge.get('sysname') or ''}), порт "
@@ -389,11 +404,13 @@ def facts_lines(edge: dict, mau: dict, ln: dict | None, nb: dict | None, pm: dic
                      f"трафік in/out {p['in_mbps']}/{p['out_mbps']} Мбіт/с (завантаження {p.get('util_pct')}%), "
                      f"помилки in/out {p.get('in_err')}/{p.get('out_err')}, відкидання in/out {p.get('in_disc')}/{p.get('out_disc')}, VLAN {p.get('vlan')}.")
         if ln.get("events"):
-            L.append("Події порту: " + "; ".join(f"{e['t']} {e['m']}" for e in ln["events"][-12:]) + ".")
+            L.append(f"Події порту за вікно ({len(ln['events'])}):")
+            L += [f"– {e['t']} {e['m']}" for e in ln["events"][-12:]]
         else:
             L.append("Подій порту (up/down, швидкість, дуплекс, VLAN) за вікно немає.")
         if ln.get("syslog_port"):
-            L.append("Syslog свіча про порт: " + "; ".join(f"{s['t']} {s['m']}" for s in ln["syslog_port"][-8:]) + ".")
+            L.append(f"Syslog свіча про порт ({ln.get('syslog_port_total', len(ln['syslog_port']))} рядків, однакові згорнуто):")
+            L += [f"– {s['t']} {s['m']}" for s in ln["syslog_port"][-8:]]
         L.append(f"Свіч загалом: інших портів, що падали, {ln.get('other_ports_flapped', 0)}; syslog-рядків {ln.get('syslog_total', 0)}"
                  + (f" (помітні: {', '.join(f'{k} ×{v}' for k, v in ln['syslog_switch'].items())})" if ln.get("syslog_switch") else "")
                  + (f"; аптайм {netdiag.fmt_ago(ln['device'].get('uptime_s'))}" if (ln.get("device") or {}).get("uptime_s") else "") + ".")
