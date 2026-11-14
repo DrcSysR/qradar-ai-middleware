@@ -184,6 +184,9 @@ SCHEMA = {
     "cortex_xdr_fp_alert_names":          (list, []),
     "cortex_xdr_fp_external_ids":         (list, []),
     "cortex_xdr_report_title":            (str,  ""),
+    "cortex_xdr_network_sources":         (list, []),
+    "cortex_xdr_network_drop_categories": (list, []),
+    "cortex_xdr_network_keep_inbound_blocked": (bool, False),
 
     # --- cortex_endpoint_cleanup.py (запис 2026-11-05) ---
     # Видалення з консолі Cortex ендпоінтів, що мовчать понад N днів. dry_run=true за

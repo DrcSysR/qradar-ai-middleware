@@ -14,6 +14,7 @@ AI-тріаж офенсів QRadar: сервіс читає офенс, під�
 
 | Дата | Запис |
 |---|---|
+| 2026-11-14 | [Cortex XDR звіт: фільтр мережевих алертів pa-vm (141 → 12 за добу) — лише загрози з нашої мережі та незаблоковані атаки ззовні](changes/2026-11-14-cortex-scan-ngfw-filter.md) |
 | 2026-11-13 | [Захист публічних ендпоінтів чат-ботів: кеш сертифікатів Google у netdiag, сповіщення про дії на PA, /api/ext/* панелі alarm — лише LAN](changes/2026-11-13-netdiag-endpoint-hardening.md) |
 | 2026-11-12 | [netdiag: Google Chat-бот діагностики підключення пристрою за IP (Wi-Fi WLC 3504 / свіч-порт-802.1X / NPS)](changes/2026-11-12-netdiag-bot.md) |
 | 2026-11-05 | [Cortex XDR: автоматичне видалення ендпоінтів, що мовчать 15 днів і більше (cortex_endpoint_cleanup.py, щодня 10:00)](changes/2026-11-05-cortex-endpoint-cleanup.md) |

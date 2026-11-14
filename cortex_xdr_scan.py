@@ -7,7 +7,8 @@
 не передається).
 
 Далі як і раніше: виключаємо Informational / тестові / allowlist / whitelisted-алерти,
-дедуплікуємо по alert_id проти таблиці cortex_xdr_reported в ai_state.db і, якщо щось
+з 2026-11-13 у Cortex ідуть ще й алерти pa-vm (джерело `PAN NGFW`) — з них лишаємо лише
+ті, що потребують дії (див. network_filter), дедуплікуємо по alert_id проти таблиці cortex_xdr_reported в ai_state.db і, якщо щось
 залишилося, шлемо звіт у Google Chat через webhook.
 
 Запускається через systemd timer (раз на добу). Lock через fcntl на cortex_xdr_scan.lock.
@@ -17,6 +18,7 @@ Webhook: окремий cortex_xdr_webhook_url або (fallback) спільни�
 Секрети (cortex_xdr_api_key, webhook URL) — тільки в config.json (gitignored), НЕ комітити.
 """
 import hashlib
+import ipaddress
 import json
 import os
 import secrets
@@ -69,6 +71,15 @@ DEFAULTS = {
     # Окремі alert_id, що вже триаджено як FP.
     "cortex_xdr_fp_external_ids": [],
     "cortex_xdr_report_title": "🛡️ Cortex XDR — щоденний звіт",
+    # Мережеві алерти (з 2026-11-13 pa-vm шле журнали в Cortex): джерела, які вважаємо
+    # «мережевими» і пропускаємо через network_filter.
+    "cortex_xdr_network_sources": ["PAN NGFW"],
+    # Категорії (підрядок, без регістру), що з мережевих джерел відкидаємо завжди:
+    # Zone Protection (flood / host sweep) — пороги, а не загроза конкретному хосту.
+    "cortex_xdr_network_drop_categories": ["Zone Protection"],
+    # Атаки ззовні, які pa-vm сам заблокував (reset/drop), — шум сканерів інтернету.
+    # True = показувати й їх. Незаблоковані атаки ззовні показуємо завжди.
+    "cortex_xdr_network_keep_inbound_blocked": False,
 }
 
 logging.basicConfig(
@@ -199,6 +210,15 @@ def recommend_action(item: dict) -> str:
     module = (item.get("module") or "").lower()
 
     blocked = any(x in act for x in ("prevent", "block", "denied"))
+    if item.get("is_network") and item.get("local_ip"):
+        # Мережевий алерт pa-vm (агента на хості немає в алерті).
+        if _is_internal(item.get("local_ip")):
+            if item.get("dns_query"):
+                return ("🔍 Запит до шкідливого домену: знайти клієнта (якщо ініціатор — DNS-форвардер "
+                        "ns1/DC, то в їх журналі DNS у QRadar), перевірити хост у Cortex")
+            return "🔍 Загроза з нашого хоста (pa-vm): знайти хост-ініціатор, перевірити процес у Cortex"
+        if not blocked:
+            return "🛑 Атаку ззовні pa-vm НЕ заблокував: перевірити опубліковану ціль і правило/профіль безпеки"
     if any(x in name for x in ("ransom", "wildfire", "malware", "trojan")) or "malware" in module:
         if blocked:
             return "✅ Шкідливе ПЗ заблоковано агентом; перевірити джерело, прибрати артефакти з хоста"
@@ -212,6 +232,37 @@ def recommend_action(item: dict) -> str:
     if not blocked and act:
         return "⚠️ Лише задетектовано (не заблоковано): перевірити хост і процес у Cortex"
     return "🔍 Перевірити алерт у Cortex Console"
+
+
+_BLOCK_WORDS = ("prevent", "block", "drop", "reset", "deny", "sinkhole")
+
+
+def _is_internal(ip) -> bool | None:
+    """True — приватна адреса (наша мережа), False — публічна, None — невідомо."""
+    try:
+        return ipaddress.ip_address(str(ip).strip()).is_private
+    except ValueError:
+        return None
+
+
+def network_filter(item: dict, net_sources: set, drop_cats: list, keep_inbound_blocked: bool):
+    """Причина відсіву мережевого (pa-vm) алерту або None, якщо його треба показати.
+
+    Лишаємо: ініціатор у нашій мережі (DNS-шкідник, C2, вихідний експлойт — хост
+    треба знайти й почистити, навіть якщо pa-vm сесію обірвав) і атаки ззовні, які
+    pa-vm НЕ заблокував. Відкидаємо Zone Protection і заблоковані атаки ззовні.
+    Ініціатор невідомий — показуємо (fail-open)."""
+    if (item.get("source") or "") not in net_sources:
+        return None
+    cat = (item.get("category") or "").lower()
+    for c in drop_cats:
+        if c and c.lower() in cat:
+            return f"network_category:{c}"
+    if _is_internal(item.get("local_ip")) is False:
+        act = (item.get("action") or "").lower()
+        if any(w in act for w in _BLOCK_WORDS) and not keep_inbound_blocked:
+            return "network_inbound_blocked"
+    return None
 
 
 def is_false_positive(item: dict, fp_names: set, fp_ids: set, min_sev: int, skip_whitelisted: bool):
@@ -263,6 +314,20 @@ def normalize_alert(alert: dict, console: str) -> dict:
         "whitelisted": bool(alert.get("is_whitelisted")),
         "severity_raw": alert.get("severity"),
     }
+    # Мережеві поля (алерти pa-vm): хто ініціатор, куди, яке правило.
+    item.update({
+        "source": alert.get("source"),
+        "is_network": bool(ev.get("fw_device_name")),   # подія від фаєрвола, не від агента
+        "local_ip": ev.get("action_local_ip"),
+        "local_port": ev.get("action_local_port"),
+        "remote_ip": ev.get("action_remote_ip"),
+        "remote_port": ev.get("action_remote_port"),
+        "dns_query": ev.get("dns_query_name"),
+        "fw_rule": ev.get("fw_rule"),
+        "zones": "→".join(z for z in (ev.get("fw_interface_from"), ev.get("fw_interface_to")) if z),
+    })
+    if not item["src"] and item["local_ip"]:
+        item["src"] = item["local_ip"]
     item["sev_num"] = severity_num(item)
     return item
 
@@ -285,12 +350,18 @@ def filter_and_dedupe(alerts: list, config: dict, dedup_days: int) -> tuple[list
     min_sev = int(cfg(config, "cortex_xdr_min_severity"))
     skip_wl = bool(cfg(config, "cortex_xdr_skip_whitelisted"))
     console = console_base(config)
+    net_sources = set(cfg(config, "cortex_xdr_network_sources"))
+    drop_cats = list(cfg(config, "cortex_xdr_network_drop_categories"))
+    keep_in = bool(cfg(config, "cortex_xdr_network_keep_inbound_blocked"))
 
-    stats = {"raw": len(alerts), "fp": 0, "dedup_run": 0, "dedup": 0, "new": 0}
+    stats = {"raw": len(alerts), "fp": 0, "net": 0, "dedup_run": 0, "dedup": 0, "new": 0}
     seen_in_run = set()
     candidates = []
     for alert in alerts:
         item = normalize_alert(alert, console)
+        if network_filter(item, net_sources, drop_cats, keep_in):
+            stats["net"] += 1
+            continue
         why = is_false_positive(item, fp_names, fp_ids, min_sev, skip_wl)
         if why:
             stats["fp"] += 1
@@ -358,6 +429,13 @@ def build_chat_message(items: list, title: str, max_items: int) -> dict:
             proc = it.get("initiated_by")
             if proc:
                 lines.append(f"    файл/процес: `{proc}`")
+            if it.get("is_network") and it.get("local_ip"):
+                net = f"{it['local_ip']}:{it.get('local_port') or '?'} → {it.get('remote_ip') or '?'}:{it.get('remote_port') or '?'}"
+                extra = ", ".join(x for x in (
+                    f"DNS `{it['dns_query']}`" if it.get("dns_query") else "",
+                    f"правило «{it['fw_rule']}»" if it.get("fw_rule") else "",
+                    it.get("zones") or "") if x)
+                lines.append(f"    мережа: {net}" + (f" ({extra})" if extra else ""))
             lines.append(f"    рекомендація: {recommend_action(it)}")
             sha = it.get("sha256")
             if sha:
@@ -422,7 +500,7 @@ def main() -> None:
         logging.error("Cortex API недоступний — звіт не формуємо, спробуємо наступного запуску")
         sys.exit(1)
     new_items, stats = filter_and_dedupe(alerts, config, dedup_days)
-    logging.info(f"stats: raw={stats['raw']} fp/below={stats['fp']} dedup_run={stats['dedup_run']} "
+    logging.info(f"stats: raw={stats['raw']} net_noise={stats['net']} fp/below={stats['fp']} dedup_run={stats['dedup_run']} "
                  f"dedup_db={stats['dedup']} new={stats['new']}")
 
     if not new_items:

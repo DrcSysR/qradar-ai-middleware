@@ -82,7 +82,9 @@ QRadar offenses API ──► poller.py (кожні 10 хв, вікно 48 го�
 замінюється на Cortex; рядок crontab закоментовано), `cdn_allowlist_update.py` (06:30, рефсет
 CDN-allowlist ~22 тис. IP), `botnet_scan.py` (systemd timer, кожні 4 год, review+hunt
 блок-листа), `cortex_xdr_scan.py` (systemd timer, 09:30, дайджест алертів Cortex XDR у Google
-Chat; з 2026-10-19 джерело — **Cortex XDR Public API** напряму, read-only ключ, не QRadar),
+Chat; з 2026-10-19 джерело — **Cortex XDR Public API** напряму, read-only ключ, не QRadar; з 2026-11-14
+алерти pa-vm (`PAN NGFW`) фільтруються: Zone Protection і заблоковані атаки ззовні відкидаються, у звіт
+ідуть лише загрози з нашої мережі та незаблоковані атаки ззовні — ключі `cortex_xdr_network_*`),
 `cortex_endpoint_cleanup.py` (systemd timer, 10:00, видаляє з консолі Cortex ендпоінти без зв'язку понад
 `cortex_xdr_cleanup_days` = 15 д admin-ключем; бойовий режим з 2026-11-05).
 
