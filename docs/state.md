@@ -84,7 +84,8 @@ CDN-allowlist ~22 тис. IP), `botnet_scan.py` (systemd timer, кожні 4 г�
 блок-листа), `cortex_xdr_scan.py` (systemd timer, 09:30, дайджест алертів Cortex XDR у Google
 Chat; з 2026-10-19 джерело — **Cortex XDR Public API** напряму, read-only ключ, не QRadar; з 2026-11-14
 алерти pa-vm (`PAN NGFW`) фільтруються: Zone Protection і заблоковані атаки ззовні відкидаються, у звіт
-ідуть лише загрози з нашої мережі та незаблоковані атаки ззовні — ключі `cortex_xdr_network_*`),
+ідуть лише загрози з нашої мережі та незаблоковані атаки ззовні — ключі `cortex_xdr_network_*`; ініціатор-DNS-проксі
+pa-vm / DNS-форвардер позначається як «↪ …, не клієнт» — `cortex_xdr_pavm_dns_proxy_ips`, `cortex_xdr_dns_forwarders`),
 `cortex_endpoint_cleanup.py` (systemd timer, 10:00, видаляє з консолі Cortex ендпоінти без зв'язку понад
 `cortex_xdr_cleanup_days` = 15 д admin-ключем; бойовий режим з 2026-11-05).
 

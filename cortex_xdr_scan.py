@@ -80,6 +80,19 @@ DEFAULTS = {
     # Атаки ззовні, які pa-vm сам заблокував (reset/drop), — шум сканерів інтернету.
     # True = показувати й їх. Незаблоковані атаки ззовні показуємо завжди.
     "cortex_xdr_network_keep_inbound_blocked": False,
+    # Адреси, з яких запити пересилає DNS-проксі самого pa-vm (його інтерфейси). Ініціатор
+    # з цього списку — НЕ клієнт: Cortex ще й приписує алерт випадковому хосту з тією ж IP
+    # (14.11 — DSP11 за 172.18.48.1). IP -> підпис у звіті.
+    "cortex_xdr_pavm_dns_proxy_ips": {
+        "172.18.48.1": "DNS-проксі pa-vm (GUEST)",
+        "172.20.0.1": "DNS-проксі pa-vm (172.20.0.1)",
+    },
+    # DNS-форвардери, за якими стоїть справжній клієнт; його видно в їх DNS-журналі в QRadar.
+    "cortex_xdr_dns_forwarders": {
+        "172.17.61.157": "ns1 (BIND, журнал «Bind @ 172.17.61.157»)",
+        "172.17.61.112": "xdc02 (журнал «DNS@XDC02»)",
+        "192.168.16.51": "XDC06 (журнал «DNS@XDC06»)",
+    },
 }
 
 logging.basicConfig(
@@ -210,6 +223,13 @@ def recommend_action(item: dict) -> str:
     module = (item.get("module") or "").lower()
 
     blocked = any(x in act for x in ("prevent", "block", "denied"))
+    if item.get("relay_kind") == "pavm_proxy":
+        return ("🔍 Ініціатор — DNS-проксі самого pa-vm, а не хост: pa-vm не журналює, чий запит пересилав. "
+                "Клієнта шукати за часом: DNS-журнали ns1/DC у QRadar (внутрішній клієнт), інакше — "
+                "traffic log pa-vm `(port.dst eq 53)` до 172.18.48.1 / 172.18.12.1 (гостьові клієнти в ту ж секунду)")
+    if item.get("relay_kind") == "forwarder":
+        return (f"🔍 Ініціатор — DNS-форвардер {item.get('relay')}: справжнього клієнта шукати в його "
+                f"DNS-журналі в QRadar за доменом `{item.get('dns_query') or '?'}` і часом")
     if item.get("is_network") and item.get("local_ip"):
         # Мережевий алерт pa-vm (агента на хості немає в алерті).
         if _is_internal(item.get("local_ip")):
@@ -263,6 +283,21 @@ def network_filter(item: dict, net_sources: set, drop_cats: list, keep_inbound_b
         if any(w in act for w in _BLOCK_WORDS) and not keep_inbound_blocked:
             return "network_inbound_blocked"
     return None
+
+
+def mark_relay(item: dict, pavm_proxy: dict, forwarders: dict) -> None:
+    """Мережевий алерт, де ініціатор — DNS-проксі pa-vm або DNS-форвардер: підписуємо його
+    замість імені хоста, яке Cortex підставив за IP (воно хибне — це не клієнт)."""
+    if not item.get("is_network"):
+        return
+    ip = str(item.get("local_ip") or "")
+    for kind, table in (("pavm_proxy", pavm_proxy), ("forwarder", forwarders)):
+        if ip in table:
+            item["relay_kind"] = kind
+            item["relay"] = table[ip]
+            item["cortex_host"] = item.get("hostname")
+            item["hostname"] = f"↪ {table[ip]}"
+            return
 
 
 def is_false_positive(item: dict, fp_names: set, fp_ids: set, min_sev: int, skip_whitelisted: bool):
@@ -353,6 +388,8 @@ def filter_and_dedupe(alerts: list, config: dict, dedup_days: int) -> tuple[list
     net_sources = set(cfg(config, "cortex_xdr_network_sources"))
     drop_cats = list(cfg(config, "cortex_xdr_network_drop_categories"))
     keep_in = bool(cfg(config, "cortex_xdr_network_keep_inbound_blocked"))
+    pavm_proxy = dict(cfg(config, "cortex_xdr_pavm_dns_proxy_ips") or {})
+    forwarders = dict(cfg(config, "cortex_xdr_dns_forwarders") or {})
 
     stats = {"raw": len(alerts), "fp": 0, "net": 0, "dedup_run": 0, "dedup": 0, "new": 0}
     seen_in_run = set()
@@ -362,6 +399,7 @@ def filter_and_dedupe(alerts: list, config: dict, dedup_days: int) -> tuple[list
         if network_filter(item, net_sources, drop_cats, keep_in):
             stats["net"] += 1
             continue
+        mark_relay(item, pavm_proxy, forwarders)
         why = is_false_positive(item, fp_names, fp_ids, min_sev, skip_wl)
         if why:
             stats["fp"] += 1
@@ -436,6 +474,9 @@ def build_chat_message(items: list, title: str, max_items: int) -> dict:
                     f"правило «{it['fw_rule']}»" if it.get("fw_rule") else "",
                     it.get("zones") or "") if x)
                 lines.append(f"    мережа: {net}" + (f" ({extra})" if extra else ""))
+                if it.get("relay_kind"):
+                    ch = f"; Cortex приписав хосту `{it['cortex_host']}` — хибно" if it.get("cortex_host") else ""
+                    lines.append(f"    ⚠️ ініціатор — {it['relay']}, не клієнт{ch}")
             lines.append(f"    рекомендація: {recommend_action(it)}")
             sha = it.get("sha256")
             if sha:
