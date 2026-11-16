@@ -467,6 +467,75 @@ def vlan_from_ifname(ifname: str) -> int | None:
 
 
 # ============================================================================ Wi-Fi
+def _band_of_slot(slot) -> str:
+    # Cisco: slot 0 — 2.4 ГГц, slot 1/2 — 5 ГГц (так само, як підпис діапазону клієнта).
+    return "2.4" if slot == 0 else "5"
+
+
+def _fold_bands(per_slot: dict) -> dict:
+    """{slot: {users, util, channel}} -> {"2.4": {...}, "5": {...}}: клієнтів сумарно,
+    завантаження — максимум по радіо діапазону, канали — перелік."""
+    out: dict[str, dict] = {}
+    for slot in sorted(per_slot):
+        v = per_slot[slot]
+        if v.get("users") is None and v.get("channel") is None:
+            continue
+        b = out.setdefault(_band_of_slot(slot), {"users": 0, "util": None, "channels": []})
+        b["users"] += v.get("users") or 0
+        if v.get("util") is not None:
+            b["util"] = max(b["util"] or 0, v["util"])
+        if v.get("channel"):
+            b["channels"].append(v["channel"])
+    return out
+
+
+def ap_bands_live(s, ap_mac: str) -> dict:
+    """Клієнти / завантаження / канал по діапазонах точки — живий GET з WLC (slot 0..2)."""
+    api = mac_oid(ap_mac)
+    per: dict[int, dict] = {}
+    for slot in (0, 1, 2):
+        o = {k: f"{col}.{api}.{slot}" for k, col in (("users", W_USERS), ("util", W_UTIL), ("channel", W_CHANNEL))}
+        try:
+            r = s.get(*o.values())
+        except snmp.SnmpError:
+            continue
+        per[slot] = {k: (r.get(oid) if isinstance(r.get(oid), int) else None) for k, oid in o.items()}
+    return _fold_bands(per)
+
+
+def ap_bands_snapshot(cfg: dict, ap_mac: str) -> dict:
+    """Те саме з останнього знімка колектора (коли клієнта вже немає на WLC)."""
+    if not ap_mac:
+        return {}
+    con = db(cfg)
+    try:
+        row = con.execute("SELECT MAX(ts) FROM radio WHERE ap_mac=?", (ap_mac,)).fetchone()
+        if not row or not row[0]:
+            return {}
+        rows = con.execute("SELECT slot, channel, util, users FROM radio WHERE ap_mac=? AND ts=?",
+                           (ap_mac, row[0])).fetchall()
+    finally:
+        con.close()
+    return _fold_bands({r[0]: {"channel": r[1], "util": r[2], "users": r[3]} for r in rows})
+
+
+def bands_text(bands: dict, own: str | None, html: bool = False) -> str:
+    """«2.4 ГГц: 8 (к. 11, 46%) · 5 ГГц: 31 (к. 44, 12%)»; свій діапазон клієнта — жирним."""
+    parts = []
+    for b in ("2.4", "5"):
+        v = bands.get(b)
+        if not v:
+            continue
+        extra = ", ".join(x for x in (
+            ("к. " + "/".join(str(c) for c in v["channels"])) if v.get("channels") else "",
+            f"{v['util']}%" if v.get("util") is not None else "") if x)
+        t = f"{b} ГГц: {v['users']}" + (f" ({extra})" if extra else "")
+        if b == own:
+            t = f"<b>{t}</b>" if html else f"*{t}*"
+        parts.append(t)
+    return " · ".join(parts)
+
+
 def wifi_live(cfg: dict, mac: str) -> dict | None:
     """Поточний запис клієнта прямо з WLC (GET за індексом MAC)."""
     s = wlc_session(cfg)
@@ -497,6 +566,7 @@ def wifi_live(cfg: dict, mac: str) -> dict | None:
             vals["channel"] = rr.get(f"{W_CHANNEL}.{api}.{slot}")
             vals["util"] = rr.get(f"{W_UTIL}.{api}.{slot}")
             vals["ap_users"] = rr.get(f"{W_USERS}.{api}.{slot}")
+            vals["bands"] = ap_bands_live(s, vals["ap_mac"])
         return vals
     except snmp.SnmpError as e:
         log.warning(f"WLC live: {e}")
@@ -841,6 +911,8 @@ def diagnose_fast(cfg: dict, query: str) -> dict:
     if summ.get("present"):
         # зараз на WLC його немає, але за вікно був → відвалився від Wi-Fi
         last = [r for r in hist if not r.get("absent")][-1]
+        if not last.get("bands"):
+            last = {**last, "bands": ap_bands_snapshot(cfg, last.get("ap_mac"))}
         res.update(medium="wifi_gone", wifi=last, history=summ)
         res["verdict"] = [f"⚠️ Зараз пристрою на WLC немає; востаннє бачили о {hhmm(last['ts'])} на {last.get('ap_name')}."] + \
             wifi_verdict(None, summ)
@@ -897,6 +969,8 @@ def render_fast(res: dict) -> str:
                      + (f" · {PROTO_NAMES.get(w.get('proto'), '')}" if w.get("proto") in PROTO_NAMES else ""))
         lines.append(f"Сигнал {w.get('rssi')} dBm · SNR {w.get('snr')} dB · rate {w.get('rate') or '?'}"
                      + (f" · завантаження каналу {w['util']}%, клієнтів на радіо {w.get('ap_users')}" if w.get("util") is not None else ""))
+        if w.get("bands"):
+            lines.append("Клієнтів на точці: " + bands_text(w["bands"], "2.4" if w.get("slot") == 0 else "5"))
         st = ST_NAMES.get(w.get("status"), w.get("status"))
         lines.append(f"Стан: `{w.get('pm_state') or '?'}` ({st}) · підключений {fmt_ago(w.get('uptime'))}"
                      + (f" · користувач `{w['user']}`" if w.get("user") else "")
@@ -1036,6 +1110,9 @@ def _wifi_sections(res: dict) -> list[dict]:
     if util is not None:
         sig.append(_row("Завантаження каналу", _c(f"<b>{util}%</b>", lvl_util(util))
                         + f" · клієнтів на радіо {_e(w.get('ap_users'))}", "network_check"))
+    if w.get("bands"):
+        sig.append(_row("Клієнтів на точці", bands_text(w["bands"], "2.4" if w.get("slot") == 0 else "5", html=True),
+                        "groups", "по діапазонах; жирним — діапазон цього пристрою"))
     if w.get("rate"):
         sig.append(_row("Швидкість (rate / MCS)", _e(w.get("rate")), "speed"))
     pm = w.get("pm_state") or ""
