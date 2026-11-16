@@ -220,7 +220,10 @@ def snapshot_facts(cfg: dict, mac: str, minutes: float) -> dict:
     f["absent_inside"] = len(absent)          # пропуски між першою й останньою появою
     if not rows:
         return f
-    band = lambda s: "2.4" if s == 0 else "5" if s == 1 else str(s)  # noqa: E731
+    def band(slot, ap_mac=None):
+        # діапазон за каналом радіо (XOR-радіо: slot 0 буває на 5 ГГц), слот — запасний варіант
+        ch = next((x.get("channel") for x in reversed(radios.get((ap_mac, slot), [])) if x.get("channel")), None)
+        return netdiag.band_of(ch, slot)
     f["ssids"] = sorted({r["ssid"] for r in rows if r.get("ssid")})
     f["vlans"] = sorted({r["vlan"] for r in rows if r.get("vlan") is not None})
     f["ips"] = sorted({r["ip"] for r in rows if r.get("ip") and r["ip"] != "0.0.0.0"})
@@ -228,7 +231,7 @@ def snapshot_facts(cfg: dict, mac: str, minutes: float) -> dict:
     # точки: сегменти підряд
     segs, roams = [], 0
     for r in rows:
-        key = (r.get("ap_name") or r.get("ap_mac") or "?", band(r.get("slot")))
+        key = (r.get("ap_name") or r.get("ap_mac") or "?", band(r.get("slot"), r.get("ap_mac")))
         if segs and segs[-1]["ap"] == key[0] and segs[-1]["band"] == key[1]:
             segs[-1]["to"] = r["ts"]
             segs[-1]["n"] += 1
@@ -316,7 +319,7 @@ def snapshot_facts(cfg: dict, mac: str, minutes: float) -> dict:
         for x in rr:
             if x.get("channel") and (not chans or chans[-1] != x["channel"]):
                 chans.append(x["channel"])
-        radio_out.append({"ap": name, "band": band(slot),
+        radio_out.append({"ap": name, "band": band(slot, ap_mac),
                           "util_avg": round(sum(util) / len(util)) if util else None, "util_max": max(util) if util else None,
                           "users_avg": round(sum(users) / len(users)) if users else None, "users_max": max(users) if users else None,
                           "channels": chans})
@@ -337,8 +340,9 @@ def location_facts(cfg: dict, mac: str, ap_slots: list, minutes: float) -> list[
             rows = [dict(r) for r in con.execute(
                 "SELECT ts, mac, rssi, uptime, rate, ap_name FROM wifi WHERE ap_mac=? AND slot=? AND ts>=? AND mac<>? ORDER BY mac, ts",
                 (ap_mac, slot, since, mac))]
+            bnd = netdiag.band_of(netdiag.slot_channel(con, ap_mac, slot), slot)
             if not rows:
-                out.append({"ap": ap_mac, "band": "2.4" if slot == 0 else "5", "clients": 0})
+                out.append({"ap": ap_mac, "band": bnd, "clients": 0})
                 continue
             by: dict[str, list] = {}
             for r in rows:
@@ -352,7 +356,7 @@ def location_facts(cfg: dict, mac: str, ap_slots: list, minutes: float) -> list[
             rssi = sorted(r["rssi"] for r in rows if isinstance(r.get("rssi"), int) and r["rssi"] < 0)
             leg = [r for r in rows if re.fullmatch(r"\d+(\.\d+)?", (r.get("rate") or "").strip())]
             snaps = len({r["ts"] for r in rows})
-            out.append({"ap": next((r["ap_name"] for r in rows if r.get("ap_name")), ap_mac), "band": "2.4" if slot == 0 else "5",
+            out.append({"ap": next((r["ap_name"] for r in rows if r.get("ap_name")), ap_mac), "band": bnd,
                         "clients": len(by), "clients_avg": round(len(rows) / snaps) if snaps else 0,
                         "rssi_median": rssi[len(rssi) // 2] if rssi else None,
                         "weak_pct": round(100 * sum(1 for x in rssi if x < -75) / len(rssi)) if rssi else None,

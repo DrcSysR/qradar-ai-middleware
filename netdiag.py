@@ -294,15 +294,18 @@ WIFI_COLS = {  # поле знімка → (OID колонки, тип)
     "ip": (f"{W_ST}.2", "ip"), "user": (f"{W_ST}.3", "text"), "ap_mac": (f"{W_ST}.4", "mac"),
     "slot": (f"{W_ST}.5", "int"), "ssid": (f"{W_ST}.7", "text"), "status": (f"{W_ST}.9", "int"),
     "reason": (f"{W_ST}.10", "int"), "pm_state": (f"{W_ST}.23", "text"), "vlan": (f"{W_ST}.29", "int"),
-    "proto": (f"{W_ST}.30", "int"), "rssi": (f"{W_STATS}.1", "int"), "snr": (f"{W_STATS}.26", "int"),
+    "proto": (f"{W_CLDC}.6", "int"), "rssi": (f"{W_STATS}.1", "int"), "snr": (f"{W_STATS}.26", "int"),
     "rx_bytes": (f"{W_STATS}.2", "int"), "tx_bytes": (f"{W_STATS}.3", "int"),
     "uptime": (f"{W_CLDC}.15", "int"), "rate": (f"{W_CLDC}.17", "text"), "devtype": (f"{W_CLDC}.44", "text"),
 }
 
 ST_NAMES = {0: "idle", 1: "AAA pending", 2: "authenticated", 3: "associated", 4: "powersave",
             5: "disassociated", 6: "to be deleted", 7: "probing", 8: "excluded", 9: "excluded/blocklisted"}
-PROTO_NAMES = {1: "802.11a", 2: "802.11b", 3: "802.11g", 4: "802.11n 2.4 ГГц", 5: "802.11n 5 ГГц",
-               6: "802.11ac", 7: "802.11ax 5 ГГц", 8: "802.11ax 2.4 ГГц"}
+# cldcClientProtocol (CISCO-LWAPP-DOT11-CLIENT-MIB). До 2026-11-16 читали bsnMobileStationEntry.30 —
+# це тип політики безпеки, не протокол (звідси «802.11b» на 5 ГГц). Звірено з `show client detail`:
+# 11 — ax на к. 100, 7 — n на к. 64, 4 — порожні Supported Rates. 4 (unknown) / 5 (mobile) не показуємо.
+PROTO_NAMES = {1: "802.11a", 2: "802.11b", 3: "802.11g", 6: "802.11n 2.4 ГГц", 7: "802.11n 5 ГГц",
+               10: "802.11ac", 11: "802.11ax 5 ГГц", 12: "802.11ax 2.4 ГГц", 13: "802.11ax 6 ГГц"}
 PM_HINT = {
     "RUN": "повністю підключений",
     "8021X_REQD": "чекає 802.1X — пристрій не пройшов автентифікацію (див. NPS нижче)",
@@ -467,9 +470,21 @@ def vlan_from_ifname(ifname: str) -> int | None:
 
 
 # ============================================================================ Wi-Fi
-def _band_of_slot(slot) -> str:
-    # Cisco: slot 0 — 2.4 ГГц, slot 1/2 — 5 ГГц (так само, як підпис діапазону клієнта).
+def band_of(channel, slot=None) -> str:
+    """Діапазон за КАНАЛОМ: 1–14 — 2.4 ГГц, більше — 5 ГГц. Слот лише як запасний варіант:
+    у точок з XOR-радіо (9120/9130) slot 0 буває на 5 ГГц (CS_IT_02: slot 0 = канал 44)."""
+    if isinstance(channel, int) and channel > 0:
+        return "2.4" if channel <= 14 else "5"
     return "2.4" if slot == 0 else "5"
+
+
+def slot_channel(con: sqlite3.Connection, ap_mac: str, slot) -> int | None:
+    """Канал радіо (ap_mac, slot) з останнього знімка колектора."""
+    if not ap_mac or slot is None:
+        return None
+    r = con.execute("SELECT channel FROM radio WHERE ap_mac=? AND slot=? AND channel IS NOT NULL ORDER BY ts DESC LIMIT 1",
+                    (ap_mac, slot)).fetchone()
+    return r[0] if r else None
 
 
 def _fold_bands(per_slot: dict) -> dict:
@@ -480,7 +495,7 @@ def _fold_bands(per_slot: dict) -> dict:
         v = per_slot[slot]
         if v.get("users") is None and v.get("channel") is None:
             continue
-        b = out.setdefault(_band_of_slot(slot), {"users": 0, "util": None, "channels": []})
+        b = out.setdefault(band_of(v.get("channel"), slot), {"users": 0, "util": None, "channels": []})
         b["users"] += v.get("users") or 0
         if v.get("util") is not None:
             b["util"] = max(b["util"] or 0, v["util"])
@@ -636,7 +651,7 @@ def wifi_verdict(cur: dict | None, summ: dict) -> list[str]:
             out.append(f"📉 Низький SNR ({snr} dB) — шум/завади в ефірі.")
         if isinstance(cur.get("util"), int) and cur["util"] >= 60:
             out.append(f"🚦 Канал точки завантажений на {cur['util']}% — ефір перевантажений.")
-        if cur.get("slot") == 0:
+        if band_of(cur.get("channel"), cur.get("slot")) == "2.4":
             out.append("ℹ️ Пристрій на 2.4 ГГц — повільніше і більше завад, ніж 5 ГГц.")
     if summ.get("roams", 0) >= 3:
         out.append(f"🔁 {summ['roams']} переходів між точками за вікно — «пінг-понг» роумінгу (межа покриття).")
@@ -913,6 +928,12 @@ def diagnose_fast(cfg: dict, query: str) -> dict:
         last = [r for r in hist if not r.get("absent")][-1]
         if not last.get("bands"):
             last = {**last, "bands": ap_bands_snapshot(cfg, last.get("ap_mac"))}
+        if not last.get("channel"):
+            con = db(cfg)
+            try:
+                last = {**last, "channel": slot_channel(con, last.get("ap_mac"), last.get("slot"))}
+            finally:
+                con.close()
         res.update(medium="wifi_gone", wifi=last, history=summ)
         res["verdict"] = [f"⚠️ Зараз пристрою на WLC немає; востаннє бачили о {hhmm(last['ts'])} на {last.get('ap_name')}."] + \
             wifi_verdict(None, summ)
@@ -963,14 +984,14 @@ def render_fast(res: dict) -> str:
         w = res["wifi"]
         lines.append(f"📡 *Wi-Fi* — точка *{w.get('ap_name') or w.get('ap_mac')}*"
                      + (f" ({w['ap_location']})" if w.get("ap_location") and w.get("ap_location") not in ("default location", "") else ""))
-        band = "2.4 ГГц" if w.get("slot") == 0 else "5 ГГц" if w.get("slot") == 1 else f"radio {w.get('slot')}"
+        band = f"{band_of(w.get('channel'), w.get('slot'))} ГГц"
         lines.append(f"SSID `{w.get('ssid')}` · VLAN {w.get('vlan')} · {band}"
                      + (f", канал {w['channel']}" if w.get("channel") else "")
                      + (f" · {PROTO_NAMES.get(w.get('proto'), '')}" if w.get("proto") in PROTO_NAMES else ""))
         lines.append(f"Сигнал {w.get('rssi')} dBm · SNR {w.get('snr')} dB · rate {w.get('rate') or '?'}"
                      + (f" · завантаження каналу {w['util']}%, клієнтів на радіо {w.get('ap_users')}" if w.get("util") is not None else ""))
         if w.get("bands"):
-            lines.append("Клієнтів на точці: " + bands_text(w["bands"], "2.4" if w.get("slot") == 0 else "5"))
+            lines.append("Клієнтів на точці: " + bands_text(w["bands"], band_of(w.get("channel"), w.get("slot"))))
         st = ST_NAMES.get(w.get("status"), w.get("status"))
         lines.append(f"Стан: `{w.get('pm_state') or '?'}` ({st}) · підключений {fmt_ago(w.get('uptime'))}"
                      + (f" · користувач `{w['user']}`" if w.get("user") else "")
@@ -1084,7 +1105,7 @@ def _verdict_color(v: str) -> str:
 def _wifi_sections(res: dict) -> list[dict]:
     w = res["wifi"]
     gone = res.get("medium") == "wifi_gone"
-    band = "2.4 ГГц" if w.get("slot") == 0 else "5 ГГц" if w.get("slot") == 1 else f"radio {w.get('slot')}"
+    band = f"{band_of(w.get('channel'), w.get('slot'))} ГГц"
     loc = w.get("ap_location")
     loc = loc if loc and loc not in ("default location",) else ""
     conn = [
@@ -1111,7 +1132,7 @@ def _wifi_sections(res: dict) -> list[dict]:
         sig.append(_row("Завантаження каналу", _c(f"<b>{util}%</b>", lvl_util(util))
                         + f" · клієнтів на радіо {_e(w.get('ap_users'))}", "network_check"))
     if w.get("bands"):
-        sig.append(_row("Клієнтів на точці", bands_text(w["bands"], "2.4" if w.get("slot") == 0 else "5", html=True),
+        sig.append(_row("Клієнтів на точці", bands_text(w["bands"], band_of(w.get("channel"), w.get("slot")), html=True),
                         "groups", "по діапазонах; жирним — діапазон цього пристрою"))
     if w.get("rate"):
         sig.append(_row("Швидкість (rate / MCS)", _e(w.get("rate")), "speed"))
