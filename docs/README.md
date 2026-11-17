@@ -20,6 +20,7 @@ AI-тріаж офенсів QRadar: сервіс читає офенс, під�
 | 2026-11-12 | [netdiag: Google Chat-бот діагностики підключення пристрою за IP (Wi-Fi WLC 3504 / свіч-порт-802.1X / NPS)](changes/2026-11-12-netdiag-bot.md) |
 | 2026-11-05 | [Cortex XDR: автоматичне видалення ендпоінтів, що мовчать 15 днів і більше (cortex_endpoint_cleanup.py, щодня 10:00)](changes/2026-11-05-cortex-endpoint-cleanup.md) |
 | 2026-11-17 | [remote_thread_injection.aql: фільтри шуму з цілі unknown process (PanGpHip, 1С, OCS, RustDesk, Acrobat)](changes/2026-11-17-crt-aql-fp-filters.md) |
+| 2026-11-17 | [Cortex MCP Server на mdlwr01 (read-only, Standard-ключ Viewer) для розбору інцидентів у Claude Code](changes/2026-11-17-cortex-mcp-server.md) |
 | 2026-11-17 | [Cortex XDR: автотріаж інцидентів — закриття шуму pa-vm і mitigated, dry-run (cortex_incident_triage.py)](changes/2026-11-17-cortex-incident-triage.md) |
 | 2026-10-26 | [лінза remote_thread_injection: агент Cortex XDR (137 FP «Confirmed Credential Access»), Bing Wallpaper, Intel DPTF, Opera, eDrawings, MasterD; 157 офенсів аналітика закрито](changes/2026-10-26-remote-thread-cortex-xdr-fp.md) |
 | 2026-10-19 | [права на config.json (640 root:qmiddleware) і копії (600); autoupdate тримає їх щоцикл](changes/2026-10-19-b-prava-config-json.md) |
