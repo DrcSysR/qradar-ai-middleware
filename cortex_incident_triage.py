@@ -225,14 +225,23 @@ def record(rows: list, run_id: str) -> None:
               int(i.get("alert_count") or 0), run_id) for i, r, s in rows])
 
 
-def build_chat_message(title: str, closed: list, kept: Counter, total: int, dry_run: bool) -> dict:
+def build_chat_message(title: str, closed: list, review: list, total: int, dry_run: bool,
+                       max_items: int = 25) -> dict:
+    """Звіт: що закрито як шум і що лишилось на ручний розбір (з посиланнями на консоль)."""
     by_rule = Counter(r for _, r, _ in closed)
     lines = [f"*{title}*" + (" (dry-run)" if dry_run else "")]
-    lines.append(f"Переглянуто {total}; {'було б закрито' if dry_run else 'закрито'} {len(closed)} "
+    lines.append(f"Переглянуто {total}; {'було б закрито' if dry_run else 'закрито як шум'} {len(closed)} "
                  f"({', '.join(f'{r}: {n}' for r, n in by_rule.items()) or '—'}); "
-                 f"лишилось на розбір {total - len(closed)}.")
-    if kept:
-        lines.append("Не закриті: " + ", ".join(f"{k}: {v}" for k, v in kept.most_common()))
+                 f"на перегляд: {len(review)}.")
+    for inc, why in review[:max_items]:
+        hosts = ", ".join(h.split(":")[-1] if h.startswith("NO_HOST") else h.split(":")[0]
+                          for h in (inc.get("hosts") or [])[:3])
+        url = inc.get("xdr_url")
+        ref = f"<{url}|#{inc.get('incident_id')}>" if url else f"#{inc.get('incident_id')}"
+        lines.append(f"• {ref} [{inc.get('severity')}] {(inc.get('description') or '')[:90]}"
+                     f"{' — ' + hosts if hosts else ''} ({why})")
+    if len(review) > max_items:
+        lines.append(f"… і ще {len(review) - max_items}")
     return {"text": "\n".join(lines)}
 
 
@@ -284,12 +293,14 @@ def main() -> None:
 
     closed: list = []          # (incident, rule, status)
     kept: Counter = Counter()
+    review: list = []          # (incident, причина) — лишились відкритими для людини
     for inc in incidents:
         iid = str(inc.get("incident_id"))
         alerts = fetch_alerts(config, iid)
         rule, status, why = decide(inc, alerts, config, net_sources, drop_cats)
         if not rule:
             kept[why] += 1
+            review.append((inc, why))
             logging.info(f"keep #{iid} [{inc.get('severity')}] {(inc.get('description') or '')[:70]} — {why}")
             continue
         if len(closed) >= max_per_run:
@@ -300,18 +311,19 @@ def main() -> None:
             comment = f"Автотріаж ({rule}): {why}. run={run_id}"
             if not resolve(admin_cfg, iid, status, comment):
                 kept["update_failed"] += 1
+                review.append((inc, "update_failed"))
                 continue
         closed.append((inc, rule, status))
 
     logging.info(f"incidents={len(incidents)} {'would_close' if dry_run else 'closed'}={len(closed)} kept={dict(kept)}")
-    message = build_chat_message(cfg(config, "cortex_incident_report_title"), closed, kept, len(incidents), dry_run)
+    message = build_chat_message(cfg(config, "cortex_incident_report_title"), closed, review, len(incidents), dry_run)
     if dry_run:
         print(message["text"])
         logging.info("DRY-RUN: нічого не закрито, state і звіт не записано")
         return
     init_db()
     record(closed, run_id)
-    if closed and webhook_url:
+    if (closed or review) and webhook_url:
         cx.send_to_chat(webhook_url, message)
 
 
