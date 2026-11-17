@@ -225,14 +225,11 @@ def record(rows: list, run_id: str) -> None:
               int(i.get("alert_count") or 0), run_id) for i, r, s in rows])
 
 
-def build_chat_message(title: str, closed: list, review: list, total: int, dry_run: bool,
-                       max_items: int = 25) -> dict:
-    """Звіт: що закрито як шум і що лишилось на ручний розбір (з посиланнями на консоль)."""
+def triage_lines(closed: list, review: list, total: int, dry_run: bool, max_items: int = 25) -> list:
+    """Рядки секції тріажу: що закрито як шум і що лишилось на ручний розбір (з посиланнями)."""
     by_rule = Counter(r for _, r, _ in closed)
-    lines = [f"*{title}*" + (" (dry-run)" if dry_run else "")]
-    lines.append(f"Переглянуто {total}; {'було б закрито' if dry_run else 'закрито як шум'} {len(closed)} "
-                 f"({', '.join(f'{r}: {n}' for r, n in by_rule.items()) or '—'}); "
-                 f"на перегляд: {len(review)}.")
+    lines = [f"Інциденти: переглянуто {total}; {'було б закрито' if dry_run else 'закрито як шум'} {len(closed)} "
+             f"({', '.join(f'{r}: {n}' for r, n in by_rule.items()) or '—'}); на перегляд: {len(review)}."]
     for inc, why in review[:max_items]:
         hosts = ", ".join(h.split(":")[-1] if h.startswith("NO_HOST") else h.split(":")[0]
                           for h in (inc.get("hosts") or [])[:3])
@@ -242,43 +239,22 @@ def build_chat_message(title: str, closed: list, review: list, total: int, dry_r
                      f"{' — ' + hosts if hosts else ''} ({why})")
     if len(review) > max_items:
         lines.append(f"… і ще {len(review) - max_items}")
-    return {"text": "\n".join(lines)}
+    return lines
 
 
-def main() -> None:
-    config = cx.load_config()
+def build_chat_message(title: str, closed: list, review: list, total: int, dry_run: bool) -> dict:
+    return {"text": "\n".join([f"*{title}*" + (" (dry-run)" if dry_run else "")]
+                              + triage_lines(closed, review, total, dry_run))}
+
+
+def run_triage(config: dict, dry_run: bool, hours: float) -> dict | None:
+    """Один прохід тріажу: закрити шум (якщо не dry-run) і зібрати те, що лишилось. Без блокування
+    й без звіту — їх роблять main() цього модуля або cortex_xdr_scan.main(). None = API недоступний."""
     run_id = uuid.uuid4().hex[:12]
-    args = sys.argv[1:]
-    dry_run = bool(cfg(config, "cortex_incident_dry_run"))
-    if "--apply" in args:
-        dry_run = False
-    if "--dry-run" in args:
-        dry_run = True
-    if "--only" in args:   # --only network_noise | mitigated: вимкнути інше правило на цей прогін
-        only = args[args.index("--only") + 1]
-        config = {**config, "cortex_incident_close_network_noise": only == "network_noise",
-                  "cortex_incident_close_mitigated": only == "mitigated"}
-    hours = float(cfg(config, "cortex_incident_lookback_hours"))
-    if "--hours" in args:
-        hours = float(args[args.index("--hours") + 1])
-
-    if not (cx.cfg(config, "cortex_xdr_api_fqdn") and cx.cfg(config, "cortex_xdr_api_key_id")
-            and cx.cfg(config, "cortex_xdr_api_key")):
-        logging.error("Немає cortex_xdr_api_fqdn / cortex_xdr_api_key_id / cortex_xdr_api_key у config.json")
-        sys.exit(2)
     admin_cfg = admin_config(config)
     if not dry_run and admin_cfg is None:
         logging.error("Немає cortex_xdr_admin_api_key_id / _key — закриття неможливе, запускаю як dry-run")
         dry_run = True
-    webhook_url = config.get("cortex_xdr_webhook_url") or config.get("falcon_pua_webhook_url")
-
-    lock_fh = open(LOCK_FILE, "w")
-    try:
-        fcntl.flock(lock_fh, fcntl.LOCK_EX | fcntl.LOCK_NB)
-    except IOError:
-        logging.warning("Previous cortex_incident_triage still running. Skipping this run.")
-        sys.exit(0)
-
     net_sources = set(cx.cfg(config, "cortex_xdr_network_sources"))
     drop_cats = list(cx.cfg(config, "cortex_xdr_network_drop_categories"))
     statuses = list(cfg(config, "cortex_incident_statuses"))
@@ -288,8 +264,8 @@ def main() -> None:
 
     incidents = fetch_incidents(config, statuses, hours)
     if incidents is None:
-        logging.error("Cortex API недоступний — нічого не робимо")
-        sys.exit(1)
+        logging.error("Cortex API недоступний — тріаж пропущено")
+        return None
 
     closed: list = []          # (incident, rule, status)
     kept: Counter = Counter()
@@ -316,14 +292,51 @@ def main() -> None:
         closed.append((inc, rule, status))
 
     logging.info(f"incidents={len(incidents)} {'would_close' if dry_run else 'closed'}={len(closed)} kept={dict(kept)}")
-    message = build_chat_message(cfg(config, "cortex_incident_report_title"), closed, review, len(incidents), dry_run)
-    if dry_run:
+    if not dry_run:
+        init_db()
+        record(closed, run_id)
+    return {"closed": closed, "review": review, "total": len(incidents), "dry_run": dry_run}
+
+
+def main() -> None:
+    config = cx.load_config()
+    args = sys.argv[1:]
+    dry_run = bool(cfg(config, "cortex_incident_dry_run"))
+    if "--apply" in args:
+        dry_run = False
+    if "--dry-run" in args:
+        dry_run = True
+    if "--only" in args:   # --only network_noise | mitigated: вимкнути інше правило на цей прогін
+        only = args[args.index("--only") + 1]
+        config = {**config, "cortex_incident_close_network_noise": only == "network_noise",
+                  "cortex_incident_close_mitigated": only == "mitigated"}
+    hours = float(cfg(config, "cortex_incident_lookback_hours"))
+    if "--hours" in args:
+        hours = float(args[args.index("--hours") + 1])
+
+    if not (cx.cfg(config, "cortex_xdr_api_fqdn") and cx.cfg(config, "cortex_xdr_api_key_id")
+            and cx.cfg(config, "cortex_xdr_api_key")):
+        logging.error("Немає cortex_xdr_api_fqdn / cortex_xdr_api_key_id / cortex_xdr_api_key у config.json")
+        sys.exit(2)
+    webhook_url = config.get("cortex_xdr_webhook_url") or config.get("falcon_pua_webhook_url")
+
+    lock_fh = open(LOCK_FILE, "w")
+    try:
+        fcntl.flock(lock_fh, fcntl.LOCK_EX | fcntl.LOCK_NB)
+    except IOError:
+        logging.warning("Previous cortex_incident_triage still running. Skipping this run.")
+        sys.exit(0)
+
+    res = run_triage(config, dry_run, hours)
+    if res is None:
+        sys.exit(1)
+    message = build_chat_message(cfg(config, "cortex_incident_report_title"), res["closed"], res["review"],
+                                 res["total"], res["dry_run"])
+    if res["dry_run"]:
         print(message["text"])
         logging.info("DRY-RUN: нічого не закрито, state і звіт не записано")
         return
-    init_db()
-    record(closed, run_id)
-    if (closed or review) and webhook_url:
+    if (res["closed"] or res["review"]) and webhook_url:
         cx.send_to_chat(webhook_url, message)
 
 

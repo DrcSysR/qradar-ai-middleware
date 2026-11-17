@@ -1,9 +1,0 @@
-[Unit]
-Description=Run cortex_incident_triage daily before the Cortex digest (09:30)
-
-[Timer]
-OnCalendar=*-*-* 09:00:00
-Persistent=true
-
-[Install]
-WantedBy=timers.target

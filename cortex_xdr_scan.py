@@ -71,6 +71,9 @@ DEFAULTS = {
     # Окремі alert_id, що вже триаджено як FP.
     "cortex_xdr_fp_external_ids": [],
     "cortex_xdr_report_title": "🛡️ Cortex XDR — щоденний звіт",
+    # Тріаж інцидентів консолі перед звітом (cortex_incident_triage.run_triage): шум pa-vm закривається,
+    # у звіт додається список інцидентів, що лишились на розбір. False = лише дайджест алертів.
+    "cortex_xdr_run_incident_triage": True,
     # Мережеві алерти (з 2026-11-13 pa-vm шле журнали в Cortex): джерела, які вважаємо
     # «мережевими» і пропускаємо через network_filter.
     "cortex_xdr_network_sources": ["PAN NGFW"],
@@ -536,6 +539,20 @@ def main() -> None:
     logging.info(f"=== Cortex XDR scan run_id={run_id} lookback={lookback}h dedup={dedup_days}d "
                  f"api={api_host(config)}{' DRY-RUN' if dry_run else ''} ===")
 
+    # Тріаж інцидентів: закриваємо шум, збираємо те, що лишилось на розбір (збій не блокує дайджест).
+    triage_text = ""
+    triage_done = None
+    if cfg(config, "cortex_xdr_run_incident_triage"):
+        try:
+            import cortex_incident_triage as ci
+            triage_dry = dry_run or bool(ci.cfg(config, "cortex_incident_dry_run"))
+            triage_done = ci.run_triage(config, triage_dry, float(ci.cfg(config, "cortex_incident_lookback_hours")))
+            if triage_done and (triage_done["closed"] or triage_done["review"]):
+                triage_text = "\n".join(ci.triage_lines(triage_done["closed"], triage_done["review"],
+                                                          triage_done["total"], triage_done["dry_run"]))
+        except Exception as e:
+            logging.error(f"Тріаж інцидентів не виконано: {e}")
+
     alerts = fetch_recent_alerts(config, int(lookback))
     if alerts is None:
         logging.error("Cortex API недоступний — звіт не формуємо, спробуємо наступного запуску")
@@ -544,11 +561,16 @@ def main() -> None:
     logging.info(f"stats: raw={stats['raw']} net_noise={stats['net']} fp/below={stats['fp']} dedup_run={stats['dedup_run']} "
                  f"dedup_db={stats['dedup']} new={stats['new']}")
 
-    if not new_items:
+    if not new_items and not triage_text:
         logging.info("Нічого нового — звіт не шлемо")
         return
 
-    message = build_chat_message(new_items, title, max_report)
+    if new_items:
+        message = build_chat_message(new_items, title, max_report)
+        if triage_text:
+            message["text"] = f"{triage_text}\n\n{message['text']}"
+    else:
+        message = {"text": f"*{title}*\n{triage_text}"}
     if dry_run:
         print(message["text"])
         logging.info("DRY-RUN: звіт не надіслано, state не оновлено")
