@@ -68,3 +68,10 @@ mitigated вище порога severity. Стеля `cortex_incident_max_per_ru
 
 `close_mitigated: false` — на перший час таймер закриває лише очевидний шум pa-vm; mitigated (Prevented/Blocked,
 severity ≤ medium) вмикати окремо після перегляду dry-run.
+
+## Увімкнено на проді 17.11 (~17:40, за дозволом користувача)
+
+У `config.json` на mdlwr01 (бекап `config.json.bak-<ts>`, права root:qmiddleware 640 збережені):
+`cortex_incident_dry_run: false`, `close_network_noise: true`, `close_mitigated: false`. Unit-файли скопійовано в
+`/etc/systemd/system/`, `cortex_incident_triage.timer` увімкнено (кожні 30 хв, перший запуск 18:00). Закриває лише
+правило `network_noise`; `mitigated` вимкнено до окремого рішення.
