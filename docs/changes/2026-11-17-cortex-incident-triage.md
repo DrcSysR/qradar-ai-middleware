@@ -44,4 +44,7 @@ mitigated вище порога severity. Стеля `cortex_incident_max_per_ru
 ## Далі (за рішенням користувача)
 
 1. Перевірити право admin-ключа на `incidents/update_incident` одним інцидентом: `--apply --hours 1`.
-2. Завести `cortex_incident_triage.timer` (кожні 30 хв) і поставити `cortex_incident_dry_run: false`.
+2. Unit-файли готові в `systemd/cortex_incident_triage.{service,timer}` (oneshot, `TimeoutStartSec=1800`,
+   таймер кожні 30 хв, `Persistent`). Встановлення на mdlwr01 (autoupdate їх не копіює):
+   `cp /opt/qradar-middleware/systemd/cortex_incident_triage.* /etc/systemd/system/ && systemctl daemon-reload && systemctl enable --now cortex_incident_triage.timer`.
+   Спершу залишити `cortex_incident_dry_run: true` і дивитись `journalctl -u cortex_incident_triage`; потім `false` у config.json.

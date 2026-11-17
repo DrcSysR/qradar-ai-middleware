@@ -1,0 +1,9 @@
+[Unit]
+Description=Cortex XDR: auto-triage incidents (close pa-vm noise and mitigated)
+After=network-online.target
+
+[Service]
+Type=oneshot
+WorkingDirectory=/opt/qradar-middleware
+TimeoutStartSec=1800
+ExecStart=/usr/bin/python3 /opt/qradar-middleware/cortex_incident_triage.py
