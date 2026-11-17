@@ -21,7 +21,7 @@
 
 Безпека за замовчуванням: `cortex_incident_dry_run` = true — скрипт лише друкує, що закрив би;
 нічого не пише в консоль і в БД. `--apply` / `--dry-run` перекривають конфіг, `--hours N` —
-глибину вибірки. Без admin-ключа (`cortex_xdr_admin_api_key_id`/`_key`, роль з правом на
+глибину вибірки, `--only network_noise|mitigated` — лише одне правило. Без admin-ключа (`cortex_xdr_admin_api_key_id`/`_key`, роль з правом на
 зміну інцидентів) apply неможливий — працює як dry-run.
 
 Запуск вручну (поки не заведено systemd timer):
@@ -245,6 +245,10 @@ def main() -> None:
         dry_run = False
     if "--dry-run" in args:
         dry_run = True
+    if "--only" in args:   # --only network_noise | mitigated: вимкнути інше правило на цей прогін
+        only = args[args.index("--only") + 1]
+        config = {**config, "cortex_incident_close_network_noise": only == "network_noise",
+                  "cortex_incident_close_mitigated": only == "mitigated"}
     hours = float(cfg(config, "cortex_incident_lookback_hours"))
     if "--hours" in args:
         hours = float(args[args.index("--hours") + 1])

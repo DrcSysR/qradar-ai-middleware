@@ -48,3 +48,23 @@ mitigated вище порога severity. Стеля `cortex_incident_max_per_ru
    таймер кожні 30 хв, `Persistent`). Встановлення на mdlwr01 (autoupdate їх не копіює):
    `cp /opt/qradar-middleware/systemd/cortex_incident_triage.* /etc/systemd/system/ && systemctl daemon-reload && systemctl enable --now cortex_incident_triage.timer`.
    Спершу залишити `cortex_incident_dry_run: true` і дивитись `journalctl -u cortex_incident_triage`; потім `false` у config.json.
+
+## Бойове застосування 17.11 (~17:34)
+
+Пробний `--apply --only network_noise --hours 1`: закрито 15 інцидентів `resolved_known_issue`, перевірено в
+консолі (#374, #387; #380 Dns-Malware лишився `new`) — admin-ключ має право на `update_incident`.
+Після цього той самий прогін по всьому залишку (`--hours 720`, стеля 200 за запуск). Прапор
+`--only network_noise|mitigated` вмикає одне правило на прогін.
+
+## Конфіг для таймера (config.json на mdlwr01, ключі мають бути в `config_schema.py` — вже є)
+
+```json
+"cortex_incident_dry_run": false,
+"cortex_incident_close_network_noise": true,
+"cortex_incident_close_mitigated": false,
+"cortex_incident_lookback_hours": 72,
+"cortex_incident_max_per_run": 200
+```
+
+`close_mitigated: false` — на перший час таймер закриває лише очевидний шум pa-vm; mitigated (Prevented/Blocked,
+severity ≤ medium) вмикати окремо після перегляду dry-run.
