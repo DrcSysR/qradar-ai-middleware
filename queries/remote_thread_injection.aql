@@ -50,6 +50,23 @@ WHERE
     -- пісочниця, що й у Chrome, ~40 тис. подій за 2 тижні. Лише ціль «unknown process» і лише з
     -- рідного каталогу: opera.exe з Temp чи в іменовану ціль (lsass тощо) лишається видимим.
     AND NOT ("Target Process Path" ILIKE '%unknown process%' AND "Process Name" ILIKE 'opera.exe' AND "Process Path" ILIKE '%AppData%Local%Programs%Opera%')
+    -- 17.11.2026: черга CreateRemoteThread не встигала (приплив 500-900 офенсів/год проти ~550/год
+    -- дренажу). За 2 год ~3000 подій із цілі «unknown process» від штатного ПЗ — аналізувати нема
+    -- чого (Sysmon не резолвить ціль). Знімаємо ЛИШЕ пару «рідний шлях + нерозпізнана ціль»:
+    -- той самий ін'єктор з Temp/AppData чи в іменовану ціль (lsass тощо) лишається видимим.
+    -- GlobalProtect HIP-перевірка (270 хостів, ~1900 подій/2 год).
+    AND NOT ("Target Process Path" ILIKE '%unknown process%' AND "Process Name" ILIKE 'PanGpHip.exe' AND "Process Path" ILIKE '%Program Files%Palo Alto Networks%GlobalProtect%')
+    -- 1С:Підприємство.
+    AND NOT ("Target Process Path" ILIKE '%unknown process%' AND ("Process Name" ILIKE '1cv8.exe' OR "Process Name" ILIKE '1cv8c.exe') AND "Process Path" ILIKE '%Program Files%1cv8%')
+    -- OCS Inventory (службу OcsService.exe знято вище, сам агент — тут).
+    AND NOT ("Target Process Path" ILIKE '%unknown process%' AND "Process Name" ILIKE 'OCSInventory.exe' AND "Process Path" ILIKE '%Program Files%OCS Inventory Agent%')
+    -- RustDesk — санкціонований віддалений доступ (корпоративний сервер gw2).
+    AND NOT ("Target Process Path" ILIKE '%unknown process%' AND "Process Name" ILIKE 'RustDesk.exe' AND "Process Path" ILIKE '%Program Files%RustDesk%')
+    -- Adobe Acrobat / Reader (пісочниця захищеного режиму).
+    AND NOT ("Target Process Path" ILIKE '%unknown process%' AND ("Process Name" ILIKE 'Acrobat.exe' OR "Process Name" ILIKE 'AcroRd32.exe') AND "Process Path" ILIKE '%Program Files%Adobe%')
+    -- Штатні процеси входу/друку Windows зі System32.
+    AND NOT ("Target Process Path" ILIKE '%unknown process%' AND ("Process Name" ILIKE 'userinit.exe' OR "Process Name" ILIKE 'LogonUI.exe') AND "Process Path" ILIKE '%ystem32%')
+    AND NOT ("Target Process Path" ILIKE '%unknown process%' AND "Process Name" ILIKE 'splwow64.exe' AND "Process Path" ILIKE '%Windows%')
 GROUP BY Hostname, Injector, Injector_Path, Target_Proc, Target_Path, Acct
 ORDER BY Events DESC
 LIMIT {limit} {time_depth}
