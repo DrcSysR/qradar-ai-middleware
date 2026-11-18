@@ -23,3 +23,7 @@
 **Інтерпретатор:** `cortex_xdr_scan.service` (і `cortex_incident_triage.service`) тепер стартують через `/opt/qradar-middleware/venv/bin/python`
 — `google-auth` (Vertex) є лише у venv, системний python3 його не має. Unit-файли не ставляться автоапдейтом: `cortex_xdr_scan.service` живе лише на mdlwr01 (в репо його немає) — там
 правлено `ExecStart` у `/etc/systemd/system/` + `daemon-reload`; `systemd/cortex_incident_triage.service` оновлено в репо й скопійовано. У звіті «на перегляд» тепер відсортовано за важливістю.
+
+**Калібрування (того ж дня):** перший dry-run дав «malicious → ізолювати хост» для заблокованих DNS/IPS-детекцій pa-vm.
+У `SYSTEM` додано правила: `malicious` лише при доказах успішної компрометації; заблокована одинична детекція без
+процесу-ініціатора = benign/unclear; IP форвардерів/DNS-проксі — не клієнт. Кеш вердиктів скинуто.
