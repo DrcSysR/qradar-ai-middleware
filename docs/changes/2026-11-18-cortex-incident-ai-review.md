@@ -21,5 +21,5 @@
 **MCP не використовується** — інциденти й алерти беруться з Public API тим самим ключем, що й тріаж.
 
 **Інтерпретатор:** `cortex_xdr_scan.service` (і `cortex_incident_triage.service`) тепер стартують через `/opt/qradar-middleware/venv/bin/python`
-— `google-auth` (Vertex) є лише у venv, системний python3 його не має. Unit-файли не ставляться автоапдейтом: на mdlwr01
-скопіювати з `systemd/` у `/etc/systemd/system/` і `systemctl daemon-reload`. У звіті «на перегляд» тепер відсортовано за важливістю.
+— `google-auth` (Vertex) є лише у venv, системний python3 його не має. Unit-файли не ставляться автоапдейтом: `cortex_xdr_scan.service` живе лише на mdlwr01 (в репо його немає) — там
+правлено `ExecStart` у `/etc/systemd/system/` + `daemon-reload`; `systemd/cortex_incident_triage.service` оновлено в репо й скопійовано. У звіті «на перегляд» тепер відсортовано за важливістю.

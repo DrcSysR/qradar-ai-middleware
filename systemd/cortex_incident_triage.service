@@ -6,4 +6,4 @@ After=network-online.target
 Type=oneshot
 WorkingDirectory=/opt/qradar-middleware
 TimeoutStartSec=1800
-ExecStart=/usr/bin/python3 /opt/qradar-middleware/cortex_incident_triage.py
+ExecStart=/opt/qradar-middleware/venv/bin/python /opt/qradar-middleware/cortex_incident_triage.py
