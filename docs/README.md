@@ -20,6 +20,7 @@ AI-тріаж офенсів QRadar: сервіс читає офенс, під�
 | 2026-11-12 | [netdiag: Google Chat-бот діагностики підключення пристрою за IP (Wi-Fi WLC 3504 / свіч-порт-802.1X / NPS)](changes/2026-11-12-netdiag-bot.md) |
 | 2026-11-05 | [Cortex XDR: автоматичне видалення ендпоінтів, що мовчать 15 днів і більше (cortex_endpoint_cleanup.py, щодня 10:00)](changes/2026-11-05-cortex-endpoint-cleanup.md) |
 | 2026-11-17 | [remote_thread_injection.aql: фільтри шуму з цілі unknown process (PanGpHip, 1С, OCS, RustDesk, Acrobat)](changes/2026-11-17-crt-aql-fp-filters.md) |
+| 2026-11-18 | [QRadar: відновлено DSM/log source Cortex XDR (syslog-ng на api-gw + LSX), перевірено тестовою подією](changes/2026-11-18-cortex-dsm-qradar-restore.md) |
 | 2026-11-18 | [QRadar: чистка 362 мертвих log source'ів (дублі й неіснуючі станції); прогалина Linux-джерел з 15.05](changes/2026-11-18-qradar-logsource-cleanup.md) |
 | 2026-11-18 | [ПЛАН: оновлення QRadar 7.5.0 UP14 → 7.6.0.x (маршрут, бекапи, перевірки, відкат) + `tools/qradar_upgrade_check.py`](changes/2026-11-18-qradar-upgrade-76-plan.md) |
 | 2026-11-18 | [Cortex: розбір моделлю (Vertex) інцидентів «на перегляд» у щоденному звіті — лише рекомендація](changes/2026-11-18-cortex-incident-ai-review.md) |
