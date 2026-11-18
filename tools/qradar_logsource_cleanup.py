@@ -70,7 +70,7 @@ def main() -> None:
         if not apply:
             logging.info(f"[dry-run] delete {i} {x.get('name')} (остання подія {age:.0f} д тому)")
             continue
-        d = requests.delete(f"{base}{PATH}/{i}", headers=h, verify=False, timeout=60)
+        d = requests.delete(f"{base}{PATH}/{i}", headers={**h, "Accept": "text/plain"}, verify=False, timeout=60)   # DELETE віддає 406 на Accept: application/json
         if d.status_code in (200, 202, 204):
             done += 1
             logging.info(f"deleted {i} {x.get('name')} -> HTTP {d.status_code}")
