@@ -309,6 +309,7 @@ def run_triage(config: dict, dry_run: bool, hours: float) -> dict | None:
     if not dry_run:
         init_db()
         record(closed, run_id)
+    review.sort(key=lambda r: -SEV_RANK.get(str(r[0].get("severity") or "").lower(), 0))   # важливіші — першими у звіті
     ai: dict = {}
     if review and cfg(config, "cortex_incident_ai_enabled"):
         try:

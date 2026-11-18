@@ -19,3 +19,7 @@
 **Чому Vertex, а не llm01:** локальна модель 3B замала для розбору командних рядків; обсяг малий (кілька інцидентів на добу).
 Дані йдуть тим самим каналом і в той самий проєкт GCP, що й офенси QRadar на tier-2.
 **MCP не використовується** — інциденти й алерти беруться з Public API тим самим ключем, що й тріаж.
+
+**Інтерпретатор:** `cortex_xdr_scan.service` (і `cortex_incident_triage.service`) тепер стартують через `/opt/qradar-middleware/venv/bin/python`
+— `google-auth` (Vertex) є лише у venv, системний python3 його не має. Unit-файли не ставляться автоапдейтом: на mdlwr01
+скопіювати з `systemd/` у `/etc/systemd/system/` і `systemctl daemon-reload`. У звіті «на перегляд» тепер відсортовано за важливістю.
