@@ -64,6 +64,11 @@ DEFAULTS = {
     # mitigated закриваємо лише до цієї важливості включно (low|medium|high|critical).
     "cortex_incident_max_severity_mitigated": "medium",
     "cortex_incident_report_title": "🧹 Cortex XDR — автотріаж інцидентів",
+    # Розбір моделлю (cortex_incident_ai) інцидентів «на перегляд»: лише рекомендація у звіті, нічого не закриває.
+    "cortex_incident_ai_enabled": True,
+    "cortex_incident_ai_model": "",          # порожньо = vertex_deep із config.json
+    "cortex_incident_ai_max": 10,            # нових розборів за прогін (кеш по incident_id+alert_count не рахується)
+    "cortex_incident_ai_max_alerts": 8,      # алертів інциденту в промпті
 }
 
 logging.basicConfig(
@@ -225,7 +230,8 @@ def record(rows: list, run_id: str) -> None:
               int(i.get("alert_count") or 0), run_id) for i, r, s in rows])
 
 
-def triage_lines(closed: list, review: list, total: int, dry_run: bool, max_items: int = 25) -> list:
+def triage_lines(closed: list, review: list, total: int, dry_run: bool, max_items: int = 25,
+                 ai: dict | None = None) -> list:
     """Рядки секції тріажу: що закрито як шум і що лишилось на ручний розбір (з посиланнями)."""
     by_rule = Counter(r for _, r, _ in closed)
     lines = [f"Інциденти: переглянуто {total}; {'було б закрито' if dry_run else 'закрито як шум'} {len(closed)} "
@@ -237,14 +243,20 @@ def triage_lines(closed: list, review: list, total: int, dry_run: bool, max_item
         ref = f"<{url}|#{inc.get('incident_id')}>" if url else f"#{inc.get('incident_id')}"
         lines.append(f"• {ref} [{inc.get('severity')}] {(inc.get('description') or '')[:90]}"
                      f"{' — ' + hosts if hosts else ''} ({why})")
+        v = (ai or {}).get(str(inc.get("incident_id")))
+        if v:
+            import cortex_incident_ai as cia
+            lines.append(f"   🤖 {cia.VERDICTS.get(v['verdict'], v['verdict'])}: {v['summary']}"
+                         f"{' → ' + v['next_step'] if v.get('next_step') else ''}")
     if len(review) > max_items:
         lines.append(f"… і ще {len(review) - max_items}")
     return lines
 
 
-def build_chat_message(title: str, closed: list, review: list, total: int, dry_run: bool) -> dict:
+def build_chat_message(title: str, closed: list, review: list, total: int, dry_run: bool,
+                       ai: dict | None = None) -> dict:
     return {"text": "\n".join([f"*{title}*" + (" (dry-run)" if dry_run else "")]
-                              + triage_lines(closed, review, total, dry_run))}
+                              + triage_lines(closed, review, total, dry_run, ai=ai))}
 
 
 def run_triage(config: dict, dry_run: bool, hours: float) -> dict | None:
@@ -270,11 +282,13 @@ def run_triage(config: dict, dry_run: bool, hours: float) -> dict | None:
     closed: list = []          # (incident, rule, status)
     kept: Counter = Counter()
     review: list = []          # (incident, причина) — лишились відкритими для людини
+    alerts_by_id: dict = {}
     for inc in incidents:
         iid = str(inc.get("incident_id"))
         alerts = fetch_alerts(config, iid)
         rule, status, why = decide(inc, alerts, config, net_sources, drop_cats)
         if not rule:
+            alerts_by_id[iid] = alerts or []
             kept[why] += 1
             review.append((inc, why))
             logging.info(f"keep #{iid} [{inc.get('severity')}] {(inc.get('description') or '')[:70]} — {why}")
@@ -295,7 +309,19 @@ def run_triage(config: dict, dry_run: bool, hours: float) -> dict | None:
     if not dry_run:
         init_db()
         record(closed, run_id)
-    return {"closed": closed, "review": review, "total": len(incidents), "dry_run": dry_run}
+    ai: dict = {}
+    if review and cfg(config, "cortex_incident_ai_enabled"):
+        try:
+            import cortex_incident_ai as cia
+            model = str(cfg(config, "cortex_incident_ai_model") or config.get("vertex_deep") or "")
+            if model:
+                ai = cia.analyze(config, review, alerts_by_id, int(cfg(config, "cortex_incident_ai_max")),
+                                 int(cfg(config, "cortex_incident_ai_max_alerts")), model)
+            else:
+                logging.warning("cortex_incident_ai: модель не задана (vertex_deep порожній) — розбір пропущено")
+        except Exception as e:  # розбір моделлю не має валити тріаж і звіт
+            logging.error(f"cortex_incident_ai: {type(e).__name__}: {e}")
+    return {"closed": closed, "review": review, "total": len(incidents), "dry_run": dry_run, "ai": ai}
 
 
 def main() -> None:
@@ -331,7 +357,7 @@ def main() -> None:
     if res is None:
         sys.exit(1)
     message = build_chat_message(cfg(config, "cortex_incident_report_title"), res["closed"], res["review"],
-                                 res["total"], res["dry_run"])
+                                 res["total"], res["dry_run"], res.get("ai"))
     if res["dry_run"]:
         print(message["text"])
         logging.info("DRY-RUN: нічого не закрито, state і звіт не записано")

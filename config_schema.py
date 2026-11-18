@@ -213,6 +213,10 @@ SCHEMA = {
     "cortex_incident_status_mitigated":   (str,  "resolved_threat_handled"),
     "cortex_incident_max_severity_mitigated": (str, "medium"),
     "cortex_incident_report_title":       (str,  ""),
+    "cortex_incident_ai_enabled":         (bool, True),
+    "cortex_incident_ai_model":           (str,  ""),
+    "cortex_incident_ai_max":             (NUM,  10),
+    "cortex_incident_ai_max_alerts":      (NUM,  8),
     "cortex_xdr_admin_api_key_id":        (str,  ""),
     "cortex_xdr_admin_api_key":           (str,  ""),
 
