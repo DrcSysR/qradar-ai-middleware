@@ -10,7 +10,7 @@ Upgrade Guide PDF для 7.6 (`b_qradar_upgrade.pdf`) на момент пере
 | Що | Значення |
 |---|---|
 | Консоль `qr-aio` 172.17.61.184 | 7.5.0 UpdatePackage 14 (core 2021.6.14.20251017), RHEL 8.10, VMware VM, 32 vCPU / 93 ГБ RAM, appliance 3199 |
-| App Host `qr-uph` 172.17.61.185 | appliance 4000, тип appHost — **керований хост, оновлюється після консолі** |
+| App Host `qr-uph` 172.17.61.185 | appliance 4000, тип appHost — керований хост; **оновлюється самою консоллю** (окремого інсталятора на ньому не запускаємо) |
 | Диск | `/store` 2,9 ТБ, зайнято 84% (492 ГБ вільно); `/storetmp` 12 ГБ вільно (потрібно ≥10); `/var/log` 9,7 ГБ вільно |
 | Мережа консолі | `ifcfg-ens192` (static, legacy network-scripts); `ens224` DOWN; NetworkManager 1.40 присутній |
 | Secure Boot / LUKS | не виявлено (BIOS, EFI variables not supported) |
@@ -54,11 +54,11 @@ Upgrade Guide PDF для 7.6 (`b_qradar_upgrade.pdf`) на момент пере
 
 За release notes SFS (команди — стандартна процедура QRadar SFS; звірити з release notes конкретного файлу):
 
-1. Консоль: SSH під root, `screen -S upgrade` (сесія не має обриватись).
+1. Консоль `qr-aio`: SSH під root, `screen -S upgrade` (сесія не має обриватись).
 2. Скопіювати SFS у `/storetmp`; `sha256sum` — звірити.
 3. `mkdir -p /media/updates && mount -o loop -t squashfs /storetmp/<файл>.sfs /media/updates && /media/updates/installer`
-4. У меню інсталятора — **Patch Console**, дочекатись завершення (HTTP-сесії закрито, не втручатись). Керовані хости в меню з'являються лише після консолі.
-5. Потім `qr-uph`: з меню інсталятора (Legacy — послідовно або Parallel) — один керований хост, тож без різниці.
+4. У меню інсталятора — **Patch Console**, дочекатись завершення (HTTP-сесії закрито, не втручатись). Керовані хости (у нас лише App Host) оновлює консоль.
+5. `qr-uph` окремо не оновлюємо: консоль доставляє патч на App Host сама (за уточненням власника); лише переконатись, що він прийняв патч — `myver -v` на `qr-uph` і статус хоста в Admin → System and License Management.
 6. `umount /media/updates`; `/opt/qradar/bin/myver -v`; видалити SFS.
 7. **Перевірки (розділ 6)**; витримка 24–48 год.
 
