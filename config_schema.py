@@ -253,6 +253,7 @@ SCHEMA = {
     "cortex_incident_ai_note_max":        (NUM,  60),
     "cortex_incident_assign_to":      (str,  ""),
     "cortex_incident_assign_max":     (int,  100),
+    "cortex_xdr_cleanup_report":      (bool, True),
     "cortex_queue_enabled":           (bool, False),
     "cortex_queue_dry_run":           (bool, True),
     "cortex_queue_severity_magnitude": (dict, {"critical": 9, "high": 8, "medium": 6, "low": 4, "informational": 2}),

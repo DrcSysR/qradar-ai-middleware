@@ -62,6 +62,7 @@ DEFAULTS = {
     "cortex_xdr_cleanup_days": 15,
     "cortex_xdr_cleanup_dry_run": True,
     "cortex_xdr_cleanup_max_per_run": 100,
+    "cortex_xdr_cleanup_report": True,       # false = не слати звіт у чат (видалення й state як зазвичай; дані в боті)
     "cortex_xdr_cleanup_exclude_hostnames": [],
     "cortex_xdr_cleanup_exclude_groups": [],
     "cortex_xdr_cleanup_exclude_types": [],
@@ -449,8 +450,9 @@ def main() -> None:
         print(message["text"])
         logging.info("DRY-RUN: нічого не видалено, звіт не надіслано, повернуті не позначено")
         return
-    if not webhook_url:
-        logging.warning("Немає webhook у config.json — звіт лише в лог")
+    if not webhook_url or not cfg(config, "cortex_xdr_cleanup_report"):
+        logging.info(f"Звіт у чат вимкнено/немає webhook — лише лог (видалено {len(candidates)}, "
+                     f"повернулось {len(returned)}); дані в таблиці cortex_endpoint_deleted і в боті")
         mark_returned(returned)
         return
     if cx.send_to_chat(webhook_url, message):
