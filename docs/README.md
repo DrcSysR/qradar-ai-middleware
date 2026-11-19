@@ -28,6 +28,7 @@ AI-тріаж офенсів QRadar: сервіс читає офенс, під�
 | 2026-11-19 | [Cortex-бот: посилання на QRadar ведуть на qradar.modern.org](changes/2026-11-19-cortex-bot-qradar-ui-url.md) |
 | 2026-11-19 | [Компактна відповідь локальної моделі (score+verdict), пояснення будує мідлвар; прапорець вимкнено, є офлайн A/B](changes/2026-11-19-compact-local-output.md) |
 | 2026-11-19 | [Суддя Vertex (вимкнений) і план вечірньої розмітки датасету](changes/2026-11-19-ai-dataset-judge-and-labeling-plan.md) |
+| 2026-11-19 | [Розмітка датасету, партія 1: мітки Claude (без Vertex), 1135 випадків](changes/2026-11-19-ai-dataset-labeling-batch1.md) |
 | 2026-11-19 | [Google Chat-бот Cortex/QRadar v1 (лише читання, доступ — група soc@; ibm-qradar-283907, qrcr.modern-expo.ua)](changes/2026-11-19-cortex-chat-bot-v1.md) |
 | 2026-11-19 | [Виправлення: Temp/Downloads-guard у фільтрах thread-injection, права ai_dataset.db](changes/2026-11-19-thread-injection-temp-guard-dataset-perms.md) |
 | 2026-11-19 | [Датасет: нормалізована схема і лічильник унікальності (ai_unique/ai_log, радар + Cortex)](changes/2026-11-19-ai-dataset-normalized-unique.md) |
