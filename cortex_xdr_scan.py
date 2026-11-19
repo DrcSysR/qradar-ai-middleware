@@ -496,6 +496,34 @@ def build_chat_message(items: list, title: str, max_items: int) -> dict:
     return {"text": "\n".join(lines)}
 
 
+CHAT_CHUNK = 3500   # Google Chat webhook відхиляє text довший за ~4096 знаків (HTTP 400 «text is too long»)
+
+
+def split_text(text: str, limit: int = CHAT_CHUNK) -> list:
+    """Ріжемо по рядках, щоб не розірвати розмітку/посилання; надто довгий рядок обрізаємо."""
+    parts, cur = [], ""
+    for line in text.split("\n"):
+        line = line[:limit]
+        if cur and len(cur) + len(line) + 1 > limit:
+            parts.append(cur)
+            cur = line
+        else:
+            cur = f"{cur}\n{line}" if cur else line
+    if cur.strip():
+        parts.append(cur)
+    return parts
+
+
+def send_chunked(webhook_url: str, text: str) -> bool:
+    """Шле звіт кількома повідомленнями; True лише коли пройшли всі (інакше state не оновлюємо)."""
+    parts = split_text(text)
+    for i, part in enumerate(parts, 1):
+        body = part if len(parts) == 1 else f"{part}\n_(частина {i}/{len(parts)})_"
+        if not send_to_chat(webhook_url, {"text": body}):
+            return False
+    return True
+
+
 def send_to_chat(webhook_url: str, message: dict) -> bool:
     try:
         resp = requests.post(webhook_url, json=message, timeout=30)
@@ -576,7 +604,7 @@ def main() -> None:
         print(message["text"])
         logging.info("DRY-RUN: звіт не надіслано, state не оновлено")
         return
-    ok = send_to_chat(webhook_url, message)
+    ok = send_chunked(webhook_url, message["text"])
     if ok:
         mark_reported(new_items)
         logging.info(f"Звіт надіслано ({len(new_items)} items), state оновлено")
