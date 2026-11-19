@@ -3,7 +3,8 @@
 Запуск (локально, на знімку БД):  python3 tools/dataset_label.py ai_dataset_snapshot.db labels.json
 Пише JSON [[ukey, "close|benign", reason], ...] ЛИШЕ для рядків з claude_label IS NULL; у БД записує окремий крок
 (UPDATE ... WHERE claude_label IS NULL, від користувача qmiddleware). human_label не чіпає.
-Мітки: close|benign, close|insufficient_data (діапазон 0.4-0.6 рубрики), review|suspicious (ГІПОТЕЗА, не знахідка).
+Мітки: close|benign, close|malicious (реальна, але зупинена атака із зовнішнього джерела; «mitigated» у причині), close|insufficient_data (діапазон 0.4-0.6 рубрики),
+review|suspicious (ГІПОТЕЗА, не знахідка). Рядки, що не покриті правилами (shape not covered / not in reviewed table), лишаються NULL.
 Це правила, а не незалежна експертиза: збіг з вердиктами моделі (99%) частково тавтологічний.
 LK — таблиця перевірених рядків ін'єкцій (injector, injector_path, target_path, target_proc) -> (S|U|B, причина);
 нові рядки, яких немає в LK, отримують U «not in reviewed table» і мають бути розглянуті вручну.
@@ -225,7 +226,7 @@ LK = {('#-csinstallerservice.exe', 'c:\\windows\\system#\\drivers\\crowdstrike\\
                                                                                                                                                                                                 'benign '
                                                                                                                                                                                                 'self/child '
                                                                                                                                                                                                 'threads)'),
- ('assistant_installer.exe', 'c:\\users\\<u>\\appdata\\local\\temp\\.opera\\<hex>\\cuserssergiy.pilkevychappdatalocalprogramsoperagxassistant\\installing\\assistant_installer.exe', '&lt;unknown process&gt;', ''): ('B',
+ ('assistant_installer.exe', 'c:\\users\\<u>\\appdata\\local\\temp\\.opera\\<hex>\\cusers<u>appdatalocalprogramsoperagxassistant\\installing\\assistant_installer.exe', '&lt;unknown process&gt;', ''): ('B',
                                                                                                                                                                                                                       'known '
                                                                                                                                                                                                                       'app, '
                                                                                                                                                                                                                       'target '
@@ -815,7 +816,7 @@ LK = {('#-csinstallerservice.exe', 'c:\\windows\\system#\\drivers\\crowdstrike\\
  ('installer.exe', 'c:\\users\\<u>\\appdata\\local\\temp\\#zs#d#a#b#\\installer.exe', '&lt;unknown process&gt;', ''): ('U',
                                                                                                                        'unidentified binary in '
                                                                                                                        'user-writable path'),
- ('installer.exe', 'c:\\users\\<u>\\appdata\\local\\temp\\.opera\\<hex>\\cusersalla.nykytiukappdatalocalprogramsopera\\installing\\installer.exe', '&lt;unknown process&gt;', ''): ('B',
+ ('installer.exe', 'c:\\users\\<u>\\appdata\\local\\temp\\.opera\\<hex>\\cusers<u>appdatalocalprogramsopera\\installing\\installer.exe', '&lt;unknown process&gt;', ''): ('B',
                                                                                                                                                                                     'known '
                                                                                                                                                                                     'app, '
                                                                                                                                                                                     'target '
@@ -826,7 +827,7 @@ LK = {('#-csinstallerservice.exe', 'c:\\windows\\system#\\drivers\\crowdstrike\\
                                                                                                                                                                                     'benign '
                                                                                                                                                                                     'self/child '
                                                                                                                                                                                     'threads)'),
- ('installer.exe', 'c:\\users\\<u>\\appdata\\local\\temp\\.opera\\<hex>\\cusersanna.zybinaappdatalocalprogramsopera\\installing\\installer.exe', '&lt;unknown process&gt;', ''): ('B',
+ ('installer.exe', 'c:\\users\\<u>\\appdata\\local\\temp\\.opera\\<hex>\\cusers<u>appdatalocalprogramsopera\\installing\\installer.exe', '&lt;unknown process&gt;', ''): ('B',
                                                                                                                                                                                   'known '
                                                                                                                                                                                   'app, '
                                                                                                                                                                                   'target '
@@ -837,7 +838,7 @@ LK = {('#-csinstallerservice.exe', 'c:\\windows\\system#\\drivers\\crowdstrike\\
                                                                                                                                                                                   'benign '
                                                                                                                                                                                   'self/child '
                                                                                                                                                                                   'threads)'),
- ('installer.exe', 'c:\\users\\<u>\\appdata\\local\\temp\\.opera\\<hex>\\cusersdmytro.karpukappdatalocalprogramsopera\\installing\\installer.exe', '&lt;unknown process&gt;', ''): ('B',
+ ('installer.exe', 'c:\\users\\<u>\\appdata\\local\\temp\\.opera\\<hex>\\cusers<u>appdatalocalprogramsopera\\installing\\installer.exe', '&lt;unknown process&gt;', ''): ('B',
                                                                                                                                                                                     'known '
                                                                                                                                                                                     'app, '
                                                                                                                                                                                     'target '
@@ -848,7 +849,7 @@ LK = {('#-csinstallerservice.exe', 'c:\\windows\\system#\\drivers\\crowdstrike\\
                                                                                                                                                                                     'benign '
                                                                                                                                                                                     'self/child '
                                                                                                                                                                                     'threads)'),
- ('installer.exe', 'c:\\users\\<u>\\appdata\\local\\temp\\.opera\\<hex>\\cusershalyna.baraboliukappdatalocalprogramsopera\\installing\\installer.exe', '&lt;unknown process&gt;', ''): ('B',
+ ('installer.exe', 'c:\\users\\<u>\\appdata\\local\\temp\\.opera\\<hex>\\cusers<u>appdatalocalprogramsopera\\installing\\installer.exe', '&lt;unknown process&gt;', ''): ('B',
                                                                                                                                                                                         'known '
                                                                                                                                                                                         'app, '
                                                                                                                                                                                         'target '
@@ -859,7 +860,7 @@ LK = {('#-csinstallerservice.exe', 'c:\\windows\\system#\\drivers\\crowdstrike\\
                                                                                                                                                                                         'benign '
                                                                                                                                                                                         'self/child '
                                                                                                                                                                                         'threads)'),
- ('installer.exe', 'c:\\users\\<u>\\appdata\\local\\temp\\.opera\\<hex>\\cusersmyroslav.dymarchukappdatalocalprogramsopera\\installing\\installer.exe', '&lt;unknown process&gt;', ''): ('B',
+ ('installer.exe', 'c:\\users\\<u>\\appdata\\local\\temp\\.opera\\<hex>\\cusers<u>appdatalocalprogramsopera\\installing\\installer.exe', '&lt;unknown process&gt;', ''): ('B',
                                                                                                                                                                                          'known '
                                                                                                                                                                                          'app, '
                                                                                                                                                                                          'target '
@@ -870,7 +871,7 @@ LK = {('#-csinstallerservice.exe', 'c:\\windows\\system#\\drivers\\crowdstrike\\
                                                                                                                                                                                          'benign '
                                                                                                                                                                                          'self/child '
                                                                                                                                                                                          'threads)'),
- ('installer.exe', 'c:\\users\\<u>\\appdata\\local\\temp\\.opera\\<hex>\\cusersnadiya.veremeychykappdatalocalprogramsopera\\installing\\installer.exe', '&lt;unknown process&gt;', ''): ('B',
+ ('installer.exe', 'c:\\users\\<u>\\appdata\\local\\temp\\.opera\\<hex>\\cusers<u>appdatalocalprogramsopera\\installing\\installer.exe', '&lt;unknown process&gt;', ''): ('B',
                                                                                                                                                                                          'known '
                                                                                                                                                                                          'app, '
                                                                                                                                                                                          'target '
@@ -881,7 +882,7 @@ LK = {('#-csinstallerservice.exe', 'c:\\windows\\system#\\drivers\\crowdstrike\\
                                                                                                                                                                                          'benign '
                                                                                                                                                                                          'self/child '
                                                                                                                                                                                          'threads)'),
- ('installer.exe', 'c:\\users\\<u>\\appdata\\local\\temp\\.opera\\<hex>\\cusersvitaliy.navratyukappdatalocalprogramsopera\\installing\\installer.exe', '&lt;unknown process&gt;', ''): ('B',
+ ('installer.exe', 'c:\\users\\<u>\\appdata\\local\\temp\\.opera\\<hex>\\cusers<u>appdatalocalprogramsopera\\installing\\installer.exe', '&lt;unknown process&gt;', ''): ('B',
                                                                                                                                                                                         'known '
                                                                                                                                                                                         'app, '
                                                                                                                                                                                         'target '
@@ -1615,28 +1616,35 @@ LK = {('#-csinstallerservice.exe', 'c:\\windows\\system#\\drivers\\crowdstrike\\
                                                                                                                            'managed agent or dev '
                                                                                                                            'tool starting shell')}
 
-RANK={'N':0,'B':1,'U':2,'S':3}
+MANUAL = {'2175031': ('close|insufficient_data', 'manual: expired-password failures at RDGW from one external IP for one named account, no success row; looks like a legitimate user, no spraying')}
+
+RANK={'N':0,'X':0.5,'B':1,'M':1.5,'U':2,'S':3}
+import ipaddress
+def scrub(x): return re.sub(r'(\\\.opera\\<hex>\\)cusers.*?appdata',r'\1cusers<u>appdata',x)
 def lo(e): return {k.lower():v for k,v in e.items()}
 def f(v):
     try: return float(v)
     except: return 0.0
-def isint(ip): return str(ip).startswith(('10.','192.168.','172.16.','172.17.','172.18.','172.19.','172.2','172.3'))
+def isint(ip):
+    try: return ipaddress.ip_address(str(ip)).is_private
+    except ValueError: return str(ip).startswith('<ip-int>')
 BEN_CAT=('google','windows update','appgroup','low-risk','computer-and-internet','content-delivery','business','reference','online-storage','streaming','social','artificial','internet-comm','shopping','messang','web-hosting','personal','shareware','web-adv','news','travel','education','search','software','financial','health','government','entertainment','sports','job','real-estate')
 BAD_CAT=('malware','command-and-control','phishing','proxy-avoidance','hacking','grayware','ransomware','parked','high-risk','dynamic-dns','questionable')
 def row_label(e,lens):
     d=lo(e); k=set(d)
     if 'injector_path' in k or 'injector' in k:
         key=tuple(norm_value(d.get(x,'')) if x in d else '?' for x in ('injector','injector_path','target_path'))+(norm_value(d['target_proc']) if 'target_proc' in d else '',)
-        key=(key[0] if key[0]!='' else '?',)+key[1:]
+        key=(key[0] if key[0]!='' else '?',)+tuple(scrub(x) for x in key[1:])
         if key in LK: return tuple(LK[key])
         # fallback: ignore target_proc
         for kk,v in LK.items():
             if kk[:3]==key[:3]: return tuple(v)
-        return ('U','injector row not in reviewed table')
+        return ('X','injector row not in reviewed table')
     if 'beacon_count' in k:
         app=str(d.get('app','')); cat=str(d.get('category','')).lower()
         if any(b in cat for b in BAD_CAT): return ('S','beacon category '+cat)
-        if app in('incomplete','insufficient-data','unknown-tcp','unknown-udp','unknown-p2p','not-applicable') or cat in('insufficient-content',): return ('U','beacon to unclassified app (%s)'%app)
+        if app in('incomplete','insufficient-data','unknown-tcp','unknown-udp','unknown-p2p','not-applicable') or cat in('insufficient-content',):
+            return ('U','beacon to unclassified app (%s)'%app) if lens.startswith('UC-ME Network C2') else ('N','unclassified-app beacon row in a composite case (context only)')
         if cat=='remote-access' and app!='chrome-remote-desktop': return ('U','remote-access beacon (%s)'%app)
         return ('B','beacon of recognized app/category (%s/%s); destination not in signature'%(app,cat))
     if 'conns' in k:  # outbound summary rows
@@ -1650,10 +1658,12 @@ def row_label(e,lens):
         if 'successful' in ev or 'access accept' in ev or 'validated the credentials' in ev: return ('N','auth success context')
         if not isint(d.get('source_ip','')) and False: return ('B','')
         if fa>=100 and f(d.get('unique_source_ips'))>=5: return ('U','distributed failures (%d from %d sources), no success in row'%(fa,f(d.get('unique_source_ips'))))
+        if not isint(d.get('source_ip','')): return ('M','mitigated: external source, only failures (no success row)')
         return ('B','failed auth without success')
     if 'event_count' in k and 'event_name' in k:
         ev=str(d['event_name']).lower(); n=f(d['event_count'])
         if any(x in ev for x in('mimikatz','ransom','cobalt','ioc','turla','c2','malware')): return ('S','event name '+ev[:40])
+        if not isint(d.get('source_ip','')) and (lens.startswith(('UC-06-1','UC-ME Block','UC-ME Deny')) or 'bruteforce' in ev): return ('M','mitigated: external source, blocked/denied activity')
         return ('B','repetitive network/audit event')
     if 'unique_targets' in k:
         ut=f(d['unique_targets']); up=f(d['unique_ports']); sip=str(d.get('src_ip','')); dip=str(d.get('dst_ip',''))
@@ -1667,28 +1677,29 @@ def row_label(e,lens):
         if 'ransomware' in a: return ('U','mailto ransomware heuristic (known noisy)')
         if a.startswith('registryevent') or 'creation time' in a or 'windows update' in a or 'boot menu' in a or 'secure boot' in a or 'time service' in a or 'root certificate' in a or 'database engine' in a: return ('B','routine host activity')
         if 'file decode' in a:
-            if proc in('powershell.exe','cmd.exe','mshta.exe','certutil.exe','bitsadmin.exe','wscript.exe','cscript.exe','rundll32.exe','regsvr32.exe'): return ('U','LOLBin '+proc+' in decode chain')
+            if proc in('powershell.exe','cmd.exe','csc.exe','mshta.exe','certutil.exe','bitsadmin.exe','wscript.exe','cscript.exe','rundll32.exe','regsvr32.exe'): return ('U','LOLBin '+proc+' in decode chain')
             return ('B','decode chain, proc '+proc[:20])
         if a in('process create','filecreate'):
             pp=str(d.get('proc_path','')).lower()
             if proc in('powershell.exe','cmd.exe','csc.exe','mshta.exe','wscript.exe','cscript.exe'): return ('U',a+' by '+proc+' in decode chain (command line unseen)')
             if any(x in pp for x in('program files','\\windows\\','kingsoft','onedrive','windowsapps','\\hp\\','xerox','chromehost')): return ('B',a+' by installed app '+proc[:24])
             return ('U',a+' by '+proc[:24]+' from non-standard path')
-        return ('U','unclassified activity '+a[:30])
+        return ('X','unclassified activity '+a[:30])
     if 'eventname' in k and 'rawpayload' in k:
         en=str(d['eventname']).lower()
         if any(x in en for x in ('mimikatz','ransom','cobalt','turla','ioc')): return ('S','CRE event '+en[:40])
-        return ('N','rule-trigger context event')
-    return ('U','row shape not covered: '+','.join(sorted(k))[:60])
+        if str(d.get('logsourcetype','')).lower()=='custom rule engine' or en.startswith(('process created a thread','excessive firewall denies','uc-0','local tcp scanner','irc connections','abnormal parent')): return ('N','rule-trigger context event (Custom Rule Engine)')
+        return ('X','non-CRE evidence row (raw payload not parsed)')
+    return ('X','row shape not covered: '+','.join(sorted(k))[:60])
 def label_case(c):
     rows=c['ev']
     if not rows: return None
     worst=('N','');cnt=collections.Counter();why={}
     for e in rows:
         l,r=row_label(e,c['lens']); cnt[l]+=1
-        if RANK[l]>RANK[worst[0]] or (l==worst[0] and l in('S','U') and not worst[1]): worst=(l,r)
+        if l!='X' and (RANK[l]>RANK[worst[0]] or (l==worst[0] and l in('S','U','M') and not worst[1])): worst=(l,r)
+    if cnt.get('X') and worst[0]!='S': return None
     return worst,dict(cnt)
-
 
 def events_of(prompt):
     i = prompt.find("[{"); j = prompt.find("--- END OF LOGS ---")
@@ -1709,14 +1720,19 @@ def events_of(prompt):
 def main(db, out):
     c = sqlite3.connect(db)
     res = []
-    for u, lens, pz in c.execute("select ukey,lens,example_prompt_z from ai_unique where source='qradar' and claude_label is null"):
+    for u, lens, pz, ref in c.execute("select ukey,lens,example_prompt_z,example_ref from ai_unique where source='qradar' and claude_label is null"):
         ev = events_of(zlib.decompress(pz).decode())
+        if ev is None and lens.startswith("Excessive Firewall Denies"):
+            ev = [{"logsourcetype": "Custom Rule Engine", "eventname": "Excessive Firewall Denies", "rawpayload": ""}]
+        if str(ref) in MANUAL:
+            res.append([u, MANUAL[str(ref)][0], MANUAL[str(ref)][1]])
+            continue
         r = label_case({"ev": ev, "lens": lens})
         if r is None:
             continue
         (w, reason), cnt = r
         lab, cl, txt = {"S": ("review", "suspicious", "HYPOTHESIS: " + reason), "U": ("close", "insufficient_data", reason),
-                        "B": ("close", "benign", reason)}.get(w, ("close", "insufficient_data", "evidence rows are only rule-trigger events; actual chain details not in saved evidence"))
+                        "B": ("close", "benign", reason), "M": ("close", "malicious", reason)}.get(w, ("close", "insufficient_data", "only rule-trigger (CRE) events in saved evidence; the offense chain itself is not in the record"))
         res.append([u, lab + "|" + cl, "rows %s; %s" % (dict(cnt), txt)])
     json.dump(res, open(out, "w"), ensure_ascii=False)
     print(len(res), collections.Counter(x[1] for x in res))
