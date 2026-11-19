@@ -1,0 +1,10 @@
+# ТАЙМЕР НЕ УВІМКНЕНО за замовчуванням (рішення 2026-11-19: судитиме Claude разом з порадником за командою людини; цей Vertex-суддя — опційний).
+[Unit]
+Description=Run ai_dataset_judge daily
+
+[Timer]
+OnCalendar=*-*-* 03:30:00
+Persistent=true
+
+[Install]
+WantedBy=timers.target

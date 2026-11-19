@@ -1,0 +1,11 @@
+[Unit]
+Description=Суддя Vertex для унікальних випадків датасету (ai_dataset.db), лише запис вердикту поруч
+After=network-online.target
+
+[Service]
+Type=oneshot
+# Під qmiddleware, не root: інакше -wal/-shm створюються від root, і сервіс до кінця запуску не пише в датасет.
+User=qmiddleware
+Group=qmiddleware
+WorkingDirectory=/opt/qradar-middleware
+ExecStart=/opt/qradar-middleware/venv/bin/python /opt/qradar-middleware/ai_dataset_judge.py

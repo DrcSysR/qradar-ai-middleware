@@ -49,7 +49,10 @@ CREATE TABLE IF NOT EXISTS ai_unique (
     vertex_verdict TEXT,
     vertex_score REAL,
     vertex_ts DATETIME,
-    human_label TEXT
+    human_label TEXT,
+    claude_label TEXT,
+    claude_reason TEXT,
+    claude_ts DATETIME
 )
 """
 DDL_LOG = """
@@ -157,6 +160,11 @@ def _open(path):
     conn.execute("PRAGMA journal_mode=WAL")
     conn.execute(DDL_UNIQUE)
     conn.execute(DDL_LOG)
+    # Міграція: колонки для міток Claude (human_label лишається для людини). CREATE IF NOT EXISTS їх не додасть.
+    have = {r[1] for r in conn.execute("PRAGMA table_info(ai_unique)")}
+    for col, typ in (("claude_label", "TEXT"), ("claude_reason", "TEXT"), ("claude_ts", "DATETIME")):
+        if col not in have:
+            conn.execute(f"ALTER TABLE ai_unique ADD COLUMN {col} {typ}")
     return conn
 
 
