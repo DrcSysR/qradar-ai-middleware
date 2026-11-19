@@ -151,7 +151,7 @@ def analyze(config: dict, review: list, alerts_by_id: dict, max_incidents: int, 
     """review = [(incident, причина)]; → {incident_id: {verdict, summary, next_step}} для тих, що вдалось розібрати."""
     init_db()
     todo = [inc for inc, why in review
-            if why == "needs_review" or why.startswith("mitigated_but_severity")]
+            if why in ("needs_review", "assigned_ours") or why.startswith("mitigated_but_severity")]
     todo.sort(key=lambda i: -SEV_RANK.get(str(i.get("severity") or "").lower(), 0))
     out: dict = {}
     fresh = 0

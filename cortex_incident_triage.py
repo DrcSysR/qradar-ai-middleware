@@ -73,6 +73,10 @@ DEFAULTS = {
     # Пишемо тільки коли notes порожні або починаються з NOTE_MARK (чужих нотаток не перезаписуємо). У dry-run — ні.
     "cortex_incident_ai_note": True,
     "cortex_incident_ai_note_max": 60,       # записів нотаток за прогін
+    # Кейси, що лишились на перегляд і ще нікому не призначені, призначаємо на цього користувача (email Cortex).
+    # Порожньо = не призначати. Чужі призначення, зірочки й чужі нотатки не чіпаємо.
+    "cortex_incident_assign_to": "",
+    "cortex_incident_assign_max": 100,       # призначень за прогін
 }
 NOTE_MARK = "🤖 Авторозбір middleware"
 
@@ -180,8 +184,10 @@ def is_mitigated(a: dict) -> bool:
 
 def decide(inc: dict, alerts: list | None, config: dict, net_sources: set, drop_cats: list):
     """(rule, status, why) для закриття або (None, None, причина_пропуску)."""
+    mine = str(cfg(config, "cortex_incident_assign_to") or "").strip().lower()
     if inc.get("assigned_user_mail"):
-        return None, None, "assigned"
+        # Призначений нами кейс не закриваємо (з ним уже працює людина), але розбір/нотатки триває
+        return None, None, ("assigned_ours" if mine and str(inc["assigned_user_mail"]).strip().lower() == mine else "assigned")
     if inc.get("starred") or inc.get("starred_manually"):
         return None, None, "starred"
     if inc.get("notes") and not str(inc.get("notes")).startswith(NOTE_MARK):   # наші нотатки не блокують тріаж
@@ -241,6 +247,36 @@ def note_text(inc: dict, v: dict, corr: dict | None, config: dict) -> str:
         lines.append(f"QRadar, відкриті офенси того ж хоста ({corr['total']}): {offs}")
     lines.append("Дані алертів для моделі — недовірені; вердикт варто перевірити людині.")
     return "\n".join(lines)
+
+
+ASSIGNABLE = ("needs_review", "alerts_truncated")
+
+
+def assign_review(config: dict, admin_cfg: dict | None, review: list, dry_run: bool) -> int:
+    """Призначає на cortex_incident_assign_to кейси «на перегляд», яким ніхто не призначений і яких не чіпала людина
+    (причини needs_review / mitigated_but_severity_* / alerts_truncated). Не закриває і не змінює статус."""
+    who = str(cfg(config, "cortex_incident_assign_to") or "").strip()
+    if not who:
+        return 0
+    todo = [inc for inc, why in review
+            if (why in ASSIGNABLE or why.startswith("mitigated_but_severity")) and not inc.get("assigned_user_mail")]
+    todo = todo[:int(cfg(config, "cortex_incident_assign_max"))]
+    if not todo:
+        return 0
+    if dry_run or admin_cfg is None:
+        logging.info(f"[dry-run] призначив би {len(todo)} кейс(ів) на {who}: {[str(i.get('incident_id')) for i in todo][:15]}")
+        return 0
+    done = 0
+    for inc in todo:
+        iid = str(inc.get("incident_id"))
+        if post(admin_cfg, "/public_api/v1/incidents/update_incident",
+                {"incident_id": iid, "update_data": {"assigned_user_mail": who}}) is not None:
+            inc["assigned_user_mail"] = who
+            done += 1
+        else:
+            logging.error(f"assign #{iid} → {who}: не вдалось")
+    logging.info(f"призначено на {who}: {done}/{len(todo)}")
+    return done
 
 
 def put_note(admin_cfg: dict, inc_id: str, text: str) -> bool:
@@ -402,6 +438,10 @@ def run_triage(config: dict, dry_run: bool, hours: float) -> dict | None:
         init_db()
         record(closed, run_id)
     review.sort(key=lambda r: -SEV_RANK.get(str(r[0].get("severity") or "").lower(), 0))   # важливіші — першими у звіті
+    try:
+        assign_review(config, admin_cfg, review, dry_run)
+    except Exception as e:                       # призначення не повинно ламати тріаж
+        logging.error(f"assign_review: {type(e).__name__}: {e}")
     ai: dict = {}
     if review and cfg(config, "cortex_incident_ai_enabled"):
         try:
