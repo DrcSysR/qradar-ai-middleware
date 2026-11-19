@@ -356,6 +356,8 @@ SCHEMA = {
     "netdiag_pa_unblock_tags":            (list, ["wan-block"]),
     "netdiag_pa_max_hours":               (int,  720),
     "netdiag_pa_group":                   (str,  "noc@modern-expo.com"),
+    "netdiag_pa_block_tag":               (str,  "wan-block"),
+    "netdiag_pa_block_protect":           (list, ["188.163.216.99", "212.1.103.134", "185.59.227.216/29"]),
     "netdiag_pa_notify_webhook":          (str,  ""),   # вебхук Chat для сповіщень про дії на PA (секрет, лише config.json)
 
     # --- cdn_allowlist_update.py ---

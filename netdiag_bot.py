@@ -600,7 +600,7 @@ async def chat(request: Request):
         log.info(f"pa-ask user={email} op={cmd['op']} ip={cmd.get('ip')}")
         if not pa:
             return JSONResponse({"text": "⛔ Дії на Palo Alto вам не дозволені."})
-        p, err = netdiag_pa.validate(cfg, cmd["op"], cmd.get("ip"), cmd.get("hours"))
+        p, err = netdiag_pa.validate(cfg, cmd["op"], cmd.get("ip"), cmd.get("hours"), desc=cmd.get("desc", ""))
         if not p:
             return JSONResponse({"text": f"⚠️ {err}\n\n{netdiag_pa.HELP_PA}"})
         return JSONResponse(await asyncio.to_thread(netdiag_pa.confirm_card, cfg, p))
@@ -641,7 +641,7 @@ def _click_params(event: dict) -> tuple[str, dict]:
     for kv in (event.get("action") or {}).get("parameters") or []:
         if isinstance(kv, dict) and "key" in kv:
             params.setdefault(kv["key"], kv.get("value"))
-    return fn, {k: str(v)[:64] for k, v in params.items()}
+    return fn, {k: str(v)[:(160 if k == "d" else 64)] for k, v in params.items()}
 
 
 IFNAME_RE = re.compile(r"^[A-Za-z0-9/._:\- ]{1,48}$")
@@ -674,11 +674,15 @@ async def card_clicked(cfg: dict, event: dict, email: str) -> dict:
     # --- відкрити діалоги / меню
     if fn == "dlg_diag":
         return ui.dlg_diag(prm.get("ip", ""))
-    if fn in ("dlg_inet", "dlg_unblock"):
+    if fn in ("dlg_inet", "dlg_unblock", "dlg_block"):
         if not pa:
             return {**new, "text": "⛔ Дії на Palo Alto вам не дозволені."}
         ip = netdiag_pa.parse_ipv4(prm.get("ip", "")) or ""
-        return ui.dlg_inet(ip) if fn == "dlg_inet" else ui.dlg_unblock(ip)
+        return {"dlg_inet": ui.dlg_inet, "dlg_unblock": ui.dlg_unblock, "dlg_block": ui.dlg_block}[fn](ip)
+    if fn == "pa_list":
+        if not pa:
+            return {**new, "text": "⛔ Дії на Palo Alto вам не дозволені."}
+        return {**new, **await asyncio.to_thread(netdiag_pa.blocks_card, cfg)}
     if fn == "show_home":
         return {**new, **ui.home(email, pa)}
 
@@ -746,7 +750,7 @@ async def card_clicked(cfg: dict, event: dict, email: str) -> dict:
             "statusCode": "OK", "userFacingMessage": note[:250]}}}}
 
     # --- дії на Palo Alto з діалогів
-    if fn in ("submit_inet", "submit_unblock"):
+    if fn in ("submit_inet", "submit_unblock", "submit_block"):
         if not pa:
             return ui.dialog_error("Дії на Palo Alto вам не дозволені.")
         if not rate_ok(cfg, email):
@@ -754,6 +758,8 @@ async def card_clicked(cfg: dict, event: dict, email: str) -> dict:
         if fn == "submit_inet":
             hours = ui.form_value(event, "custom_hours") or ui.form_value(event, "hours")
             p, err = netdiag_pa.validate(cfg, "inet", ui.form_value(event, "ip"), hours)
+        elif fn == "submit_block":
+            p, err = netdiag_pa.validate(cfg, "block", ui.form_value(event, "ip"), desc=ui.form_text(event, "desc", 160))
         else:
             p, err = netdiag_pa.validate(cfg, "unblock", ui.form_value(event, "ip"))
         if not p:
@@ -783,7 +789,7 @@ async def card_clicked(cfg: dict, event: dict, email: str) -> dict:
         return {**new, "text": "⛔ Дії на Palo Alto вам не дозволені."}
     if not rate_ok(cfg, email):
         return {**new, "text": "⏳ Забагато запитів — спробуйте за хвилину."}
-    p, err = netdiag_pa.validate(cfg, prm.get("op", ""), prm.get("ip"), prm.get("hours"))
+    p, err = netdiag_pa.validate(cfg, prm.get("op", ""), prm.get("ip"), prm.get("hours"), desc=prm.get("d", ""))
     if not p:
         return {**new, "text": f"⚠️ {err}"}
     if fn == "pa_ask":

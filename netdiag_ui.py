@@ -48,7 +48,9 @@ def home(email: str, pa: bool) -> dict:
     buttons = [button("Діагностика IP", "dlg_diag", dialog=True, icon="search", filled=True)]
     if pa:
         buttons += [button("Інтернет (tmp-inet)", "dlg_inet", dialog=True, icon="public"),
-                    button("Зняти wan-block", "dlg_unblock", dialog=True, icon="lock_open")]
+                    button("Зняти wan-block", "dlg_unblock", dialog=True, icon="lock_open"),
+                    button("Заблокувати IP", "dlg_block", dialog=True, icon="block"),
+                    button("Заблоковані ботом", "pa_list", icon="list")]
     widgets = [
         {"textParagraph": {"text": "Оберіть дію. Можна й просто написати IP у чат — одразу покажу діагностику."}},
         {"buttonList": {"buttons": buttons}},
@@ -115,6 +117,16 @@ def dlg_unblock(prefill_ip: str = "") -> dict:
         _ip_input("ip", "Публічний IP", "напр. 160.238.125.164 (домашній IP співробітника)", prefill_ip),
         {"textParagraph": {"text": netdiag._c(f"Буде знято тег(и): {tags} на pa-vm. Дія журналюється.", netdiag.GREY)}},
     ], "submit_unblock", "Зняти блокування")
+
+
+def dlg_block(prefill_ip: str = "") -> dict:
+    tag = netdiag_pa.DEFAULTS["netdiag_pa_block_tag"]
+    return _dialog("⛔ Заблокувати зовнішній IP", [
+        _ip_input("ip", "Публічний IP", "напр. 45.9.148.10", prefill_ip),
+        {"textInput": {"name": "desc", "label": "Опис (обов'язково)", "type": "SINGLE_LINE",
+                       "hintText": "навіщо блокуємо, напр. брутфорс SSH, тікет 123"}},
+        {"textParagraph": {"text": netdiag._c(f"Тег {tag} на pa-vm НАЗАВЖДИ (до ручного зняття), ім'я запису bot-ip-<IP>. Дія журналюється й дублюється у сповіщення.", netdiag.GREY)}},
+    ], "submit_block", "Заблокувати")
 
 
 def dlg_ai(mac: str, ip: str = "", extra: dict | None = None) -> dict:

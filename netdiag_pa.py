@@ -39,8 +39,16 @@ DEFAULTS = {
     "netdiag_pa_unblock_tags": ["wan-block"],
     "netdiag_pa_max_hours": 720,
     "netdiag_pa_group": "noc@modern-expo.com",
+    "netdiag_pa_block_tag": "wan-block",
+    # public addresses that must never be blocked from the bot (our own perimeter)
+    "netdiag_pa_block_protect": ["188.163.216.99", "212.1.103.134", "185.59.227.216/29"],
 }
 PANOS_MAX_TIMEOUT = 2592000
+
+BLOCKS_SQL = """CREATE TABLE IF NOT EXISTS pa_blocks (
+  ip TEXT PRIMARY KEY, ts INTEGER, user TEXT, description TEXT, active INTEGER)"""
+DESC_MAX = 120
+CTRL_RE = re.compile(r"[\x00-\x1f\x7f<>]")
 
 AUDIT_SQL = """CREATE TABLE IF NOT EXISTS pa_actions (
   ts INTEGER, user TEXT, action TEXT, ip TEXT, tag TEXT, timeout_s INTEGER, ok INTEGER, detail TEXT)"""
@@ -54,6 +62,7 @@ def pcfg(cfg: dict, key: str):
 # ============================================================================ розбір команд
 DUR_RE = re.compile(r"(\d{1,4})\s*(г|год|годин[аи]?|h|hr|hours?|д|дн|днів|дня|день|d|days?)?\b", re.I)
 UNBLOCK_RE = re.compile(r"^\s*(розблок\w*|unblock|зняти\s+wan-?block|wan-?block\s+зняти|untag)\b", re.I)
+BLOCK_RE = re.compile(r"^\s*(блок\w*|заблок\w*|block)\b", re.I)
 INET_RE = re.compile(r"^\s*(інтернет|інет|inet|tmp-?inet)\b", re.I)
 
 
@@ -82,17 +91,42 @@ def parse_command(text: str) -> dict | None:
     """Команди PA з тексту повідомлення. None — це не команда PA (тоді звичайна діагностика)."""
     if UNBLOCK_RE.match(text or ""):
         return {"op": "unblock", "ip": parse_ipv4(text)}
+    if BLOCK_RE.match(text or ""):
+        ip = parse_ipv4(text)
+        desc = re.sub(r"(?<![\d.])\d{1,3}(?:\.\d{1,3}){3}(?![\d.])", " ", BLOCK_RE.sub("", text, count=1))
+        return {"op": "block", "ip": ip, "desc": desc}
     if INET_RE.match(text or ""):
         return {"op": "inet", "ip": parse_ipv4(text), "hours": parse_hours(text)}
     return None
 
 
-def validate(cfg: dict, op: str, ip: str | None, hours=None) -> tuple[dict | None, str]:
+def clean_desc(text) -> str:
+    return " ".join(CTRL_RE.sub(" ", str(text or "")).split())[:DESC_MAX]
+
+
+def block_name(ip: str) -> str:
+    return f"bot-ip-{ip}"
+
+
+def validate(cfg: dict, op: str, ip: str | None, hours=None, desc: str = "") -> tuple[dict | None, str]:
     """Перевірка параметрів дії (з тексту АБО з кнопки — однаково недовірені). (params, помилка)."""
     try:
         addr = ipaddress.IPv4Address(str(ip or ""))
     except ValueError:
         return None, "Не бачу коректного IPv4."
+    if op == "block":
+        if not addr.is_global:
+            return None, f"{addr} — не публічна адреса; блокування ставиться на зовнішні IP."
+        for n in pcfg(cfg, "netdiag_pa_block_protect"):
+            try:
+                if addr in ipaddress.ip_network(str(n), strict=False):
+                    return None, f"{addr} входить у захищені адреси ({n}) — блокувати не можна."
+            except ValueError:
+                continue
+        d = clean_desc(desc)
+        if len(d) < 3:
+            return None, "Потрібен опис (хоча б кілька слів): навіщо блокуємо. Напр. `блок 1.2.3.4 брутфорс SSH, тікет 123`."
+        return {"op": "block", "ip": str(addr), "desc": d}, ""
     if op == "unblock":
         if not addr.is_global:
             return None, f"{addr} — не публічна адреса; wan-block ставиться на зовнішні IP."
@@ -203,7 +237,33 @@ def audit(cfg: dict, user: str, action: str, ip: str, tag: str, timeout_s: int |
     log.info(f"[#{aid}] PA {action} ip={ip} tag={tag} timeout={timeout_s} user={user} ok={ok} {detail[:120]}")
 
 
+def _blocks_db(cfg: dict, sql: str, args: tuple = ()):
+    try:
+        con = netdiag.db(cfg)
+        con.execute(BLOCKS_SQL)
+        cur = con.execute(sql, args)
+        rows = cur.fetchall()
+        con.commit()
+        con.close()
+        return rows
+    except Exception as e:
+        log.error(f"pa_blocks: {e}")
+        return []
+
+
+def list_blocks(cfg: dict, limit: int = 15) -> list:
+    return _blocks_db(cfg, "SELECT ip, ts, user, description FROM pa_blocks WHERE active=1 ORDER BY ts DESC LIMIT ?", (limit,))
+
+
 def _execute(cfg: dict, p: dict, user: str, aid: str) -> tuple[bool, str]:
+    if p["op"] == "block":
+        tag = pcfg(cfg, "netdiag_pa_block_tag")
+        # no timeout + persistent="1": the tag stays until it is unregistered and survives a reboot
+        ok, msg = uid_call(cfg, "register", p["ip"], tag, None)
+        audit(cfg, user, "block", p["ip"], tag, None, ok, f"{block_name(p['ip'])}: {p['desc']} | {msg}", aid)
+        if ok:
+            _blocks_db(cfg, "INSERT OR REPLACE INTO pa_blocks VALUES(?,?,?,?,1)", (p["ip"], int(time.time()), user, p["desc"]))
+        return ok, (f"{block_name(p['ip'])}: {tag} назавжди — {p['desc']}" if ok else f"помилка — {msg}")
     if p["op"] == "unblock":
         results = []
         all_ok = True
@@ -214,6 +274,8 @@ def _execute(cfg: dict, p: dict, user: str, aid: str) -> tuple[bool, str]:
                 ok2, msg2 = uid_call(cfg, "register", p["ip"], tag, 1)
                 ok, msg = ok2, (msg2 if ok2 else f"{msg}; {msg2}")
             audit(cfg, user, "unblock", p["ip"], tag, None, ok, msg, aid)
+            if ok:
+                _blocks_db(cfg, "UPDATE pa_blocks SET active=0 WHERE ip=?", (p["ip"],))
             all_ok &= ok
             results.append(f"{tag}: {'знято' if ok else 'помилка — ' + msg}")
         return all_ok, "; ".join(results)
@@ -238,7 +300,7 @@ WEBHOOK_RE = re.compile(r"^https://chat\.googleapis\.com/v1/spaces/[A-Za-z0-9_-]
 
 
 def _notify_text(user: str, p: dict, ok: bool, text: str, aid: str) -> str:
-    what = "зняття wan-block" if p["op"] == "unblock" else "tmp-inet"
+    what = {"unblock": "зняття wan-block", "block": "БЛОКУВАННЯ (wan-block, постійне)"}.get(p["op"], "tmp-inet")
     mark = "✅" if ok else "⚠️ НЕВДАЛО"
     return (f"🔐 *netdiag → pa-vm*: {what} {mark}\n"
             f"IP: `{p['ip']}` · хто: {user or '?'} · дія #{aid or '-'}\n{text[:300]}")
@@ -285,7 +347,12 @@ def _tags_text(tags: dict | None) -> str:
 def confirm_card(cfg: dict, p: dict) -> dict:
     tags = registered_tags(cfg, p["ip"])
     now = int(time.time())
-    if p["op"] == "unblock":
+    if p["op"] == "block":
+        title = "Заблокувати IP"
+        what = (f"Поставити <b>{pcfg(cfg, 'netdiag_pa_block_tag')}</b> назавжди на <b>{p['ip']}</b> "
+                f"({block_name(p['ip'])})<br>Опис: {netdiag._e(p['desc'])}")
+        params = {"op": "block", "ip": p["ip"], "d": p["desc"], "t": now}
+    elif p["op"] == "unblock":
         title, what = "Зняти блокування", f"Зняти <b>{', '.join(pcfg(cfg, 'netdiag_pa_unblock_tags'))}</b> з <b>{p['ip']}</b>"
         params = {"op": "unblock", "ip": p["ip"], "t": now}
     else:
@@ -297,7 +364,7 @@ def confirm_card(cfg: dict, p: dict) -> dict:
                            "startIcon": {"materialIcon": {"name": "security"}}}},
         {"decoratedText": {"topLabel": "Зараз на IP", "text": _tags_text(tags), "wrapText": True,
                            "startIcon": {"materialIcon": {"name": "sell"}}}},
-        {"buttonList": {"buttons": [_btn("Підтвердити", "pa_confirm", params, netdiag.RED if p["op"] == "unblock" else netdiag.GREEN),
+        {"buttonList": {"buttons": [_btn("Підтвердити", "pa_confirm", params, netdiag.RED if p["op"] in ("unblock", "block") else netdiag.GREEN),
                                     _btn("Скасувати", "pa_cancel", {"ip": p["ip"]})]}},
     ]}]
     return {"fallbackText": f"{title}: {p['ip']}",
@@ -316,12 +383,27 @@ def result_card(cfg: dict, p: dict, ok: bool, msg: str, user: str) -> dict:
         widgets.append({"decoratedText": {"topLabel": "Теги IP зараз", "text": _tags_text(tags), "wrapText": True,
                                           "startIcon": {"materialIcon": {"name": "sell"}}}})
     return {"cardsV2": [{"cardId": "pa_result", "card": {
-        "header": {"title": f"{'Блокування знято' if p['op'] == 'unblock' else 'Тимчасовий інтернет'}: {p['ip']}",
+        "header": {"title": f"{ {'unblock': 'Блокування знято', 'block': 'IP заблоковано'}.get(p['op'], 'Тимчасовий інтернет') }: {p['ip']}",
                    "subtitle": "Palo Alto pa-vm"},
         "sections": [{"widgets": widgets}]}}]}
 
 
+def blocks_card(cfg: dict) -> dict:
+    rows = list_blocks(cfg)
+    widgets = []
+    for ip, ts, user, desc in rows:
+        widgets.append({"decoratedText": {"topLabel": f"{block_name(ip)} · {time.strftime('%d.%m %H:%M', time.localtime(ts))} · {netdiag._e(user)}",
+                                          "text": netdiag._e(desc) or "—", "wrapText": True,
+                                          "button": _btn("Зняти", "pa_ask", {"op": "unblock", "ip": ip})}})
+    if not widgets:
+        widgets.append({"textParagraph": {"text": "Блокувань, поставлених з бота, немає."}})
+    return {"cardsV2": [{"cardId": "pa_blocks", "card": {
+        "header": {"title": f"Заблоковано ботом — {len(rows)}", "subtitle": "wan-block назавжди · Palo Alto pa-vm"},
+        "sections": [{"widgets": widgets}]}}]}
+
+
 HELP_PA = ("*Palo Alto (pa-vm):*\n"
+           "• `блок 1.2.3.4 причина` — поставити wan-block назавжди на зовнішній IP (з описом)\n"
            "• `розблокуй 1.2.3.4` — зняти wan-block із зовнішнього IP\n"
            "• `інтернет 172.17.40.25 4г` (або `8 год`, `2д`) — тег tmp-inet внутрішньому IP на строк\n"
            "Кожна дія — після кнопки «Підтвердити», журналюється (хто/що/коли).")
