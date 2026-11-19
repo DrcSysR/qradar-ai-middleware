@@ -17,8 +17,8 @@
 'cortex' (алерти інциденту, поля cortex_incident_ai.FIELDS).
 
 Лише stdlib. Збій запису НІКОЛИ не ламає обробку (виклики обгорнуті try/except).
-Файл може писати і сервіс (qmiddleware), і таймери (root): після запису права на БД і
--wal/-shm вирівнюються до 666, інакше root-створений -wal дає сервісу «readonly database».
+Файл може писати і сервіс (qmiddleware), і таймери (root): після запису власник і права (660)
+на БД і -wal/-shm вирівнюються, інакше root-створений -wal дає сервісу «readonly database».
 """
 import hashlib
 import ipaddress
@@ -108,6 +108,13 @@ def norm_value(v) -> str:
     return _NUM.sub("#", s)
 
 
+def _fit(rows, limit=8000):
+    """Скільки рядків підпису влізе в limit символів JSON — без обрізання посеред рядка."""
+    while rows and len(json.dumps(rows, ensure_ascii=False)) > limit:
+        rows = rows[:-1]
+    return rows
+
+
 def _key(source, lens, rows):
     blob = json.dumps([source, lens, rows], ensure_ascii=False, sort_keys=True)
     return hashlib.sha1(blob.encode("utf-8")).hexdigest()
@@ -154,9 +161,20 @@ def _open(path):
 
 
 def _fix_perms(path):
+    """Власник qmiddleware:qmiddleware, права 660 (файл містить користувачів і командні рядки).
+    Root-таймери (cortex_xdr_scan) створюють -wal від root — перечіплюємо, щоб сервіс міг писати."""
+    try:
+        import pwd
+        pw = pwd.getpwnam("qmiddleware")
+        uid, gid = pw.pw_uid, pw.pw_gid
+    except (ImportError, KeyError):
+        uid = gid = None
     for suffix in ("", "-wal", "-shm"):
+        f = path + suffix
         try:
-            os.chmod(path + suffix, 0o666)
+            if uid is not None and os.geteuid() == 0:
+                os.chown(f, uid, gid)
+            os.chmod(f, 0o660)
         except OSError:
             pass
 
@@ -177,7 +195,7 @@ def _record(path, config, *, source, lens, ref, mode, prompt, t1, escalated, fin
                 " example_ref, example_prompt_z, t1_verdict, t1_score, final_verdict, final_score)"
                 " VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)",
                 (ukey, source, lens, n_events, json.dumps(sorted(hosts)[:50]), len(hosts),
-                 json.dumps(rows, ensure_ascii=False)[:8000], str(ref),
+                 json.dumps(_fit(rows), ensure_ascii=False), str(ref),
                  zlib.compress((prompt or "").encode("utf-8"), 6),
                  t1[3], t1[2], final_verdict, final_score))
         else:
