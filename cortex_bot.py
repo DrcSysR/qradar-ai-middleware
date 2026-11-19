@@ -71,6 +71,7 @@ DEFAULTS = {
     "cortexbot_qradar_hours": 24,
     "cortexbot_list_page": 6,                 # items per list card
     "cortexbot_write_enabled": False,         # kill-switch: close buttons only work when true
+    "cortexbot_qradar_ui_url": "https://qradar.modern.org",   # адреса консолі для посилань людині (API — за qradar_url)
     "cortexbot_audit_db": os.path.join(BASE_DIR, "cortex_bot_audit.db"),
     "cortexbot_ai_model": "",
     "cortexbot_cortex_mail_map": {},          # Chat email -> assignee mail in Cortex, when they differ
@@ -314,7 +315,7 @@ def report_qr_open(cfg: dict) -> str:
     offs.sort(key=lambda o: (-int(o.get("magnitude") or 0), -int(o.get("id") or 0)))
     lines = [f"*QRadar: відкриті офенси magnitude ≥ {cfg.get('cortexbot_qradar_min_magnitude')} за {cfg.get('cortexbot_qradar_hours')} год — {len(offs)}*"]
     for o in offs[:30]:
-        link = f"<{base}/console/qradar.jsp?appName=Sem&pageId=OffenseSummary&summaryId={o['id']}|#{o['id']}>"
+        link = f"<{ui_base(cfg)}/console/qradar.jsp?appName=Sem&pageId=OffenseSummary&summaryId={o['id']}|#{o['id']}>"
         lines.append(f"• {link} [m{o.get('magnitude')}] {q(o.get('description'))[:80]} — {q(o.get('offense_source'))}"
                      f"{' 👤 ' + q(o.get('assigned_to')) if o.get('assigned_to') else ''}")
     if len(offs) > 30:
@@ -595,6 +596,11 @@ def do_close_case(cfg: dict, email: str, iid: str, status: str) -> str:
 
 
 # ---- QRadar
+def ui_base(cfg: dict) -> str:
+    """Адреса консолі QRadar для ПОСИЛАНЬ людині (API ходить за qradar_url — це IP, у браузері він дає помилку сертифіката)."""
+    return str(cfg.get("cortexbot_qradar_ui_url") or cfg.get("qradar_url") or "").rstrip("/")
+
+
 def qr_headers(cfg: dict) -> dict:
     return {"SEC": cfg.get("qradar_token"), "Accept": "application/json", "Version": "19.0"}
 
@@ -750,7 +756,7 @@ def offense_detail_card(cfg: dict, oid: str) -> tuple:
     btns = []
     if status == "OPEN":
         btns += [pbutton("Дорозслідувати", "i_off", {"id": oid}, True, "search"), pbutton("Закрити", "c_off", {"id": oid}, False, "close")]
-    btns.append(link_button("Відкрити в QRadar", f"{base}/console/qradar.jsp?appName=Sem&pageId=OffenseSummary&summaryId={oid}"))
+    btns.append(link_button("Відкрити в QRadar", f"{ui_base(cfg)}/console/qradar.jsp?appName=Sem&pageId=OffenseSummary&summaryId={oid}"))
     btns.append(pbutton("☰ Меню", "home"))
     secs.append({"widgets": [{"buttonList": {"buttons": btns}}]})
     title = f"Офенс #{oid}"

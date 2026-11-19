@@ -147,6 +147,7 @@ SCHEMA = {
     "cortexbot_qradar_hours":         (NUM,  24),
     "cortexbot_list_page":            (int,  6),
     "cortexbot_write_enabled":        (bool, False),
+    "cortexbot_qradar_ui_url":        (str,  "https://qradar.modern.org"),
     "cortexbot_audit_db":             (str,  "/opt/qradar-middleware/cortex_bot_audit.db"),
     "cortexbot_ai_model":             (str,  ""),
     "cortexbot_cortex_mail_map":      (dict, {}),

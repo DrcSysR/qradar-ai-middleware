@@ -25,6 +25,7 @@ AI-тріаж офенсів QRadar: сервіс читає офенс, під�
 | 2026-11-19 | [Тріаж Cortex: розбір одного інциденту у функціях, логування лише з main()](changes/2026-11-19-triage-refactor-logging-lazy.md) |
 | 2026-11-19 | [Кейси Cortex у спільній черзі з офенсами QRadar (за прапорцем, вимкнено)](changes/2026-11-19-cortex-in-shared-queue.md) |
 | 2026-11-19 | [Cortex-бот: «Закрити» відкриває діалог замість нового повідомлення](changes/2026-11-19-cortex-bot-close-dialog.md) |
+| 2026-11-19 | [Cortex-бот: посилання на QRadar ведуть на qradar.modern.org](changes/2026-11-19-cortex-bot-qradar-ui-url.md) |
 | 2026-11-19 | [Компактна відповідь локальної моделі (score+verdict), пояснення будує мідлвар; прапорець вимкнено, є офлайн A/B](changes/2026-11-19-compact-local-output.md) |
 | 2026-11-19 | [Суддя Vertex (вимкнений) і план вечірньої розмітки датасету](changes/2026-11-19-ai-dataset-judge-and-labeling-plan.md) |
 | 2026-11-19 | [Google Chat-бот Cortex/QRadar v1 (лише читання, доступ — група soc@; ibm-qradar-283907, qrcr.modern-expo.ua)](changes/2026-11-19-cortex-chat-bot-v1.md) |
