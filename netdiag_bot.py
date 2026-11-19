@@ -786,7 +786,8 @@ async def card_clicked(cfg: dict, event: dict, email: str) -> dict:
             hours = ui.form_value(event, "custom_hours") or ui.form_value(event, "hours")
             p, err = netdiag_pa.validate(cfg, "inet", ui.form_value(event, "ip"), hours)
         elif fn == "submit_block":
-            p, err = netdiag_pa.validate(cfg, "block", ui.form_value(event, "ip"), desc=ui.form_text(event, "desc", 160))
+            p, err = netdiag_pa.validate(cfg, "block", ui.form_value(event, "ip"), ui.form_value(event, "hours"),
+                                         desc=ui.form_text(event, "desc", 160))
         else:
             p, err = netdiag_pa.validate(cfg, "unblock", ui.form_value(event, "ip"))
         if not p:

@@ -47,7 +47,7 @@ def button(text: str, fn: str, params: dict | None = None, dialog: bool = False,
 MEMO_DIAG = ("*Швидкі команди* (пишіть у чат; кнопки меню роблять те саме):\n"
              "• `діагностика 172.17.104.25` — або просто надішліть IP чи MAC\n")
 MEMO_PA = ("• `інтернет 172.17.40.25 4г` (`8 год`, `2д`) — тимчасовий інтернет внутрішньому IP\n"
-           "• `блок 1.2.3.4 причина` — заблокувати зовнішній IP назавжди (опис обов'язковий)\n"
+           "• `блок 1.2.3.4` — бан зовнішнього IP НАЗАВЖДИ (можна додати опис) · `блок 1.2.3.4 3г` — на 3 години\n"
            "• `розблокуй 1.2.3.4` — зняти блокування (і тимчасове, і постійне)\n"
            "• `блокування` — список блокувань, поставлених з бота\n")
 MEMO_TAIL = "• `памятка` — ця підказка · `меню` — кнопки"
@@ -134,13 +134,18 @@ def dlg_unblock(prefill_ip: str = "") -> dict:
     ], "submit_unblock", "Зняти блокування")
 
 
+BLOCK_CHOICES = [("1 година", 1), ("4 години", 4), ("8 годин", 8), ("1 доба", 24), ("3 доби", 72), ("7 діб", 168), ("30 діб", 720)]
+
+
 def dlg_block(prefill_ip: str = "") -> dict:
     tag = netdiag_pa.DEFAULTS["netdiag_pa_block_tag"]
     return _dialog("⛔ Заблокувати зовнішній IP", [
         _ip_input("ip", "Публічний IP", "напр. 45.9.148.10", prefill_ip),
-        {"textInput": {"name": "desc", "label": "Опис (обов'язково)", "type": "SINGLE_LINE",
+        {"selectionInput": {"name": "hours", "label": "Строк", "type": "DROPDOWN", "items": [
+            {"text": "Назавжди", "value": "0", "selected": True}] + [{"text": t, "value": str(h)} for t, h in BLOCK_CHOICES]}},
+        {"textInput": {"name": "desc", "label": "Опис (необов'язково)", "type": "SINGLE_LINE",
                        "hintText": "навіщо блокуємо, напр. брутфорс SSH, тікет 123"}},
-        {"textParagraph": {"text": netdiag._c(f"Тег {tag} на pa-vm НАЗАВЖДИ (до ручного зняття), ім'я запису bot-ip-<IP>. Дія журналюється й дублюється у сповіщення.", netdiag.GREY)}},
+        {"textParagraph": {"text": netdiag._c(f"Тег {tag} на pa-vm: «Назавжди» — до ручного зняття, інакше спливе сам. Ім'я запису bot-ip-<IP>. Дія журналюється й дублюється у сповіщення.", netdiag.GREY)}},
     ], "submit_block", "Заблокувати")
 
 
