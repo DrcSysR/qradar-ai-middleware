@@ -1344,8 +1344,8 @@ async def process_one(payload: UniversalTrigger):
         try:
             ai_dataset.log_example(
                 DB_PATH.replace("ai_state.db", "ai_dataset.db"), APP_CONFIG,
-                offense_id=payload.offense_id, description=details.get("offense_name"), lens=(lenses[0]["key"] if lenses else "Default"),
-                mode="manual" if payload.is_manual else "auto", events_n=len(raw_events or []),
+                offense_id=payload.offense_id, lens=(lenses[0]["key"] if lenses else "Default"),
+                mode="manual" if payload.is_manual else "auto", events=raw_events,
                 prompt=t1_prompt, t1=ds_t1, escalated=escalated,
                 final_score=score, final_verdict=verdict,
             )

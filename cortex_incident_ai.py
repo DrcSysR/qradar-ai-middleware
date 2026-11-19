@@ -172,6 +172,12 @@ def analyze(config: dict, review: list, alerts_by_id: dict, max_incidents: int, 
             logging.warning(f"cortex_incident_ai: #{iid} — без вердикту")
             continue
         save(iid, len(alerts), res, model)
+        try:
+            import ai_dataset
+            ai_dataset.log_cortex("/opt/qradar-middleware/ai_dataset.db", config, incident=inc, alerts=alerts,
+                                  prompt=build_prompt(inc, alerts, max_alerts), model=model, verdict=res["verdict"])
+        except Exception as ds_err:
+            logging.warning(f"ai_dataset: cortex #{iid} не записано: {ds_err}")
         out[iid] = res
         logging.info(f"cortex_incident_ai: #{iid} [{inc.get('severity')}] → {res['verdict']}: {res['summary'][:120]}")
     return out

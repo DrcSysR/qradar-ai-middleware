@@ -122,7 +122,7 @@ SCHEMA = {
 
     # --- журнал навчальних прикладів (ai_dataset.py → ai_dataset.db) ---
     "ai_dataset_enabled":             (bool, True),
-    "ai_dataset_max_rows":            (int,  150000),
+    "ai_dataset_max_rows":            (int,  300000),
 
     # Поріг РОЗБЛОКУВАННЯ (зняття IP із refset на FP-вердикті) — свідомо окремий і
     # нижчий за поріг авто-закриття 0.6. Закрити офенс і розблокувати файрвол мають

@@ -21,6 +21,7 @@ AI-тріаж офенсів QRadar: сервіс читає офенс, під�
 | 2026-11-05 | [Cortex XDR: автоматичне видалення ендпоінтів, що мовчать 15 днів і більше (cortex_endpoint_cleanup.py, щодня 10:00)](changes/2026-11-05-cortex-endpoint-cleanup.md) |
 | 2026-11-17 | [remote_thread_injection.aql: фільтри шуму з цілі unknown process (PanGpHip, 1С, OCS, RustDesk, Acrobat)](changes/2026-11-17-crt-aql-fp-filters.md) |
 | 2026-11-18 | [QRadar: відновлено DSM/log source Cortex XDR (syslog-ng на api-gw + LSX), перевірено тестовою подією](changes/2026-11-18-cortex-dsm-qradar-restore.md) |
+| 2026-11-19 | [Датасет: нормалізована схема і лічильник унікальності (ai_unique/ai_log, радар + Cortex)](changes/2026-11-19-ai-dataset-normalized-unique.md) |
 | 2026-11-19 | [Thread-injection: розвантаження tier-1 (−69% подій) + журнал навчальних прикладів ai_dataset.db](changes/2026-11-19-thread-injection-prefilter-and-ai-dataset.md) |
 | 2026-11-19 | [Cortex-звіт у Chat шлеться частинами: виправлено HTTP 400 «text is too long» (звіт 18.11 не пішов)](changes/2026-11-19-cortex-report-chunked-send.md) |
 | 2026-11-19 | [Звіт Cortex: зведення з відкритими офенсами QRadar по хосту (крок 1 єдиного потоку)](changes/2026-11-19-cortex-qradar-host-correlation.md) |
