@@ -258,16 +258,20 @@ def put_note(admin_cfg: dict, inc_id: str, text: str) -> bool:
     return True
 
 
+NOTED_DDL = ("CREATE TABLE IF NOT EXISTS cortex_incident_noted (incident_id TEXT PRIMARY KEY, alert_count INTEGER, "
+             "ts DATETIME DEFAULT CURRENT_TIMESTAMP)")
+
+
 def noted_ok(incident_id: str, alert_count: int) -> bool:
     with sqlite3.connect(DB_PATH) as conn:
-        conn.execute("CREATE TABLE IF NOT EXISTS cortex_incident_noted (incident_id TEXT PRIMARY KEY, alert_count INTEGER, "
-                     "ts DATETIME DEFAULT CURRENT_TIMESTAMP)")
+        conn.execute(NOTED_DDL)
         row = conn.execute("SELECT alert_count FROM cortex_incident_noted WHERE incident_id=?", (str(incident_id),)).fetchone()
     return bool(row) and int(row[0] or 0) == int(alert_count or 0)
 
 
 def mark_noted(incident_id: str, alert_count: int) -> None:
     with sqlite3.connect(DB_PATH) as conn:
+        conn.execute(NOTED_DDL)
         conn.execute("INSERT OR REPLACE INTO cortex_incident_noted (incident_id, alert_count) VALUES (?,?)",
                      (str(incident_id), int(alert_count or 0)))
 
