@@ -307,6 +307,41 @@ def check_queue_db():
         chk(queue_db.hold_active(conn, "chat", now="2026-09-23 10:02:01"), False, "hold спливає")
         queue_db.set_hold(conn, "chat", 45, now="2026-09-23 10:02:00")
         chk(queue_db.hold_until(conn, "chat"), "2026-09-23 10:02:45", "hold перезаписано на grace")
+
+        # Спільна черга з Cortex: ключ від'ємний, порядок за magnitude через обидва джерела
+        T2 = "2026-09-24 10:00:00"
+        c2 = queue_db.connect(":memory:")
+        queue_db.enqueue(c2, 100, 7, "auto", now=T2)
+        queue_db.enqueue(c2, queue_db.cortex_key(555), 8, "cortex", now=T2)      # high → попереду mag-7 офенса
+        queue_db.enqueue(c2, queue_db.cortex_key(556), 4, "cortex", now=T2)
+        queue_db.enqueue(c2, 101, 5, "auto", now=T2)
+        got = [queue_db.claim_next(c2, 900, now=T2) for _ in range(4)]
+        chk([(g["offense_id"], g["source"]) for g in got],
+            [(-555, "cortex"), (100, "auto"), (101, "auto"), (-556, "cortex")], "порядок QRadar+Cortex")
+        chk(queue_db.cortex_key(-5), -5, "cortex_key ідемпотентний")
+
+        # Продюсер Cortex: мапа severity, ліміти, dry-run → apply (без мережі: підміняємо fetch_incidents)
+        import cortex_queue
+        import cortex_incident_triage as ci
+        cfg = {"cortex_queue_enabled": True, "cortex_queue_max_per_run": 2, "cortex_queue_daily_cap": 10,
+               "cortex_incident_dry_run": True}
+        chk(cortex_queue.magnitude_for(cfg, "HIGH"), 8, "severity→magnitude")
+        chk(cortex_queue.magnitude_for(cfg, "wat"), 0, "невідома severity → 0")
+        ci.fetch_incidents = lambda c, st, h: [
+            {"incident_id": "1", "severity": "critical"}, {"incident_id": "2", "severity": "low"},
+            {"incident_id": "3", "severity": "medium"}]
+        c3 = queue_db.connect(":memory:")
+        chk(cortex_queue.produce({**cfg, "cortex_queue_enabled": False}, c3)["inserted"], 0, "прапорець вимкнено")
+        st = cortex_queue.produce(cfg, c3)
+        chk((st["inserted"], st["capped"]), (2, 1), "ліміт нових за прогін")
+        chk(cortex_queue.produce(cfg, c3)["inserted"], 1, "наступний прогін докладає решту")
+        chk(cortex_queue.produce(cfg, c3)["inserted"], 0, "повторний прогін ідемпотентний")
+        n = queue_db.claim_next(c3, 900, now=T2)
+        chk(n["offense_id"], -1, "critical першим")
+        queue_db.mark(c3, -1, "DONE", {"status": "review", "dry_run": True})
+        chk(cortex_queue.produce(cfg, c3)["requeued"], 0, "dry-run лишається DONE, поки dry-run")
+        chk(cortex_queue.produce({**cfg, "cortex_incident_dry_run": False}, c3)["requeued"], 1,
+            "після вимкнення dry-run кейс переставляється в чергу")
     except Exception as e:
         fail(f"queue_db: виняток під час тесту — {type(e).__name__}: {e}")
 

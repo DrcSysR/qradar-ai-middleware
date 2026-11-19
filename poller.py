@@ -322,4 +322,15 @@ try:
 except Exception as e:
     logging.error(f"Критична помилка: {e}")
 
+# Кейси Cortex XDR у тій самій черзі (прапорець cortex_queue_enabled, за замовчуванням вимкнено).
+# Окремий try: збій Cortex не має впливати на QRadar-частину, і навпаки.
+try:
+    if config.get("cortex_queue_enabled"):
+        import cortex_queue
+        with queue_db.connect(DB_PATH) as cqconn:
+            cs = cortex_queue.produce(config, cqconn)
+        logging.info("🛡 Cortex у чергу: " + ", ".join(f"{k} {v}" for k, v in cs.items()))
+except Exception as e:
+    logging.error(f"Cortex-продюсер: {type(e).__name__}: {e}")
+
 logging.info("--- Завершення ---\n")

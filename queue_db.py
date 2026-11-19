@@ -31,7 +31,13 @@ import time
 DB_PATH = "/opt/qradar-middleware/ai_state.db"
 
 QUEUED, IN_PROGRESS, DONE, ERROR = "QUEUED", "IN_PROGRESS", "DONE", "ERROR"
-SOURCES = ("auto", "manual", "catchup")
+SOURCES = ("auto", "manual", "catchup", "cortex")
+
+
+def cortex_key(incident_id) -> int:
+    """Кейси Cortex живуть у тій самій таблиці під ВІД'ЄМНИМ ключем (-incident_id): id офенсів QRadar завжди
+    додатні, тож колізій нема, а PRIMARY KEY і порядок claim'у лишаються без змін."""
+    return -abs(int(incident_id))
 
 # Порядок claim'у. Один вираз, щоб claim_next() і position_of() ніколи не роз'їхались.
 ORDER_BY = "magnitude DESC, (source = 'manual') DESC, enqueued_at ASC, offense_id ASC"

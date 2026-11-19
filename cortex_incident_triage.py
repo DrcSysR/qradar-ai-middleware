@@ -77,6 +77,12 @@ DEFAULTS = {
     # Порожньо = не призначати. Чужі призначення, зірочки й чужі нотатки не чіпаємо.
     "cortex_incident_assign_to": "",
     "cortex_incident_assign_max": 100,       # призначень за прогін
+    # Спільна черга з офенсами QRadar (cortex_queue.py): кейс = рядок work_queue з ключем -incident_id,
+    # порядок за magnitude, куди severity мапиться словником нижче. Вимкнено, доки не вирішимо ввімкнути.
+    "cortex_queue_enabled": False,
+    "cortex_queue_severity_magnitude": {"critical": 9, "high": 8, "medium": 6, "low": 4, "informational": 2},
+    "cortex_queue_max_per_run": 40,          # нових рядків за один прогін продюсера
+    "cortex_queue_daily_cap": 200,           # нових рядків за добу (запобіжник вартості Vertex)
 }
 NOTE_MARK = "🤖 Авторозбір middleware"
 
@@ -408,10 +414,27 @@ def close_incident(admin_cfg: dict | None, inc: dict, rule: str, status: str, wh
     return resolve(admin_cfg, str(inc.get("incident_id")), status, f"Автотріаж ({rule}): {why}. run={run_id}")
 
 
-def run_triage(config: dict, dry_run: bool, hours: float) -> dict | None:
+def _queue_live_ids(config: dict) -> set:
+    """incident_id у QUEUED/IN_PROGRESS спільної черги — 09:30-прогін їх пропускає, щоб не обробляти двічі.
+    Порожньо, якщо прапорець вимкнений або черга недоступна."""
+    if not cfg(config, "cortex_queue_enabled"):
+        return set()
+    try:
+        import queue_db
+        with sqlite3.connect(DB_PATH, timeout=10) as conn:
+            rows = conn.execute("SELECT offense_id FROM work_queue WHERE source='cortex' "
+                                "AND status IN ('QUEUED','IN_PROGRESS')").fetchall()
+        return {str(abs(r[0])) for r in rows}
+    except Exception as e:
+        logging.error(f"queue live ids: {type(e).__name__}")
+        return set()
+
+
+def run_triage(config: dict, dry_run: bool, hours: float, incidents: list | None = None) -> dict | None:
     """Один прохід тріажу: закрити шум (якщо не dry-run) і зібрати те, що лишилось. Без блокування
     й без звіту — їх роблять main() цього модуля або cortex_xdr_scan.main(). None = API недоступний."""
     run_id = uuid.uuid4().hex[:12]
+    one_shot = incidents is not None        # виклик із спільної черги (один інцидент) — свою чергу не дивимось
     admin_cfg = admin_config(config)
     if not dry_run and admin_cfg is None:
         logging.error("Немає cortex_xdr_admin_api_key_id / _key — закриття неможливе, запускаю як dry-run")
@@ -423,7 +446,8 @@ def run_triage(config: dict, dry_run: bool, hours: float) -> dict | None:
     logging.info(f"=== Cortex incident triage run_id={run_id} hours={hours:g} statuses={statuses} "
                  f"max={max_per_run}{' DRY-RUN' if dry_run else ' APPLY'} ===")
 
-    incidents = fetch_incidents(config, statuses, hours)
+    if incidents is None:
+        incidents = fetch_incidents(config, statuses, hours)
     if incidents is None:
         logging.error("Cortex API недоступний — тріаж пропущено")
         return None
@@ -432,8 +456,12 @@ def run_triage(config: dict, dry_run: bool, hours: float) -> dict | None:
     kept: Counter = Counter()
     review: list = []          # (incident, причина) — лишились відкритими для людини
     alerts_by_id: dict = {}
+    live = _queue_live_ids(config) if not one_shot else set()   # кейси, що зараз у спільній черзі, обробляє воркер
     for inc in incidents:
         iid = str(inc.get("incident_id"))
+        if iid in live:
+            kept["in_queue"] += 1
+            continue
         alerts, rule, status, why = evaluate_incident(config, inc, net_sources, drop_cats)
         if not rule:
             alerts_by_id[iid] = alerts or []

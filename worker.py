@@ -58,9 +58,32 @@ ALERT_DEPTH = int(config.get("queue_alert_depth", 1500))
 HTTP_TIMEOUT = float(config.get("timeout_seconds", 600)) + 30  # трохи більше за таймаут самого аналізу
 
 
+def process_cortex(claim: dict) -> str:
+    """Кейс Cortex (source='cortex', ключ = -incident_id): розбір у цьому ж процесі, без /process-one.
+    Збій (API Cortex, Vertex) → рядок лишається IN_PROGRESS до спливу оренди; після worker_max_attempts → ERROR."""
+    tag = f"cortex #{abs(claim['offense_id'])} [m{claim['magnitude']} #{claim['attempts']}]"
+    try:
+        import cortex_queue
+        res = cortex_queue.process(config, claim)
+    except Exception as e:
+        logging.error(f"❌ {tag}: {type(e).__name__}: {e}")
+        if claim["attempts"] >= MAX_ATTEMPTS:
+            with queue_db.connect(DB_PATH) as conn:
+                queue_db.mark(conn, claim["offense_id"], queue_db.ERROR, {"error": f"{type(e).__name__}: {e}"[:300]})
+            return "app_error"
+        return "err"
+    with queue_db.connect(DB_PATH) as conn:
+        queue_db.mark(conn, claim["offense_id"], queue_db.DONE, res)
+    logging.info(f"✅ {tag} → {res.get('status')}{' (dry-run)' if res.get('dry_run') else ''}"
+                 f"{' ' + str(res['verdict']) if res.get('verdict') else ''}")
+    return "ok"
+
+
 def process_claim(claim: dict) -> str:
     """Один офенс → /process-one. Повертає код результату для лічильників. Виняток не
     піднімає: один невдалий офенс не має валити ран."""
+    if claim.get("source") == "cortex":
+        return process_cortex(claim)
     off_id = claim["offense_id"]
     body = {"offense_id": off_id, "is_manual": claim["source"] == "manual", **(claim.get("overrides") or {})}
     tag = f"{off_id} [m{claim['magnitude']} {claim['source']} #{claim['attempts']}]"
