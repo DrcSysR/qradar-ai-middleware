@@ -98,11 +98,16 @@ DEFAULTS = {
     },
 }
 
-logging.basicConfig(
-    level=logging.INFO,
-    format="%(asctime)s - %(levelname)s - %(message)s",
-    handlers=[logging.FileHandler(LOG_FILE), logging.StreamHandler()],
-)
+
+def setup_logging() -> None:
+    """Лог у файл + консоль. Лише з main(): при імпорті FileHandler відкривав root-власний файл і ламав імпорт
+    з-під qmiddleware (єдина черга, cortex_bot)."""
+    logging.basicConfig(
+        level=logging.INFO,
+        format="%(asctime)s - %(levelname)s - %(message)s",
+        handlers=[logging.FileHandler(LOG_FILE), logging.StreamHandler()],
+        force=True,
+    )
 
 
 def load_config() -> dict:
@@ -562,6 +567,7 @@ def send_to_chat(webhook_url: str, message: dict) -> bool:
 
 
 def main() -> None:
+    setup_logging()
     config = load_config()
     run_id = uuid.uuid4().hex[:12]
     dry_run = "--dry-run" in sys.argv

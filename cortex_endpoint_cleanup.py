@@ -71,14 +71,15 @@ DEFAULTS = {
     "cortex_xdr_admin_api_key": "",
 }
 
-# force=True: імпорт cortex_xdr_scan уже налаштував root-логер на cortex_xdr_scan.log —
-# без force наш basicConfig був би no-op і лог прибирання їхав би в чужий файл.
-logging.basicConfig(
-    level=logging.INFO,
-    format="%(asctime)s - %(levelname)s - %(message)s",
-    handlers=[logging.FileHandler(LOG_FILE), logging.StreamHandler()],
-    force=True,
-)
+
+def setup_logging() -> None:
+    """Лише з main(). force=True — на випадок, якщо root-логер уже налаштований іншим модулем."""
+    logging.basicConfig(
+        level=logging.INFO,
+        format="%(asctime)s - %(levelname)s - %(message)s",
+        handlers=[logging.FileHandler(LOG_FILE), logging.StreamHandler()],
+        force=True,
+    )
 
 
 def cfg(config: dict, key: str):
@@ -367,6 +368,7 @@ def build_chat_message(title: str, deleted: list, left: list, stats: dict, days:
 
 
 def main() -> None:
+    setup_logging()
     config = cx.load_config()
     run_id = uuid.uuid4().hex[:12]
     args = sys.argv[1:]

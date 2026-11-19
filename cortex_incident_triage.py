@@ -80,11 +80,15 @@ DEFAULTS = {
 }
 NOTE_MARK = "🤖 Авторозбір middleware"
 
-logging.basicConfig(
-    level=logging.INFO,
-    format="%(asctime)s - %(levelname)s - %(message)s",
-    handlers=[logging.FileHandler(LOG_FILE), logging.StreamHandler()],
-)
+
+def setup_logging() -> None:
+    """Лише з main() (див. cortex_xdr_scan.setup_logging); force — бо імпорт cx міг уже налаштувати root-логер."""
+    logging.basicConfig(
+        level=logging.INFO,
+        format="%(asctime)s - %(levelname)s - %(message)s",
+        handlers=[logging.FileHandler(LOG_FILE), logging.StreamHandler()],
+        force=True,
+    )
 
 
 def cfg(config: dict, key: str):
@@ -387,6 +391,23 @@ def build_chat_message(title: str, closed: list, review: list, total: int, dry_r
                               + triage_lines(closed, review, total, dry_run, ai=ai))}
 
 
+def evaluate_incident(config: dict, inc: dict, net_sources: set, drop_cats: list):
+    """Тіло розбору одного інциденту: алерти з Cortex + правило. → (alerts|None, rule, status, why).
+    Єдина точка для 09:30-прогону й (далі) спільної черги; без побічних ефектів у Cortex."""
+    alerts = fetch_alerts(config, str(inc.get("incident_id")))
+    rule, status, why = decide(inc, alerts, config, net_sources, drop_cats)
+    return alerts, rule, status, why
+
+
+def close_incident(admin_cfg: dict | None, inc: dict, rule: str, status: str, why: str, alerts, dry_run: bool,
+                   run_id: str) -> bool:
+    """Закриває інцидент за правилом (у dry-run лише логує). False = Cortex відхилив оновлення."""
+    logging.info(f"{'[dry-run] ' if dry_run else ''}close {describe(inc, rule, status, why, alerts)}")
+    if dry_run:
+        return True
+    return resolve(admin_cfg, str(inc.get("incident_id")), status, f"Автотріаж ({rule}): {why}. run={run_id}")
+
+
 def run_triage(config: dict, dry_run: bool, hours: float) -> dict | None:
     """Один прохід тріажу: закрити шум (якщо не dry-run) і зібрати те, що лишилось. Без блокування
     й без звіту — їх роблять main() цього модуля або cortex_xdr_scan.main(). None = API недоступний."""
@@ -413,8 +434,7 @@ def run_triage(config: dict, dry_run: bool, hours: float) -> dict | None:
     alerts_by_id: dict = {}
     for inc in incidents:
         iid = str(inc.get("incident_id"))
-        alerts = fetch_alerts(config, iid)
-        rule, status, why = decide(inc, alerts, config, net_sources, drop_cats)
+        alerts, rule, status, why = evaluate_incident(config, inc, net_sources, drop_cats)
         if not rule:
             alerts_by_id[iid] = alerts or []
             kept[why] += 1
@@ -424,13 +444,10 @@ def run_triage(config: dict, dry_run: bool, hours: float) -> dict | None:
         if len(closed) >= max_per_run:
             kept["max_per_run"] += 1
             continue
-        logging.info(f"{'[dry-run] ' if dry_run else ''}close {describe(inc, rule, status, why, alerts)}")
-        if not dry_run:
-            comment = f"Автотріаж ({rule}): {why}. run={run_id}"
-            if not resolve(admin_cfg, iid, status, comment):
-                kept["update_failed"] += 1
-                review.append((inc, "update_failed"))
-                continue
+        if not close_incident(admin_cfg, inc, rule, status, why, alerts, dry_run, run_id):
+            kept["update_failed"] += 1
+            review.append((inc, "update_failed"))
+            continue
         closed.append((inc, rule, status))
 
     logging.info(f"incidents={len(incidents)} {'would_close' if dry_run else 'closed'}={len(closed)} kept={dict(kept)}")
@@ -474,6 +491,7 @@ def run_triage(config: dict, dry_run: bool, hours: float) -> dict | None:
 
 
 def main() -> None:
+    setup_logging()
     config = cx.load_config()
     args = sys.argv[1:]
     dry_run = bool(cfg(config, "cortex_incident_dry_run"))
