@@ -80,6 +80,7 @@ DEFAULTS = {
     # Спільна черга з офенсами QRadar (cortex_queue.py): кейс = рядок work_queue з ключем -incident_id,
     # порядок за magnitude, куди severity мапиться словником нижче. Вимкнено, доки не вирішимо ввімкнути.
     "cortex_queue_enabled": False,
+    "cortex_queue_dry_run": True,            # черга лише логує, поки true (незалежно від cortex_incident_dry_run)
     "cortex_queue_severity_magnitude": {"critical": 9, "high": 8, "medium": 6, "low": 4, "informational": 2},
     "cortex_queue_max_per_run": 40,          # нових рядків за один прогін продюсера
     "cortex_queue_daily_cap": 200,           # нових рядків за добу (запобіжник вартості Vertex)

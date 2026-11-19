@@ -254,6 +254,7 @@ SCHEMA = {
     "cortex_incident_assign_to":      (str,  ""),
     "cortex_incident_assign_max":     (int,  100),
     "cortex_queue_enabled":           (bool, False),
+    "cortex_queue_dry_run":           (bool, True),
     "cortex_queue_severity_magnitude": (dict, {"critical": 9, "high": 8, "medium": 6, "low": 4, "informational": 2}),
     "cortex_queue_max_per_run":       (int,  40),
     "cortex_queue_daily_cap":         (int,  200),

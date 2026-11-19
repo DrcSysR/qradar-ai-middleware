@@ -6,7 +6,7 @@
 - `queue_db.py`: джерело `cortex`; `cortex_key(incident_id)` = `-incident_id` (id офенсів додатні, колізій нема). Порядок `ORDER_BY` не змінено.
 - `cortex_queue.py` (новий, без побічних ефектів при імпорті):
   - `produce()` — викликає `poller.py` (кожні 10 хв, окремий try): кладе нові кейси `new`/`under_investigation`; magnitude з `cortex_queue_severity_magnitude` (critical 9, high 8, medium 6, low 4, informational 2); запобіжники `cortex_queue_max_per_run` (40) і `cortex_queue_daily_cap` (200 нових за добу);
-  - `process()` — викликає `worker.py` (гілка `source='cortex'`, без `/process-one`): свіжий стан кейсу (`incident_id_list`) і той самий код, що й о 09:30, — `run_triage(..., incidents=[inc])`: закрити шум / призначити / розбір Vertex / нотатка / кореляція з QRadar. Поважає `cortex_incident_dry_run`; результат dry-run після переходу на apply переставляється в чергу.
+  - `process()` — викликає `worker.py` (гілка `source='cortex'`, без `/process-one`): свіжий стан кейсу (`incident_id_list`) і той самий код, що й о 09:30, — `run_triage(..., incidents=[inc])`: закрити шум / призначити / розбір Vertex / нотатка / кореляція з QRadar. Поважає `cortex_queue_dry_run` (типово true) і `cortex_incident_dry_run` — пише в Cortex лише коли вимкнені обидва; результат dry-run після переходу на apply переставляється в чергу.
 - `cortex_incident_triage.run_triage` отримала необов'язковий `incidents=`; при ввімкненому прапорці 09:30-прогін пропускає кейси, що зараз у черзі (`kept.in_queue`), щоб не обробляти двічі.
 - Ключі `cortex_queue_*` у `config_schema.py` та `DEFAULTS`; `tests/smoke_test.py::check_queue_db` покриває змішаний порядок, продюсер, ліміти, dry-run → apply.
 

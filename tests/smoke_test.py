@@ -324,7 +324,8 @@ def check_queue_db():
         import cortex_queue
         import cortex_incident_triage as ci
         cfg = {"cortex_queue_enabled": True, "cortex_queue_max_per_run": 2, "cortex_queue_daily_cap": 10,
-               "cortex_incident_dry_run": True}
+               "cortex_incident_dry_run": True, "cortex_queue_dry_run": True}
+        chk(cortex_queue.queue_dry_run({**cfg, "cortex_incident_dry_run": False}), True, "queue dry-run власним прапорцем")
         chk(cortex_queue.magnitude_for(cfg, "HIGH"), 8, "severity→magnitude")
         chk(cortex_queue.magnitude_for(cfg, "wat"), 0, "невідома severity → 0")
         ci.fetch_incidents = lambda c, st, h: [
@@ -340,7 +341,7 @@ def check_queue_db():
         chk(n["offense_id"], -1, "critical першим")
         queue_db.mark(c3, -1, "DONE", {"status": "review", "dry_run": True})
         chk(cortex_queue.produce(cfg, c3)["requeued"], 0, "dry-run лишається DONE, поки dry-run")
-        chk(cortex_queue.produce({**cfg, "cortex_incident_dry_run": False}, c3)["requeued"], 1,
+        chk(cortex_queue.produce({**cfg, "cortex_incident_dry_run": False, "cortex_queue_dry_run": False}, c3)["requeued"], 1,
             "після вимкнення dry-run кейс переставляється в чергу")
     except Exception as e:
         fail(f"queue_db: виняток під час тесту — {type(e).__name__}: {e}")

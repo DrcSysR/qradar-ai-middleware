@@ -30,6 +30,12 @@ def magnitude_for(config: dict, severity) -> int:
         return 0
 
 
+def queue_dry_run(config: dict) -> bool:
+    """Черга пише в Cortex лише коли ОБИДВА прапорці вимкнені: власний `cortex_queue_dry_run` (типово true) і
+    загальний `cortex_incident_dry_run`. Так чергу можна обкатати в dry-run, не чіпаючи live-режим 09:30."""
+    return bool(ci.cfg(config, "cortex_queue_dry_run")) or bool(ci.cfg(config, "cortex_incident_dry_run"))
+
+
 def fetch_one(config: dict, incident_id: int) -> dict | None:
     """Свіжий стан одного кейсу з Cortex. None = API недоступний; {} = кейсу немає в потрібних статусах."""
     statuses = list(ci.cfg(config, "cortex_incident_statuses"))
@@ -59,7 +65,7 @@ def produce(config: dict, conn) -> dict:
     if incidents is None:
         logging.error("cortex_queue: Cortex API недоступний — продюсер пропущено")
         return stats
-    dry_now = bool(ci.cfg(config, "cortex_incident_dry_run"))
+    dry_now = queue_dry_run(config)
     per_run = int(ci.cfg(config, "cortex_queue_max_per_run"))
     daily_left = int(ci.cfg(config, "cortex_queue_daily_cap")) - _recent(conn, 24)
     for inc in incidents:                      # від нових до старих; порядок обробки далі визначає magnitude
@@ -93,7 +99,7 @@ def process(config: dict, claim: dict) -> dict:
         raise RuntimeError("Cortex API недоступний")
     if not inc:
         return {"status": GONE, "incident_id": iid}
-    dry_run = bool(ci.cfg(config, "cortex_incident_dry_run"))
+    dry_run = queue_dry_run(config)
     t0 = time.time()
     res = ci.run_triage(config, dry_run, 0, incidents=[inc])
     if res is None:
