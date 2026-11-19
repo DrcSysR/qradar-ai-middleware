@@ -123,6 +123,10 @@ SCHEMA = {
     # --- журнал навчальних прикладів (ai_dataset.py → ai_dataset.db) ---
     "ai_dataset_enabled":             (bool, True),
     "ai_dataset_max_rows":            (int,  300000),
+    # Суддя Vertex для унікальних випадків (ai_dataset_judge.py, раз на добу)
+    "ai_dataset_judge_max_per_run":   (int,  60),
+    "ai_dataset_judge_model":         (str,  ""),
+    "ai_dataset_judge_pause_seconds": (NUM,  1.0),
 
     # --- Google Chat-бот Cortex/QRadar (cortex_bot.py, https://qrcr.modern-expo.ua/chat → mdlwr01:5011) ---
     "cortexbot_chat_audience":        (str,  "https://qrcr.modern-expo.ua/chat"),
@@ -136,6 +140,10 @@ SCHEMA = {
     "cortexbot_review_max":           (int,  25),
     "cortexbot_qradar_min_magnitude": (int,  6),
     "cortexbot_qradar_hours":         (NUM,  24),
+    "cortexbot_list_page":            (int,  6),
+    "cortexbot_write_enabled":        (bool, False),
+    "cortexbot_audit_db":             (str,  "/opt/qradar-middleware/cortex_bot_audit.db"),
+    "cortexbot_ai_model":             (str,  ""),
 
     # Поріг РОЗБЛОКУВАННЯ (зняття IP із refset на FP-вердикті) — свідомо окремий і
     # нижчий за поріг авто-закриття 0.6. Закрити офенс і розблокувати файрвол мають
