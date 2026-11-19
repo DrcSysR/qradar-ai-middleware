@@ -390,10 +390,15 @@ def kv(label: str, text, icon: str | None = None) -> dict:
     return d
 
 
+DIALOG_FNS = ("c_case", "c_off")
+
+
 def pbutton(text: str, fn: str, params: dict | None = None, filled: bool = False, icon: str | None = None) -> dict:
     b = button(text, fn, icon, filled)
     if params:
         b["onClick"]["action"]["parameters"] = [{"key": k, "value": str(v)} for k, v in params.items()]
+    if fn in DIALOG_FNS:        # «Закрити» відкриває діалог поверх чату — не треба гортати до нового повідомлення внизу
+        b["onClick"]["action"]["interaction"] = "OPEN_DIALOG"
     return b
 
 
@@ -544,7 +549,7 @@ def case_detail_card(cfg: dict, iid: str) -> tuple:
     return card(f"case-{iid}", title, f"{SEV_ICON.get(sev, '⬜')} {SEV_UA.get(sev, sev)} · {inc.get('status')} · {q(inc.get('description'))[:60]}", secs), title
 
 
-def close_card(kind: str, tid: str, cfg: dict) -> list:
+def close_card(kind: str, tid: str, cfg: dict, dialog: bool = False) -> list:
     reasons = CORTEX_CLOSE if kind == "case" else QRADAR_CLOSE
     fn = "x_case" if kind == "case" else "x_off"
     what = f"кейс Cortex #{tid}" if kind == "case" else f"офенс QRadar #{tid}"
@@ -553,7 +558,8 @@ def close_card(kind: str, tid: str, cfg: dict) -> list:
             if on else "⛔ Закриття вимкнено адміністратором (режим лише перегляд).")
     btns = [pbutton(label, fn, {"id": tid, "r": str(val)}) for label, val in reasons]
     rows = [{"buttonList": {"buttons": btns[i:i + 3]}} for i in range(0, len(btns), 3)]
-    back = pbutton("Скасувати", "d_case" if kind == "case" else "d_off", {"id": tid})
+    back = (pbutton("Скасувати", "dlg_close") if dialog
+            else pbutton("Скасувати", "d_case" if kind == "case" else "d_off", {"id": tid}))
     return card(f"close-{kind}-{tid}", f"Закрити {what}?", "підтвердження", [
         {"widgets": [{"textParagraph": {"text": note}}] + (rows if on else [])},
         {"widgets": [{"buttonList": {"buttons": [back]}}]}])
@@ -929,6 +935,14 @@ ACTION_FNS = {"r_review": "мої кейси Cortex", "r_review_all": "усі н
               "i_case": "дорозслідування кейсу", "i_off": "дорозслідування офенса", "x_case": "закриття кейсу", "x_off": "закриття офенса"}
 
 
+def dialog_status(msg: str) -> dict:
+    """Закриває діалог; msg (до 250 символів) показується користувачу підказкою."""
+    st = {"statusCode": "OK"}
+    if msg:
+        st["userFacingMessage"] = msg[:250]
+    return {"actionResponse": {"type": "DIALOG", "dialogAction": {"actionStatus": st}}}
+
+
 def click_fn(event: dict) -> str:
     common = event.get("common") or {}
     return str(common.get("invokedFunction") or (event.get("action") or {}).get("actionMethodName") or "")
@@ -963,11 +977,25 @@ async def _handle_event(cfg: dict, event: dict, email: str) -> dict:
     params = click_params(event)
     if fn == "home":
         return {"actionResponse": {"type": "NEW_MESSAGE"}, **home()}
-    if fn in ("c_case", "c_off"):          # confirmation card, no API calls
+    if fn == "dlg_close":                  # «Скасувати» у діалозі
+        return dialog_status("")
+    if fn in ("c_case", "c_off"):          # діалог підтвердження, без викликів API
         tid = params.get("id", "")
         if not ID_RE.match(tid):
             return {}
-        return {"actionResponse": {"type": "NEW_MESSAGE"}, "cardsV2": close_card("case" if fn == "c_case" else "off", tid, cfg)}
+        body = close_card("case" if fn == "c_case" else "off", tid, cfg, dialog=True)[0]["card"]
+        return {"actionResponse": {"type": "DIALOG", "dialogAction": {"dialog": {"body": body}}}}
+    if fn in ("x_case", "x_off") and event.get("isDialogEvent"):
+        # Клік по причині всередині діалогу: закриваємо одразу і показуємо результат підказкою у вікні, що зникає
+        if not rate_ok(cfg, email):
+            return dialog_status("⏳ Забагато запитів — спробуйте за хвилину.")
+        tid = params.get("id", "")
+        if not ID_RE.match(tid or "0"):
+            return dialog_status("⚠️ Некоректні параметри закриття.")
+        func = do_close_case if fn == "x_case" else do_close_offense
+        res = await asyncio.to_thread(func, cfg, email, tid, params.get("r", ""))
+        log.info(f"dialog close {fn} id={tid} user={email}: {res[:80]}")
+        return dialog_status(res)
     if fn not in REPORTS and fn not in ACTION_FNS:
         return {}
     if not rate_ok(cfg, email):
