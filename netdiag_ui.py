@@ -43,6 +43,20 @@ def button(text: str, fn: str, params: dict | None = None, dialog: bool = False,
     return b
 
 
+# ============================================================================ памятка швидких команд
+MEMO_DIAG = ("*Швидкі команди* (пишіть у чат; кнопки меню роблять те саме):\n"
+             "• `діагностика 172.17.104.25` — або просто надішліть IP чи MAC\n")
+MEMO_PA = ("• `інтернет 172.17.40.25 4г` (`8 год`, `2д`) — тимчасовий інтернет внутрішньому IP\n"
+           "• `блок 1.2.3.4 причина` — заблокувати зовнішній IP назавжди (опис обов'язковий)\n"
+           "• `розблокуй 1.2.3.4` — зняти блокування (і тимчасове, і постійне)\n"
+           "• `блокування` — список блокувань, поставлених з бота\n")
+MEMO_TAIL = "• `памятка` — ця підказка · `меню` — кнопки"
+
+
+def memo(pa: bool) -> str:
+    return MEMO_DIAG + (MEMO_PA if pa else "") + MEMO_TAIL
+
+
 # ============================================================================ меню
 def home(email: str, pa: bool) -> dict:
     buttons = [button("Діагностика IP", "dlg_diag", dialog=True, icon="search", filled=True)]
@@ -52,8 +66,9 @@ def home(email: str, pa: bool) -> dict:
                     button("Заблокувати IP", "dlg_block", dialog=True, icon="block"),
                     button("Заблоковані ботом", "pa_list", icon="list")]
     widgets = [
-        {"textParagraph": {"text": "Оберіть дію. Можна й просто написати IP у чат — одразу покажу діагностику."}},
+        {"textParagraph": {"text": "Оберіть дію кнопкою або напишіть команду. Просто IP у чат — одразу діагностика."}},
         {"buttonList": {"buttons": buttons}},
+        {"textParagraph": {"text": memo(pa)}},
     ]
     if not pa:
         widgets.append({"textParagraph": {"text": netdiag._c("Дії на Palo Alto вам не доступні — лише діагностика.", netdiag.GREY)}})

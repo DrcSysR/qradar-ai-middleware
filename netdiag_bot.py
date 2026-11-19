@@ -346,6 +346,9 @@ async def run_query(cfg: dict, text: str) -> dict:
     return body
 
 
+MEMO_RE = re.compile(r"^\s*/?(памятка|команди|commands?|cmds?)\s*$", re.I)
+DIAG_RE = re.compile(r"^\s*(діагностика|діаг|diag)\b", re.I)
+
 HELP = ("Я діагностую підключення пристрою. Надішліть його *IP* (або MAC), напр. `172.17.104.25`.\n"
         "Покажу: Wi-Fi чи кабель; для Wi-Fi — точку, SSID, сигнал/SNR, стан на контролері і історію за 15 хв; "
         "для кабелю — свіч, порт, швидкість, помилки, 802.1X; і що каже NPS (чому не авторизувався).")
@@ -593,9 +596,17 @@ async def chat(request: Request):
     if etype == "ADDED_TO_SPACE" or not text.strip() or text.strip().lower() in ("help", "/help", "допомога", "?", "меню", "menu", "/menu", "start", "/start"):
         log.info(f"home user={email} event={etype}")
         return JSONResponse(ui.home(email, pa))
+    if MEMO_RE.match(text):
+        return JSONResponse({"text": ui.memo(pa)})
     if not rate_ok(cfg, email):
         return JSONResponse({"text": "⏳ Забагато запитів — спробуйте за хвилину."})
     cmd = netdiag_pa.parse_command(text)
+    if cmd and cmd["op"] == "list":
+        if not pa:
+            return JSONResponse({"text": "⛔ Дії на Palo Alto вам не дозволені."})
+        return JSONResponse(await asyncio.to_thread(netdiag_pa.blocks_card, cfg))
+    if DIAG_RE.match(text) and not (netdiag.parse_ip(text, cfg) or netdiag.parse_mac(text)):
+        return JSONResponse({"text": "Потрібен IP або MAC. Напр. `діагностика 172.17.104.25`.\n\n" + ui.memo(pa)})
     if cmd:
         log.info(f"pa-ask user={email} op={cmd['op']} ip={cmd.get('ip')}")
         if not pa:

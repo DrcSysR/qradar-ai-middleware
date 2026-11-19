@@ -59,3 +59,18 @@ def test_blocks_card_has_unblock_buttons(monkeypatch):
     monkeypatch.setattr(pa, "list_blocks", lambda c, n=15: [("45.9.148.10", 1700000000, "u@x.y", "опис")])
     card = pa.blocks_card({})
     assert "Зняти" in str(card) and "bot-ip-45.9.148.10" in str(card)
+
+
+def test_quick_command_parsing():
+    assert pa.parse_command("блокування") == {"op": "list"}
+    assert pa.parse_command("список") == {"op": "list"}
+    assert pa.parse_command("зняти блок 1.2.3.4")["op"] == "unblock"
+    assert pa.parse_command("розблокувати 1.2.3.4")["op"] == "unblock"
+    assert pa.parse_command("блокування 45.9.148.10 тест")["op"] == "block"      # list is exact-match only
+    assert pa.parse_command("172.17.1.1") is None
+
+
+def test_memo_hides_pa_commands_from_non_pa():
+    import netdiag_ui as ui
+    assert "блок 1.2.3.4" in ui.memo(True) and "блок 1.2.3.4" not in ui.memo(False)
+    assert "діагностика" in ui.memo(False)

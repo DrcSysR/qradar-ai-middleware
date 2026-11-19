@@ -61,7 +61,8 @@ def pcfg(cfg: dict, key: str):
 
 # ============================================================================ розбір команд
 DUR_RE = re.compile(r"(\d{1,4})\s*(г|год|годин[аи]?|h|hr|hours?|д|дн|днів|дня|день|d|days?)?\b", re.I)
-UNBLOCK_RE = re.compile(r"^\s*(розблок\w*|unblock|зняти\s+wan-?block|wan-?block\s+зняти|untag)\b", re.I)
+UNBLOCK_RE = re.compile(r"^\s*(розблок\w*|unblock|зняти\s+(wan-?)?блок\w*|зняти\s+wan-?block|wan-?block\s+зняти|untag)\b", re.I)
+LIST_RE = re.compile(r"^\s*(список|заблоковані|блокування|blocks?|list)\s*$", re.I)
 BLOCK_RE = re.compile(r"^\s*(блок\w*|заблок\w*|block)\b", re.I)
 INET_RE = re.compile(r"^\s*(інтернет|інет|inet|tmp-?inet)\b", re.I)
 
@@ -89,6 +90,8 @@ def parse_hours(text: str) -> int | None:
 
 def parse_command(text: str) -> dict | None:
     """Команди PA з тексту повідомлення. None — це не команда PA (тоді звичайна діагностика)."""
+    if LIST_RE.match(text or ""):
+        return {"op": "list"}
     if UNBLOCK_RE.match(text or ""):
         return {"op": "unblock", "ip": parse_ipv4(text)}
     if BLOCK_RE.match(text or ""):
