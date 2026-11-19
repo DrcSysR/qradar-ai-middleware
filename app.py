@@ -18,6 +18,7 @@ from prompts_loader import get_matched_lenses
 import config_schema
 import queue_db
 import ai_dataset
+import compact_verdict
 import tracker
 
 VERTEX_KEY_PATH = "/opt/qradar-middleware/me-vertex-ai-studio-666353d9e1df.json"
@@ -595,6 +596,9 @@ async def ask_openai(client: httpx.AsyncClient, model: str, prompt: str, timeout
         "response_format": {"type": "json_object"},
         "stream": False,
     }
+    compact = bool(APP_CONFIG.get("local_compact_output", False))
+    if compact:
+        payload["max_tokens"] = int(APP_CONFIG.get("local_compact_max_tokens", 64))   # верхня межа довжини відповіді
 
     response = await client.post(endpoint, headers=headers, json=payload, timeout=timeout)
     response.raise_for_status()
@@ -609,7 +613,7 @@ async def ask_openai(client: httpx.AsyncClient, model: str, prompt: str, timeout
     return (
         float(parsed_json.get("score", 0.0)),
         parsed_json.get("verdict", "Unknown"),
-        parsed_json.get("explanation", "No explanation provided."),
+        parsed_json.get("explanation", "" if compact else "No explanation provided."),
         _to_bool(parsed_json.get("mitigated", False))
     )
 
@@ -997,6 +1001,9 @@ async def process_one(payload: UniversalTrigger):
         # контексту (llm01 ctx 8192 vs Vertex 2 млн), тож при ескалації на tier-2 промпт
         # треба перезібрати, а не переслати нарізаний під llm01.
         def build_prompt(p: str, model: str, events, assets: str) -> str:
+            # Компактна відповідь (лише score+verdict) — тільки для локальної моделі; пояснення для нотатки
+            # будує мідлвар (compact_verdict.decode). Tier-2 (Vertex) лишається з повним форматом.
+            compact = p == "openai" and bool(APP_CONFIG.get("local_compact_output", False))
             # Хедер із двох правил читання доказів має дві версії: повна для провайдерів із
             # великим контекстом і стисла для llm01 (ctx 8192) — там кожні 700 символів
             # відбираються в логів, а на трьох найдовших юзкейсах бюджет і так нульовий.
@@ -1046,11 +1053,11 @@ async def process_one(payload: UniversalTrigger):
                     f"{assets}"
                     f"--- START OF LOGS ---\n{logs_text}\n--- END OF LOGS ---\n\n"
                     "Based ONLY on the logs above, return a valid JSON object with keys "
-                    "'score', 'verdict', 'explanation', and optionally 'mitigated'.\n\n"
+                    f"{compact_verdict.KEYS_COMPACT if compact else compact_verdict.KEYS_FULL}.\n\n"
                     "CRITICAL RULES FOR JSON:\n"
                     "1. 'score' must be a float between 0.0 and 1.0 based on the rubric below.\n"
                     "2. 'verdict' must be a short category string.\n"
-                    "3. 'explanation' MUST BE EXTREMELY CONCISE. Strictly 1 short sentence, maximum 15 words. Do not write long paragraphs.\n"
+                    f"{compact_verdict.RULE3_COMPACT if compact else compact_verdict.RULE3_FULL}"
                     "4. 'mitigated' (boolean, default false): set TRUE for a real/suspicious action that was FULLY BLOCKED, "
                     "DENIED, DROPPED or FAILED with NO successful outcome and no sign of an already-compromised internal asset "
                     "(e.g. an external IP whose scan or brute-force the firewall denied, or repeated auth failures with ZERO "
@@ -1161,6 +1168,9 @@ async def process_one(payload: UniversalTrigger):
                 return {"status": "error", "message": f"AI analysis failed: {describe_provider_error(primary_err)}"}
 
         provider_label = f"{used_provider.upper()} [fallback]" if used_fallback else used_provider.upper()
+        if used_provider == "openai" and not str(explanation or "").strip():
+            # Компактна відповідь локальної моделі: пояснення для аналітика будуємо з подій, а не генеруємо.
+            explanation = compact_verdict.decode(verdict, score, mitigated, raw_events)
 
         # Запобіжник на tier-1 навмисно ДО каскаду: інакше "компрометація + mitigated:true"
         # від дешевої моделі не пройшла б умову ескалації (`not mitigated`) і закрилась би,
