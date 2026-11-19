@@ -17,6 +17,7 @@ from prompts_loader import get_dynamic_prompt as _get_dynamic_prompt, DEFAULT_AQ
 from prompts_loader import get_matched_lenses
 import config_schema
 import queue_db
+import ai_dataset
 import tracker
 
 VERTEX_KEY_PATH = "/opt/qradar-middleware/me-vertex-ai-studio-666353d9e1df.json"
@@ -1100,6 +1101,7 @@ async def process_one(payload: UniversalTrigger):
 
 
         prompt = build_prompt(provider, active_model, raw_events, asset_block)
+        t1_prompt = prompt  # для журналу навчальних прикладів (ai_dataset.py)
 
         async def call_provider(p: str, model: str, prompt_text: str):
             if p == "vertex":
@@ -1143,6 +1145,7 @@ async def process_one(payload: UniversalTrigger):
                 logging.warning(f"⚠️ Provider {provider} ({active_model}) failed for offense {payload.offense_id}: {describe_provider_error(primary_err)}. Fallback → {fallback_provider} ({fb_model}).")
                 try:
                     fb_prompt = build_prompt(fallback_provider, fb_model, raw_events, asset_block)
+                    t1_prompt = fb_prompt
                     score, verdict, explanation, mitigated = await call_provider(fallback_provider, fb_model, fb_prompt)
                     used_provider = fallback_provider
                     used_fallback = True
@@ -1167,6 +1170,8 @@ async def process_one(payload: UniversalTrigger):
         if g:
             guard_note = g
             logging.warning(f"🚨 Офенс {payload.offense_id}: tier-1{g}")
+
+        ds_t1 = (used_provider, fb_model if used_fallback else active_model, score, verdict, explanation, mitigated)
 
         # --- КАСКАДНА ТРІАЖ (tier-2) ---
         # Локальна модель на tier-1 дешева, але заслабка, щоб самій вирішувати «будити аналітика».
@@ -1335,6 +1340,17 @@ async def process_one(payload: UniversalTrigger):
                 logging.info(f"👤 Офенс {payload.offense_id} призначено на {assignee} ({reason})")
             else:
                 logging.error(f"⚠️ Не вдалося призначити офенс {payload.offense_id} на {assignee}: {assign_resp.text}")
+
+        try:
+            ai_dataset.log_example(
+                DB_PATH.replace("ai_state.db", "ai_dataset.db"), APP_CONFIG,
+                offense_id=payload.offense_id, description=details.get("offense_name"), lens=(lenses[0]["key"] if lenses else "Default"),
+                mode="manual" if payload.is_manual else "auto", events_n=len(raw_events or []),
+                prompt=t1_prompt, t1=ds_t1, escalated=escalated,
+                final_score=score, final_verdict=verdict,
+            )
+        except Exception as ds_err:
+            logging.warning(f"ai_dataset: запис не вдався для {payload.offense_id}: {ds_err}")
 
         with sqlite3.connect(DB_PATH) as conn:
             conn.execute("""

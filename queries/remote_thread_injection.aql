@@ -67,6 +67,27 @@ WHERE
     -- Штатні процеси входу/друку Windows зі System32.
     AND NOT ("Target Process Path" ILIKE '%unknown process%' AND ("Process Name" ILIKE 'userinit.exe' OR "Process Name" ILIKE 'LogonUI.exe') AND "Process Path" ILIKE '%ystem32%')
     AND NOT ("Target Process Path" ILIKE '%unknown process%' AND "Process Name" ILIKE 'splwow64.exe' AND "Process Path" ILIKE '%Windows%')
+    -- 19.11.2026 (розвантаження tier-1): після попередніх фільтрів ~3800 офенсів/добу йшли в модель, і
+    -- майже всі рядки мали ціль «unknown process» — Sysmon не резолвить, куди вставлено потік, тож
+    -- аналізувати нема чого (модель повертала 0.0-0.4 і закривала). Знімаємо ЛИШЕ пару «нерозпізнана
+    -- ціль + рідний каталог інжектора». Той самий бінарник з Temp/Downloads/іншого шляху лишається
+    -- видимим; названі цілі (lsass, cmd тощо) не чіпаємо взагалі. CSFalconService.exe навмисно НЕ тут
+    -- (Falcon виводиться, хочемо бачити залишки).
+    AND NOT ("Target Process Path" ILIKE '%unknown process%' AND ("Process Name" ILIKE 'cmd.exe' OR "Process Name" ILIKE 'powershell.exe' OR "Process Name" ILIKE 'CompatTelRunner.exe' OR "Process Name" ILIKE 'gpscript.exe' OR "Process Name" ILIKE 'mstsc.exe' OR "Process Name" ILIKE 'msiexec.exe' OR "Process Name" ILIKE 'igfxCUIService.exe') AND "Process Path" ILIKE '%ystem32%')
+    AND NOT ("Target Process Path" ILIKE '%unknown process%' AND "Process Name" ILIKE 'bash.exe' AND "Process Path" ILIKE '%Git%usr%bin%')
+    AND NOT ("Target Process Path" ILIKE '%unknown process%' AND "Process Name" ILIKE 'node.exe' AND ("Process Path" ILIKE '%Program Files%nodejs%' OR "Process Path" ILIKE '%AppData%nvm%'))
+    AND NOT ("Target Process Path" ILIKE '%unknown process%' AND "Process Name" ILIKE 'py.exe' AND "Process Path" ILIKE '%AppData%Local%Programs%Python%')
+    AND NOT ("Target Process Path" ILIKE '%unknown process%' AND "Process Name" ILIKE 'pycharm64.exe' AND "Process Path" ILIKE '%PyCharm%')
+    AND NOT ("Target Process Path" ILIKE '%unknown process%' AND "Process Name" ILIKE 'claude.exe' AND "Process Path" ILIKE '%native-binary%')
+    AND NOT ("Target Process Path" ILIKE '%unknown process%' AND "Process Name" ILIKE 'oscript.exe' AND "Process Path" ILIKE '%OneScript%')
+    AND NOT ("Target Process Path" ILIKE '%unknown process%' AND "Process Name" ILIKE 'firefox.exe' AND "Process Path" ILIKE '%Mozilla Firefox%')
+    AND NOT ("Target Process Path" ILIKE '%unknown process%' AND "Process Name" ILIKE 'zabbix_agentd.exe' AND "Process Path" ILIKE '%Program Files%Zabbix Agent%')
+    AND NOT ("Target Process Path" ILIKE '%unknown process%' AND ("Process Name" ILIKE 'AdobeARM.exe' OR "Process Name" ILIKE 'acrobat_sl.exe') AND "Process Path" ILIKE '%Program Files%Adobe%')
+    AND NOT ("Target Process Path" ILIKE '%unknown process%' AND "Process Name" ILIKE 'PanGPS.exe' AND "Process Path" ILIKE '%Program Files%Palo Alto Networks%GlobalProtect%')
+    AND NOT ("Target Process Path" ILIKE '%unknown process%' AND "Process Name" ILIKE 'SLDWORKS.exe' AND "Process Path" ILIKE '%Program Files%SOLIDWORKS%')
+    AND NOT ("Target Process Path" ILIKE '%unknown process%' AND "Process Name" ILIKE 'notification_helper.exe' AND "Process Path" ILIKE '%Google%Chrome%Application%')
+    AND NOT ("Target Process Path" ILIKE '%unknown process%' AND "Process Name" ILIKE 'BlueStacksServices.exe' AND "Process Path" ILIKE '%Local%Programs%bluestacks-services%')
+    AND NOT ("Target Process Path" ILIKE '%unknown process%' AND "Process Name" ILIKE 'erl.exe' AND "Process Path" ILIKE '%ProgramData%Biesse%')
 GROUP BY Hostname, Injector, Injector_Path, Target_Proc, Target_Path, Acct
 ORDER BY Events DESC
 LIMIT {limit} {time_depth}
