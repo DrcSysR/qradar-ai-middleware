@@ -94,6 +94,10 @@ def process(config: dict, claim: dict) -> dict:
     """Один кейс із черги. Повертає результат для work_queue.result; виняток = рядок лишиться IN_PROGRESS
     (оренда спливе, повтор) — воркер вирішує, коли це вже ERROR."""
     iid = abs(int(claim["offense_id"]))
+    try:                      # воркер тримає config із моменту старту прогону (він може тривати годинами) —
+        config = ci.cx.load_config()    # прапорці dry-run/ліміти для кейсів Cortex беремо свіжі з диска
+    except Exception as e:
+        logging.warning(f"cortex_queue: конфіг із диска не прочитано ({type(e).__name__}) — беру з пам'яті воркера")
     inc = fetch_one(config, iid)
     if inc is None:
         raise RuntimeError("Cortex API недоступний")
