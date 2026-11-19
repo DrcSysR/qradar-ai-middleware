@@ -21,7 +21,7 @@ reference set'ами.
 | `qradar-poller.timer/.service` | mdlwr01 | oneshot кожні 10 хв (`OnUnitActiveSec=10min`) — продюсер черги |
 | `qradar-worker.timer/.service` | mdlwr01 | oneshot кожні 2 хв (`OnUnitActiveSec=2min`) — консюмер черги, дренаж до порожньої; fcntl-лок `worker.lock` не дає накластися |
 | `netdiag-collector.service` / `netdiag-bot.service` | mdlwr01 (`172.17.61.225:5010` TLS) ← nginx2 `netdiag.modern-expo.ua/chat` | Google Chat-бот діагностики підключення (IP → Wi-Fi/дріт); колектор знімає WLC 3504 + ARP MLNX раз на хвилину в `netdiag.db` |
-| `cortex-bot.service` (з 2026-11-19, ще не активований — див. запис про зміну) | mdlwr01 (`172.17.61.225:5011` TLS) ← nginx2 `qrcr.modern-expo.ua/chat` | Google Chat-бот Cortex/QRadar (проєкт `ibm-qradar-283907`): звіти за кнопками замість розсилки за розкладом; v1 лише читання; доступ — члени `soc@modern-expo.com` |
+| `cortex-bot.service` (з 2026-11-19; сервіс запущено, Chat-застосунок у консолі налаштовує людина — див. запис про зміну) | mdlwr01 (`172.17.61.225:5011` TLS) ← nginx2 `qrcr.modern-expo.ua/chat` | Google Chat-бот Cortex/QRadar (проєкт `ibm-qradar-283907`): звіти за кнопками замість розсилки за розкладом; v1 лише читання; доступ — члени `soc@modern-expo.com` |
 | QRadar (event collector, API) | 172.17.61.184 | джерело офенсів і подій, Ariel-пошуки |
 | llm01 (`openai` провайдер) | 172.17.61.251 (корп, SSH) / 10.2.10.1 (внутр., :8080) | tier-1 llama.cpp, qwen2.5-coder-3b, Quadro P620 2 ГБ; **3 слоти × 8192** |
 | Vertex AI | GCP | tier-2 ескалація + manual-режим |
