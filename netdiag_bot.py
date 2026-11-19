@@ -601,6 +601,10 @@ async def chat(request: Request):
     if not rate_ok(cfg, email):
         return JSONResponse({"text": "⏳ Забагато запитів — спробуйте за хвилину."})
     cmd = netdiag_pa.parse_command(text)
+    if cmd and cmd["op"] == "log":
+        if not pa:
+            return JSONResponse({"text": "⛔ Дії на Palo Alto вам не дозволені."})
+        return JSONResponse(await asyncio.to_thread(netdiag_pa.log_card, cfg, 0))
     if cmd and cmd["op"] == "list":
         if not pa:
             return JSONResponse({"text": "⛔ Дії на Palo Alto вам не дозволені."})
@@ -706,6 +710,13 @@ async def card_clicked(cfg: dict, event: dict, email: str) -> dict:
             return {**new, "text": "⛔ Дії на Palo Alto вам не дозволені."}
         ip = netdiag_pa.parse_ipv4(prm.get("ip", "")) or ""
         return {"dlg_inet": ui.dlg_inet, "dlg_unblock": ui.dlg_unblock, "dlg_block": ui.dlg_block}[fn](ip)
+    if fn == "pa_log":
+        if not pa:
+            return {**new, "text": "⛔ Дії на Palo Alto вам не дозволені."}
+        off = int(prm["o"]) if str(prm.get("o", "")).isdigit() else 0
+        body = await asyncio.to_thread(netdiag_pa.log_card, cfg, off)
+        # paging edits the card in place; the first open is a new message (threaded by in_thread)
+        return {"actionResponse": {"type": "UPDATE_MESSAGE"}, **body} if off else {**new, **body}
     if fn == "pa_list":
         if not pa:
             return {**new, "text": "⛔ Дії на Palo Alto вам не дозволені."}

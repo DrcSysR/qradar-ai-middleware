@@ -103,3 +103,16 @@ def test_timed_block_registers_with_timeout_and_expires_from_list(monkeypatch):
     assert pa.list_blocks(c)[0][4] is not None
     monkeypatch.setattr(pa.time, "time", lambda: 9999999999)        # long after the timeout
     assert pa.list_blocks(c) == []
+
+
+def test_action_log_card_and_paging(monkeypatch):
+    monkeypatch.setattr(pa, "notify", lambda *a, **k: None)
+    monkeypatch.setattr(pa, "uid_call", lambda *a: (True, "success"))
+    c = cfg()
+    for i in range(12):
+        pa.execute(c, {"op": "block", "ip": f"45.9.148.{i + 1}", "desc": "x", "hours": 3 if i == 0 else None}, "me@x.y", f"a{i}")
+    card = pa.log_card(c, 0)
+    txt = str(card)
+    assert "Журнал дій — 12" in txt and "Старіші" in txt and "Блок" in txt and "45.9.148.12" in txt and "45.9.148.1<" not in txt
+    assert "Новіші" in str(pa.log_card(c, 10)) and "Старіші" not in str(pa.log_card(c, 10))
+    assert pa.parse_command("журнал") == {"op": "log"}

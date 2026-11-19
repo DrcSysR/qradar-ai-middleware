@@ -64,6 +64,7 @@ def pcfg(cfg: dict, key: str):
 DUR_RE = re.compile(r"(\d{1,4})\s*(г|год|годин[аи]?|h|hr|hours?|д|дн|днів|дня|день|d|days?)?\b", re.I)
 _DUR = r"(\d{1,4})\s*(г|год\w*|h|hr|hours?|д|дн\w*|днів|d|days?)(?![\w])"
 UNBLOCK_RE = re.compile(r"^\s*(розблок\w*|unblock|зняти\s+(wan-?)?блок\w*|зняти\s+wan-?block|wan-?block\s+зняти|untag)\b", re.I)
+LOG_RE = re.compile(r"^\s*/?(журнал|log|історія|history)\s*$", re.I)
 LIST_RE = re.compile(r"^\s*(список|заблоковані|блокування|blocks?|list)\s*$", re.I)
 BLOCK_RE = re.compile(r"^\s*(блок\w*|заблок\w*|block)\b", re.I)
 INET_RE = re.compile(r"^\s*(інтернет|інет|inet|tmp-?inet)\b", re.I)
@@ -92,6 +93,8 @@ def parse_hours(text: str) -> int | None:
 
 def parse_command(text: str) -> dict | None:
     """Команди PA з тексту повідомлення. None — це не команда PA (тоді звичайна діагностика)."""
+    if LOG_RE.match(text or ""):
+        return {"op": "log"}
     if LIST_RE.match(text or ""):
         return {"op": "list"}
     if UNBLOCK_RE.match(text or ""):
@@ -421,6 +424,49 @@ def result_card(cfg: dict, p: dict, ok: bool, msg: str, user: str) -> dict:
     return {"cardsV2": [{"cardId": "pa_result", "card": {
         "header": {"title": f"{ {'unblock': 'Блокування знято', 'block': 'IP заблоковано'}.get(p['op'], 'Тимчасовий інтернет') }: {p['ip']}",
                    "subtitle": "Palo Alto pa-vm"},
+        "sections": [{"widgets": widgets}]}}]}
+
+
+LOG_PAGE = 10
+ACTION_UA = {"block": "Блок", "unblock": "Розблок", "inet": "Інтернет"}
+
+
+def log_rows(cfg: dict, offset: int) -> tuple[list, int]:
+    try:
+        con = netdiag.db(cfg)
+        con.execute(AUDIT_SQL)
+        total = con.execute("SELECT COUNT(*) FROM pa_actions").fetchone()[0]
+        rows = con.execute("SELECT ts, user, action, ip, tag, timeout_s, ok, detail FROM pa_actions "
+                           "ORDER BY ts DESC, rowid DESC LIMIT ? OFFSET ?", (LOG_PAGE, offset)).fetchall()
+        con.close()
+        return [tuple(r) for r in rows], total
+    except Exception as e:
+        log.error(f"pa_actions read: {e}")
+        return [], 0
+
+
+def log_card(cfg: dict, offset: int = 0) -> dict:
+    offset = max(0, int(offset))
+    rows, total = log_rows(cfg, offset)
+    widgets = []
+    for ts, user, action, ip, tag, to, ok, detail in rows:
+        span = f" · {human_hours(max(1, round(to / 3600)))}" if to and to > 1 else ""
+        who = str(user or "?").split("@")[0]
+        widgets.append({"decoratedText": {
+            "topLabel": f"{time.strftime('%d.%m %H:%M', time.localtime(ts))} · {netdiag._e(who)} · {netdiag._e(tag)}",
+            "text": f"{'✅' if ok else '⛔'} <b>{ACTION_UA.get(action, netdiag._e(action))}</b> {netdiag._e(ip)}{span}",
+            "bottomLabel": netdiag._e(re.sub(r"^#\w+\s*", "", str(detail or ""))[:110]), "wrapText": True}})
+    if not widgets:
+        widgets.append({"textParagraph": {"text": "Дій ще не було."}})
+    nav = []
+    if offset > 0:
+        nav.append(_btn("◀ Новіші", "pa_log", {"o": max(0, offset - LOG_PAGE)}))
+    if offset + LOG_PAGE < total:
+        nav.append(_btn(f"Старіші ▶ ({total - offset - LOG_PAGE})", "pa_log", {"o": offset + LOG_PAGE}))
+    if nav:
+        widgets.append({"buttonList": {"buttons": nav}})
+    return {"cardsV2": [{"cardId": "pa_log", "card": {
+        "header": {"title": f"Журнал дій — {total}", "subtitle": f"Palo Alto pa-vm · {offset + 1 if rows else 0}–{offset + len(rows)} · від нових до старих"},
         "sections": [{"widgets": widgets}]}}]}
 
 
