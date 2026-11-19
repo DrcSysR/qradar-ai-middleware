@@ -330,7 +330,8 @@ def run_triage(config: dict, dry_run: bool, hours: float) -> dict | None:
     try:
         import cortex_qradar_corr as cqc
         excl = {cqc.norm(k) for k in list(cx.cfg(config, "cortex_xdr_pavm_dns_proxy_ips") or {})
-                + list(cx.cfg(config, "cortex_xdr_dns_forwarders") or {})} - {""}
+                + list(cx.cfg(config, "cortex_xdr_dns_forwarders") or {})
+                + list(cqc.cfg(config, "cortex_incident_qradar_corr_exclude") or [])} - {""}
         corr = cqc.build(config, review, excl)
     except Exception as e:  # зведення з QRadar не має валити тріаж і звіт
         logging.error(f"cortex_qradar_corr: {type(e).__name__}: {e}")

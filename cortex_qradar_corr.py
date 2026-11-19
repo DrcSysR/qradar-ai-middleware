@@ -21,6 +21,8 @@ DEFAULTS = {
     "cortex_incident_qradar_corr_hours": 72,       # офенси, оновлені за останні N годин
     "cortex_incident_qradar_corr_min_magnitude": 5,
     "cortex_incident_qradar_corr_per_incident": 3,  # скільки офенсів показати під одним інцидентом
+    # Імена DNS-форвардерів/проксі (їх IP беруться з cortex_xdr_*): інцидент про DNS-запит ЧЕРЕЗ них не про сам сервер.
+    "cortex_incident_qradar_corr_exclude": ["xdc02", "xdc05", "xdc06", "ns1"],
 }
 
 

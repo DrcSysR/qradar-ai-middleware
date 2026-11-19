@@ -221,6 +221,7 @@ SCHEMA = {
     "cortex_incident_qradar_corr_hours":         (NUM,  72),
     "cortex_incident_qradar_corr_min_magnitude": (NUM,  5),
     "cortex_incident_qradar_corr_per_incident":  (NUM,  3),
+    "cortex_incident_qradar_corr_exclude":       (list, ["xdc02", "xdc05", "xdc06", "ns1"]),
     "cortex_xdr_admin_api_key_id":        (str,  ""),
     "cortex_xdr_admin_api_key":           (str,  ""),
 
