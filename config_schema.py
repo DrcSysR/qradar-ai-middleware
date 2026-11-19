@@ -217,6 +217,10 @@ SCHEMA = {
     "cortex_incident_ai_model":           (str,  ""),
     "cortex_incident_ai_max":             (NUM,  10),
     "cortex_incident_ai_max_alerts":      (NUM,  8),
+    "cortex_incident_qradar_corr":               (bool, True),
+    "cortex_incident_qradar_corr_hours":         (NUM,  72),
+    "cortex_incident_qradar_corr_min_magnitude": (NUM,  5),
+    "cortex_incident_qradar_corr_per_incident":  (NUM,  3),
     "cortex_xdr_admin_api_key_id":        (str,  ""),
     "cortex_xdr_admin_api_key":           (str,  ""),
 

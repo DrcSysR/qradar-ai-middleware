@@ -578,7 +578,8 @@ def main() -> None:
             if triage_done and (triage_done["closed"] or triage_done["review"]):
                 triage_text = "\n".join(ci.triage_lines(triage_done["closed"], triage_done["review"],
                                                           triage_done["total"], triage_done["dry_run"],
-                                                          ai=triage_done.get("ai")))
+                                                          ai=triage_done.get("ai"), corr=triage_done.get("corr"),
+                                                          config=config))
         except Exception as e:
             logging.error(f"Тріаж інцидентів не виконано: {e}")
 

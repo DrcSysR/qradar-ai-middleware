@@ -231,7 +231,7 @@ def record(rows: list, run_id: str) -> None:
 
 
 def triage_lines(closed: list, review: list, total: int, dry_run: bool, max_items: int = 25,
-                 ai: dict | None = None) -> list:
+                 ai: dict | None = None, corr: dict | None = None, config: dict | None = None) -> list:
     """Рядки секції тріажу: що закрито як шум і що лишилось на ручний розбір (з посиланнями)."""
     by_rule = Counter(r for _, r, _ in closed)
     lines = [f"Інциденти: переглянуто {total}; {'було б закрито' if dry_run else 'закрито як шум'} {len(closed)} "
@@ -248,6 +248,10 @@ def triage_lines(closed: list, review: list, total: int, dry_run: bool, max_item
             import cortex_incident_ai as cia
             lines.append(f"   🤖 {cia.VERDICTS.get(v['verdict'], v['verdict'])}: {v['summary']}"
                          f"{' → ' + v['next_step'] if v.get('next_step') else ''}")
+        c = (corr or {}).get(str(inc.get("incident_id")))
+        if c:
+            import cortex_qradar_corr as cqc
+            lines.append(cqc.line(config or {}, c))
     if len(review) > max_items:
         lines.append(f"… і ще {len(review) - max_items}")
     return lines
@@ -322,7 +326,15 @@ def run_triage(config: dict, dry_run: bool, hours: float) -> dict | None:
                 logging.warning("cortex_incident_ai: модель не задана (vertex_deep порожній) — розбір пропущено")
         except Exception as e:  # розбір моделлю не має валити тріаж і звіт
             logging.error(f"cortex_incident_ai: {type(e).__name__}: {e}")
-    return {"closed": closed, "review": review, "total": len(incidents), "dry_run": dry_run, "ai": ai}
+    corr: dict = {}
+    try:
+        import cortex_qradar_corr as cqc
+        excl = {cqc.norm(k) for k in list(cx.cfg(config, "cortex_xdr_pavm_dns_proxy_ips") or {})
+                + list(cx.cfg(config, "cortex_xdr_dns_forwarders") or {})} - {""}
+        corr = cqc.build(config, review, excl)
+    except Exception as e:  # зведення з QRadar не має валити тріаж і звіт
+        logging.error(f"cortex_qradar_corr: {type(e).__name__}: {e}")
+    return {"closed": closed, "review": review, "total": len(incidents), "dry_run": dry_run, "ai": ai, "corr": corr}
 
 
 def main() -> None:
