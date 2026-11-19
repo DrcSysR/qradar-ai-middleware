@@ -126,3 +126,18 @@ def test_handle_event_routes(monkeypatch):
     assert spawned == ["run_action"] and "Готую" in r["text"]
     assert asyncio.run(cb.handle_event(cfg(), ev("c_case", id="x'"), "u@x.y")) == {}
     assert asyncio.run(cb.handle_event(cfg(), ev("nope"), "u@x.y")) == {}
+
+
+def test_my_offenses_filter_and_mapping(monkeypatch):
+    seen = {}
+    monkeypatch.setattr(cb, "qradar_user", lambda c, e: {"me@x.y": "sergii.legerko"}.get(e, ""))
+    monkeypatch.setattr(cb, "qradar_assigned", lambda c, u: seen.setdefault("u", u) and [{"id": 5, "description": "d", "magnitude": 3, "assigned_to": u}])
+    cards, title = cb.offense_list_card(cfg(), 0, "me@x.y", "mine")
+    assert seen["u"] == "sergii.legerko" and "призначені" in title
+    cards, title = cb.offense_list_card(cfg(), 0, "other@x.y", "mine")
+    assert "не знайшов" in title                      # no silent fallback to all offenses
+
+
+def test_assigned_rejects_odd_usernames(monkeypatch):
+    monkeypatch.setattr(cb.requests, "get", lambda *a, **k: (_ for _ in ()).throw(AssertionError("no request")))
+    assert cb.qradar_assigned(cfg(), 'x" or 1=1') == []

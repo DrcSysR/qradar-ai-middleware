@@ -72,7 +72,8 @@ DEFAULTS = {
     "cortexbot_list_page": 6,                 # items per list card
     "cortexbot_write_enabled": False,         # kill-switch: close buttons only work when true
     "cortexbot_audit_db": os.path.join(BASE_DIR, "cortex_bot_audit.db"),
-    "cortexbot_ai_model": "",                 # empty = vertex_deep from config.json
+    "cortexbot_ai_model": "",
+    "cortexbot_qradar_user_map": {},          # Chat email -> QRadar username, when the emails differ                 # empty = vertex_deep from config.json
 }
 
 app = FastAPI(docs_url=None, redoc_url=None, openapi_url=None)
@@ -584,8 +585,51 @@ def mag_icon(m) -> str:
     return "🟥" if m >= 8 else "🟧" if m >= 6 else "🟨" if m >= 4 else "🟦"
 
 
-def offense_list_card(cfg: dict, offset: int) -> tuple:
-    base, offs = qradar_open(cfg)
+USER_RE = re.compile(r"^[A-Za-z0-9._-]{1,64}$")
+_qr_users: dict = {"ts": 0.0, "map": {}}
+
+
+def qradar_user(cfg: dict, email: str) -> str:
+    """Chat email -> QRadar username: explicit map first, then the console's user list (cached 10 min)."""
+    email = (email or "").lower()
+    m = {str(k).lower(): v for k, v in (cfg.get("cortexbot_qradar_user_map") or {}).items()}
+    if m.get(email):
+        return str(m[email])
+    if time.time() - _qr_users["ts"] > 600:
+        try:
+            _qr_users["map"] = {str(u.get("email") or "").lower(): u.get("username")
+                                for u in qr_get(cfg, "/config/access/users", {"fields": "username,email"})}
+            _qr_users["ts"] = time.time()
+        except Exception as e:
+            log.warning(f"qradar users: {type(e).__name__}")
+    return str(_qr_users["map"].get(email) or "")
+
+
+def qradar_assigned(cfg: dict, user: str) -> list:
+    """Offenses assigned to the user: any magnitude and age, only OPEN."""
+    if not USER_RE.match(user or ""):
+        return []
+    r = requests.get(f"{str(cfg.get('qradar_url') or '').rstrip('/')}/api/siem/offenses", verify=False, timeout=90,
+                     headers={**qr_headers(cfg), "Range": "items=0-499"},
+                     params={"filter": f'status="OPEN" and assigned_to="{user}"',
+                             "fields": "id,description,offense_source,magnitude,assigned_to"})
+    r.raise_for_status()
+    return r.json()
+
+
+def offense_list_card(cfg: dict, offset: int, email: str = "", scope: str = "mine") -> tuple:
+    user = qradar_user(cfg, email) if scope == "mine" else ""
+    if scope == "mine" and not user:
+        title = "QRadar: не знайшов ваш обліковий запис"
+        return card("offenses", title, "потрібна відповідність пошти й логіна QRadar", [
+            {"widgets": [{"textParagraph": {"text": f"Пошті {q(email)} не відповідає жоден користувач QRadar. Адміністратор може додати її в "
+                                                    "cortexbot_qradar_user_map. Поки що можна подивитись усі відкриті."}},
+                         {"buttonList": {"buttons": [pbutton("Усі відкриті", "r_qr_all", None, True), pbutton("☰ Меню", "home")]}}]}]), title
+    if scope == "mine":
+        offs = qradar_assigned(cfg, user)
+    else:
+        _, offs = qradar_open(cfg)
+    fn = "r_qr_open" if scope == "mine" else "r_qr_all"
     offs.sort(key=lambda o: (-int(o.get("magnitude") or 0), -int(o.get("id") or 0)))
     page = int(cfg.get("cortexbot_list_page"))
     secs = []
@@ -602,15 +646,19 @@ def offense_list_card(cfg: dict, offset: int) -> tuple:
                                         pbutton("Закрити", "c_off", {"id": oid}, False, "close")]}}]})
     nav = []
     if offset > 0:
-        nav.append(pbutton("◀ Назад", "r_qr_open", {"offset": max(0, offset - page)}))
+        nav.append(pbutton("◀ Назад", fn, {"offset": max(0, offset - page)}))
     if offset + page < len(offs):
-        nav.append(pbutton(f"Ще ▶ ({len(offs) - offset - page})", "r_qr_open", {"offset": offset + page}))
+        nav.append(pbutton(f"Ще ▶ ({len(offs) - offset - page})", fn, {"offset": offset + page}))
+    nav.append(pbutton("Усі відкриті" if scope == "mine" else "Мої", "r_qr_all" if scope == "mine" else "r_qr_open"))
     nav.append(pbutton("☰ Меню", "home"))
     secs.append({"widgets": [{"buttonList": {"buttons": nav}}]})
     if not offs:
-        secs.insert(0, {"widgets": [{"textParagraph": {"text": "Відкритих офенсів немає."}}]})
-    title = f"QRadar: відкриті офенси — {len(offs)}"
-    return card("offenses", title, f"magnitude ≥ {cfg.get('cortexbot_qradar_min_magnitude')} за {cfg.get('cortexbot_qradar_hours')} год", secs), title
+        secs.insert(0, {"widgets": [{"textParagraph": {"text": "Призначених на вас відкритих офенсів немає." if scope == "mine" else "Відкритих офенсів немає."}}]})
+    if scope == "mine":
+        title, sub = f"QRadar: призначені на мене — {len(offs)}", f"користувач {user} · усі відкриті, без порогу magnitude"
+    else:
+        title, sub = f"QRadar: усі відкриті — {len(offs)}", f"magnitude ≥ {cfg.get('cortexbot_qradar_min_magnitude')} за {cfg.get('cortexbot_qradar_hours')} год"
+    return card("offenses", title, sub, secs), title
 
 
 def offense_data(cfg: dict, oid: str) -> dict:
@@ -787,7 +835,8 @@ def home() -> dict:
                         button("Закрито автоматично", "r_closed", "task_alt"),
                         button("Видалені ендпоінти", "r_deleted", "delete")]}}]},
                     {"header": "QRadar", "widgets": [{"buttonList": {"buttons": [
-                        button("Відкриті офенси", "r_qr_open", "shield", True),
+                        button("Мої офенси", "r_qr_open", "shield", True),
+                        button("Усі відкриті", "r_qr_all", "list"),
                         button("Що розібрала модель", "r_qr_triage", "psychology")]}}]},
                     {"widgets": [{"buttonList": {"buttons": [button("Останній звіт 09:30", "r_last", "description")]}},
                                  {"textParagraph": {"text": "Кейси й офенси відкриваються списком із кнопками: Деталі · Дорозслідувати (аналіз моделі, нічого не змінює) · Закрити (з підтвердженням і записом у журнал)."}}]},
@@ -819,12 +868,13 @@ async def run_action(cfg: dict, fn: str, params: dict, space: str, thread: str, 
     """Async handlers for list/detail/investigate/close buttons; each posts a card or text into the thread."""
     kind_id = params.get("id", "")
     try:
-        if not ID_RE.match(kind_id or "0") and fn not in ("r_review", "r_qr_open"):
+        if not ID_RE.match(kind_id or "0") and fn not in ("r_review", "r_qr_open", "r_qr_all"):
             raise ValueError("bad id")
         if fn == "r_review":
             res = await asyncio.to_thread(case_list_card, cfg, max(0, int(params.get("offset", "0") or 0)))
-        elif fn == "r_qr_open":
-            res = await asyncio.to_thread(offense_list_card, cfg, max(0, int(params.get("offset", "0") or 0)))
+        elif fn in ("r_qr_open", "r_qr_all"):
+            res = await asyncio.to_thread(offense_list_card, cfg, max(0, int(params.get("offset", "0") or 0)), email,
+                                          "mine" if fn == "r_qr_open" else "all")
         elif fn == "d_case":
             res = await asyncio.to_thread(case_detail_card, cfg, kind_id)
         elif fn == "d_off":
@@ -853,7 +903,7 @@ async def run_action(cfg: dict, fn: str, params: dict, space: str, thread: str, 
         await asyncio.to_thread(chat_post, cfg, space, f"⚠️ Дія не вдалась ({type(e).__name__}) — деталі в журналі бота, дія #{aid}.", thread)
 
 
-ACTION_FNS = {"r_review": "кейси Cortex", "r_qr_open": "офенси QRadar", "d_case": "деталі кейсу", "d_off": "деталі офенса",
+ACTION_FNS = {"r_review": "кейси Cortex", "r_qr_open": "мої офенси QRadar", "r_qr_all": "усі відкриті офенси QRadar", "d_case": "деталі кейсу", "d_off": "деталі офенса",
               "i_case": "дорозслідування кейсу", "i_off": "дорозслідування офенса", "x_case": "закриття кейсу", "x_off": "закриття офенса"}
 
 

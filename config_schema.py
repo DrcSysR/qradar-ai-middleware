@@ -149,6 +149,7 @@ SCHEMA = {
     "cortexbot_write_enabled":        (bool, False),
     "cortexbot_audit_db":             (str,  "/opt/qradar-middleware/cortex_bot_audit.db"),
     "cortexbot_ai_model":             (str,  ""),
+    "cortexbot_qradar_user_map":      (dict, {}),
 
     # Поріг РОЗБЛОКУВАННЯ (зняття IP із refset на FP-вердикті) — свідомо окремий і
     # нижчий за поріг авто-закриття 0.6. Закрити офенс і розблокувати файрвол мають
