@@ -514,6 +514,19 @@ def split_text(text: str, limit: int = CHAT_CHUNK) -> list:
     return parts
 
 
+LAST_REPORT = "/opt/qradar-middleware/cortex_last_report.txt"
+
+
+def save_last_report(parts: list) -> None:
+    """Останній відправлений звіт — у файл (вебхук лише на запис, прочитати з Chat його нікуди)."""
+    try:
+        with open(LAST_REPORT, "w", encoding="utf-8") as f:
+            f.write(f"# надіслано {time.strftime('%Y-%m-%d %H:%M:%S')}, частин: {len(parts)}\n\n")
+            f.write("\n\n----- наступне повідомлення -----\n\n".join(parts))
+    except OSError as e:
+        logging.warning(f"не вдалось зберегти останній звіт: {e}")
+
+
 def send_chunked(webhook_url: str, text: str) -> bool:
     """Шле звіт кількома повідомленнями; True лише коли пройшли всі (інакше state не оновлюємо)."""
     parts = split_text(text)
@@ -523,6 +536,7 @@ def send_chunked(webhook_url: str, text: str) -> bool:
             return False
         if i < len(parts):
             time.sleep(1.5)   # Chat-вебхук ~1 повідомлення/с на простір; без паузи частини ловили 429
+    save_last_report(parts)
     return True
 
 
