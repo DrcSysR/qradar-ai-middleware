@@ -21,6 +21,7 @@ reference set'ами.
 | `qradar-poller.timer/.service` | mdlwr01 | oneshot кожні 10 хв (`OnUnitActiveSec=10min`) — продюсер черги |
 | `qradar-worker.timer/.service` | mdlwr01 | oneshot кожні 2 хв (`OnUnitActiveSec=2min`) — консюмер черги, дренаж до порожньої; fcntl-лок `worker.lock` не дає накластися |
 | `netdiag-collector.service` / `netdiag-bot.service` | mdlwr01 (`172.17.61.225:5010` TLS) ← nginx2 `netdiag.modern-expo.ua/chat` | Google Chat-бот діагностики підключення (IP → Wi-Fi/дріт); колектор знімає WLC 3504 + ARP MLNX раз на хвилину в `netdiag.db` |
+| `cortex-bot.service` (з 2026-11-19, ще не активований — див. запис про зміну) | mdlwr01 (`172.17.61.225:5011` TLS) ← nginx2 `qrcr.modern-expo.ua/chat` | Google Chat-бот Cortex/QRadar (проєкт `ibm-qradar-283907`): звіти за кнопками замість розсилки за розкладом; v1 лише читання; доступ — члени `soc@modern-expo.com` |
 | QRadar (event collector, API) | 172.17.61.184 | джерело офенсів і подій, Ariel-пошуки |
 | llm01 (`openai` провайдер) | 172.17.61.251 (корп, SSH) / 10.2.10.1 (внутр., :8080) | tier-1 llama.cpp, qwen2.5-coder-3b, Quadro P620 2 ГБ; **3 слоти × 8192** |
 | Vertex AI | GCP | tier-2 ескалація + manual-режим |
@@ -97,6 +98,7 @@ pa-vm / DNS-форвардер позначається як «↪ …, не к�
 | `poller.py` | продюсер черги під systemd timer: discovery + матч → `work_queue` (нічого не обробляє) |
 | `tracker.py` | /track: де пристрій востаннє реєструвався (точка Wi-Fi/свіч з RADIUS-подій NPS, DHCP dhcp1, DHCP Palo Alto) + місце на плані з мап Zabbix, інвентарю Zabbix (GPS/site_rack) і файлу будівель `track_buildings.json` (кути будівлі ↔ пікселі планів → масштаб і GPS); реєстр `track_registry.json` поза git |
 | `netdiag.py`, `netdiag_bot.py`, `netdiag_collector.py`, `netdiag_pa.py`, `netdiag_ui.py`, `snmp_v2c.py` | бот діагностики: IP→MAC (ARP ядра/DHCP) → Wi-Fi (WLC SNMP + історія 15 хв) або дріт (FDB усіх свічів → крайовий порт, 802.1X, LLDP) + NPS 6272/6273 з QRadar; дії на pa-vm (зняти wan-block, tmp-inet на строк) з підтвердженням і аудитом `pa_actions`; свічі й спільноти — з Zabbix; юніти `systemd/netdiag-*.service`, vhost `deploy/nginx2/netdiag.conf` |
+| `cortex_bot.py`, `chat_auth.py` | Chat-бот Cortex/QRadar: меню-картка, звіти (кейси Cortex на перегляд, закрито автотріажем, видалені ендпоінти, відкриті офенси QRadar, що розібрала модель, останній звіт 09:30); звіт віддається окремими повідомленнями через Chat API (SA `cortexbot`); перевірка OIDC-токена Google + членство в групі (Cloud Identity); не імпортує cortex_xdr_scan/cortex_incident_triage (root-лог при імпорті); юніт `systemd/cortex-bot.service`, vhost `deploy/nginx2/qrcr.conf` |
 | `queue_db.py` | таблиця `work_queue` в `ai_state.db`; єдиний `ORDER_BY` для claim/position; enqueue/claim_next/mark/sweep/depth |
 | `worker.py` | консюмер черги під systemd timer: claim → `POST /process-one` → DONE/ERROR; sweep low-mag хвоста |
 | `prompts.json` | мапа: ключ опису → `[prompt.md, assignee, query.aql, refset_cleanup?, close_on_empty?]` |

@@ -124,6 +124,19 @@ SCHEMA = {
     "ai_dataset_enabled":             (bool, True),
     "ai_dataset_max_rows":            (int,  300000),
 
+    # --- Google Chat-бот Cortex/QRadar (cortex_bot.py, https://qrcr.modern-expo.ua/chat → mdlwr01:5011) ---
+    "cortexbot_chat_audience":        (str,  "https://qrcr.modern-expo.ua/chat"),
+    "cortexbot_trusted_proxies":      (list, ["172.17.61.166"]),
+    "cortexbot_allowed_group":        (str,  "soc@modern-expo.com"),
+    "cortexbot_allowed_domain":       (str,  "modern-expo.com"),
+    "cortexbot_ci_key_file":          (str,  "/opt/qradar-middleware/netdiag_sa.json"),
+    "cortexbot_sa_key_file":          (str,  "/opt/qradar-middleware/cortexbot_sa.json"),
+    "cortexbot_rate_per_minute":      (int,  12),
+    "cortexbot_review_hours":         (NUM,  72),
+    "cortexbot_review_max":           (int,  25),
+    "cortexbot_qradar_min_magnitude": (int,  6),
+    "cortexbot_qradar_hours":         (NUM,  24),
+
     # Поріг РОЗБЛОКУВАННЯ (зняття IP із refset на FP-вердикті) — свідомо окремий і
     # нижчий за поріг авто-закриття 0.6. Закрити офенс і розблокувати файрвол мають
     # різну ціну помилки: 03.09.2026 спільний поріг давав 63 розблокування на добу
