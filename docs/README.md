@@ -23,6 +23,7 @@ AI-тріаж офенсів QRadar: сервіс читає офенс, під�
 | 2026-11-18 | [QRadar: відновлено DSM/log source Cortex XDR (syslog-ng на api-gw + LSX), перевірено тестовою подією](changes/2026-11-18-cortex-dsm-qradar-restore.md) |
 | 2026-11-19 | [Cortex-звіт у Chat шлеться частинами: виправлено HTTP 400 «text is too long» (звіт 18.11 не пішов)](changes/2026-11-19-cortex-report-chunked-send.md) |
 | 2026-11-19 | [Звіт Cortex: зведення з відкритими офенсами QRadar по хосту (крок 1 єдиного потоку)](changes/2026-11-19-cortex-qradar-host-correlation.md) |
+| 2026-11-19 | [Висновок моделі — у Notes кейсу Cortex, у звіті лише посилання; повтор при 429 для Chat](changes/2026-11-19-cortex-ai-verdict-to-case-notes.md) |
 | 2026-11-18 | [QRadar: чистка 362 мертвих log source'ів (дублі й неіснуючі станції); прогалина Linux-джерел з 15.05](changes/2026-11-18-qradar-logsource-cleanup.md) |
 | 2026-11-18 | [ПЛАН: оновлення QRadar 7.5.0 UP14 → 7.6.0.x (маршрут, бекапи, перевірки, відкат) + `tools/qradar_upgrade_check.py`](changes/2026-11-18-qradar-upgrade-76-plan.md) |
 | 2026-11-18 | [Cortex: розбір моделлю (Vertex) інцидентів «на перегляд» у щоденному звіті — лише рекомендація](changes/2026-11-18-cortex-incident-ai-review.md) |

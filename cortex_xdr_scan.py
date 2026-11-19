@@ -521,18 +521,29 @@ def send_chunked(webhook_url: str, text: str) -> bool:
         body = part if len(parts) == 1 else f"{part}\n_(частина {i}/{len(parts)})_"
         if not send_to_chat(webhook_url, {"text": body}):
             return False
+        if i < len(parts):
+            time.sleep(1.5)   # Chat-вебхук ~1 повідомлення/с на простір; без паузи частини ловили 429
     return True
 
 
 def send_to_chat(webhook_url: str, message: dict) -> bool:
-    try:
-        resp = requests.post(webhook_url, json=message, timeout=30)
-    except Exception as e:
-        logging.error(f"Chat webhook POST error: {e}")
+    for attempt in range(1, 5):
+        try:
+            resp = requests.post(webhook_url, json=message, timeout=30)
+        except Exception as e:
+            logging.error(f"Chat webhook POST error: {e}")
+            return False
+        if resp.status_code in (200, 201, 204):
+            return True
+        if resp.status_code == 429 and attempt < 4:   # ліміт запитів вебхука: чекаємо і повторюємо
+            try:
+                wait = float(resp.headers.get("Retry-After") or 0)
+            except ValueError:
+                wait = 0
+            time.sleep(min(max(wait, 5.0 * attempt), 60.0))
+            continue
+        logging.error(f"Chat webhook HTTP {resp.status_code}: {resp.text[:300]}")
         return False
-    if resp.status_code in (200, 201, 204):
-        return True
-    logging.error(f"Chat webhook HTTP {resp.status_code}: {resp.text[:300]}")
     return False
 
 
@@ -578,7 +589,7 @@ def main() -> None:
             if triage_done and (triage_done["closed"] or triage_done["review"]):
                 triage_text = "\n".join(ci.triage_lines(triage_done["closed"], triage_done["review"],
                                                           triage_done["total"], triage_done["dry_run"],
-                                                          ai=triage_done.get("ai"), corr=triage_done.get("corr"),
+                                                          ai=triage_done.get("ai"), corr=triage_done.get("corr"), noted=triage_done.get("noted"),
                                                           config=config))
         except Exception as e:
             logging.error(f"Тріаж інцидентів не виконано: {e}")

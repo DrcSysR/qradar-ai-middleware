@@ -69,7 +69,12 @@ DEFAULTS = {
     "cortex_incident_ai_model": "",          # порожньо = vertex_deep із config.json
     "cortex_incident_ai_max": 10,            # нових розборів за прогін (кеш по incident_id+alert_count не рахується)
     "cortex_incident_ai_max_alerts": 8,      # алертів інциденту в промпті
+    # Висновок моделі (+ збіг з офенсами QRadar) пишемо в Notes кейсу в консолі Cortex; у звіті лишається лише посилання.
+    # Пишемо тільки коли notes порожні або починаються з NOTE_MARK (чужих нотаток не перезаписуємо). У dry-run — ні.
+    "cortex_incident_ai_note": True,
+    "cortex_incident_ai_note_max": 60,       # записів нотаток за прогін
 }
+NOTE_MARK = "🤖 Авторозбір middleware"
 
 logging.basicConfig(
     level=logging.INFO,
@@ -179,7 +184,7 @@ def decide(inc: dict, alerts: list | None, config: dict, net_sources: set, drop_
         return None, None, "assigned"
     if inc.get("starred") or inc.get("starred_manually"):
         return None, None, "starred"
-    if inc.get("notes"):
+    if inc.get("notes") and not str(inc.get("notes")).startswith(NOTE_MARK):   # наші нотатки не блокують тріаж
         return None, None, "has_notes"
     if not alerts:
         return None, None, "no_alerts_or_api_error"
@@ -221,6 +226,80 @@ def resolve(admin_cfg: dict, inc_id: str, status: str, comment: str) -> bool:
     return reply is not None
 
 
+def note_text(inc: dict, v: dict, corr: dict | None, config: dict) -> str:
+    import cortex_incident_ai as cia
+    import cortex_qradar_corr as cqc
+    lines = [f"{NOTE_MARK} ({time.strftime('%Y-%m-%d %H:%M')}) — РЕКОМЕНДАЦІЯ моделі, не рішення; нічого не закрито й не змінено.",
+             f"Вердикт: {cia.VERDICTS.get(v['verdict'], v['verdict'])}",
+             f"Що сталось: {v['summary']}"]
+    if v.get("next_step"):
+        lines.append(f"Що перевірити: {v['next_step']}")
+    if corr:
+        base = str(config.get("qradar_url") or "").rstrip("/")
+        offs = "; ".join(f"#{o['id']} [m{o.get('magnitude')}] {(o.get('description') or '').replace(chr(10), ' ')[:70]}"
+                         for o in corr["top"])
+        lines.append(f"QRadar, відкриті офенси того ж хоста ({corr['total']}): {offs}")
+    lines.append("Дані алертів для моделі — недовірені; вердикт варто перевірити людині.")
+    return "\n".join(lines)
+
+
+def put_note(admin_cfg: dict, inc_id: str, text: str) -> bool:
+    """Cases API: POST /public_api/v1/case/update/{id} з update_data.notes (успіх = 204). Замінює notes кейсу."""
+    try:
+        r = requests.post(f"https://{cx.api_host(admin_cfg)}/public_api/v1/case/update/{inc_id}",
+                          headers=cx.api_headers(admin_cfg), json={"request_data": {"update_data": {"notes": text}}},
+                          timeout=60)
+    except Exception as e:
+        logging.error(f"case note #{inc_id}: {type(e).__name__}")
+        return False
+    if r.status_code not in (200, 204):
+        logging.error(f"case note #{inc_id}: HTTP {r.status_code}: {r.text[:200]}")
+        return False
+    return True
+
+
+def noted_ok(incident_id: str, alert_count: int) -> bool:
+    with sqlite3.connect(DB_PATH) as conn:
+        conn.execute("CREATE TABLE IF NOT EXISTS cortex_incident_noted (incident_id TEXT PRIMARY KEY, alert_count INTEGER, "
+                     "ts DATETIME DEFAULT CURRENT_TIMESTAMP)")
+        row = conn.execute("SELECT alert_count FROM cortex_incident_noted WHERE incident_id=?", (str(incident_id),)).fetchone()
+    return bool(row) and int(row[0] or 0) == int(alert_count or 0)
+
+
+def mark_noted(incident_id: str, alert_count: int) -> None:
+    with sqlite3.connect(DB_PATH) as conn:
+        conn.execute("INSERT OR REPLACE INTO cortex_incident_noted (incident_id, alert_count) VALUES (?,?)",
+                     (str(incident_id), int(alert_count or 0)))
+
+
+def write_notes(config: dict, admin_cfg: dict | None, review: list, ai: dict, corr: dict) -> set:
+    """Нотатки з висновком моделі в кейси «на перегляд». → множина incident_id, де нотатка є (щойно або вже була)."""
+    done: set = set()
+    if not (ai and admin_cfg and cfg(config, "cortex_incident_ai_note")):
+        return done
+    cap, wrote = int(cfg(config, "cortex_incident_ai_note_max")), 0
+    for inc, _why in review:
+        iid = str(inc.get("incident_id"))
+        v = ai.get(iid)
+        if not v:
+            continue
+        old = inc.get("notes")
+        if old and not str(old).startswith(NOTE_MARK):
+            continue                       # чужі нотатки — не перезаписуємо
+        ac = int(inc.get("alert_count") or 0)
+        if old and noted_ok(iid, ac):
+            done.add(iid)
+            continue
+        if wrote >= cap:
+            continue
+        if put_note(admin_cfg, iid, note_text(inc, v, corr.get(iid), config)):
+            mark_noted(iid, ac)
+            done.add(iid)
+            wrote += 1
+            logging.info(f"case note #{iid}: записано ({v['verdict']})")
+    return done
+
+
 def record(rows: list, run_id: str) -> None:
     with sqlite3.connect(DB_PATH) as conn:
         conn.executemany(
@@ -231,7 +310,8 @@ def record(rows: list, run_id: str) -> None:
 
 
 def triage_lines(closed: list, review: list, total: int, dry_run: bool, max_items: int = 25,
-                 ai: dict | None = None, corr: dict | None = None, config: dict | None = None) -> list:
+                 ai: dict | None = None, corr: dict | None = None, config: dict | None = None,
+                 noted: set | None = None) -> list:
     """Рядки секції тріажу: що закрито як шум і що лишилось на ручний розбір (з посиланнями)."""
     by_rule = Counter(r for _, r, _ in closed)
     lines = [f"Інциденти: переглянуто {total}; {'було б закрито' if dry_run else 'закрито як шум'} {len(closed)} "
@@ -244,6 +324,10 @@ def triage_lines(closed: list, review: list, total: int, dry_run: bool, max_item
         lines.append(f"• {ref} [{inc.get('severity')}] {(inc.get('description') or '')[:90]}"
                      f"{' — ' + hosts if hosts else ''} ({why})")
         v = (ai or {}).get(str(inc.get("incident_id")))
+        if v and str(inc.get("incident_id")) in (noted or set()):   # розбір у Notes кейсу — тут лише вердикт і посилання
+            import cortex_incident_ai as cia
+            lines.append(f"   🤖 {cia.VERDICTS.get(v['verdict'], v['verdict'])} — розбір у Notes кейсу")
+            continue
         if v:
             import cortex_incident_ai as cia
             lines.append(f"   🤖 {cia.VERDICTS.get(v['verdict'], v['verdict'])}: {v['summary']}"
@@ -335,7 +419,14 @@ def run_triage(config: dict, dry_run: bool, hours: float) -> dict | None:
         corr = cqc.build(config, review, excl)
     except Exception as e:  # зведення з QRadar не має валити тріаж і звіт
         logging.error(f"cortex_qradar_corr: {type(e).__name__}: {e}")
-    return {"closed": closed, "review": review, "total": len(incidents), "dry_run": dry_run, "ai": ai, "corr": corr}
+    noted: set = set()
+    if not dry_run:
+        try:
+            noted = write_notes(config, admin_cfg, review, ai, corr)
+        except Exception as e:  # нотатки не мають валити тріаж і звіт
+            logging.error(f"case notes: {type(e).__name__}: {e}")
+    return {"closed": closed, "review": review, "total": len(incidents), "dry_run": dry_run, "ai": ai, "corr": corr,
+            "noted": noted}
 
 
 def main() -> None:
