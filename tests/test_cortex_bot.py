@@ -39,11 +39,11 @@ def all_buttons(cards):
 def test_case_list_has_three_buttons_per_item(monkeypatch):
     monkeypatch.setattr(cb, "cortex_incidents", lambda c, h: [dict(INC, incident_id=str(i)) for i in range(10)])
     monkeypatch.setattr(cb, "db_safe", lambda *a, **k: [])
-    cards, title = cb.case_list_card(cfg(), 0)
+    cards, title = cb.case_list_card(cfg(), 0, "u@x.y", "all")
     fns = [b["onClick"]["action"]["function"] for b in all_buttons(cards)]
     assert fns.count("d_case") == 6 and fns.count("i_case") == 6 and fns.count("c_case") == 6
     assert "r_review" in fns and "10" in title          # "Ще" button + total count
-    cards2, _ = cb.case_list_card(cfg(), 6)
+    cards2, _ = cb.case_list_card(cfg(), 6, "u@x.y", "all")
     assert [b["text"] for b in all_buttons(cards2)].count("Деталі") == 4
 
 
@@ -141,3 +141,19 @@ def test_my_offenses_filter_and_mapping(monkeypatch):
 def test_assigned_rejects_odd_usernames(monkeypatch):
     monkeypatch.setattr(cb.requests, "get", lambda *a, **k: (_ for _ in ()).throw(AssertionError("no request")))
     assert cb.qradar_assigned(cfg(), 'x" or 1=1') == []
+
+
+def test_my_cases_filtered_by_assignee_and_mapped(monkeypatch):
+    seen = {}
+    def fake(c, hours, statuses=("new",)):
+        seen["args"] = (hours, statuses)
+        return [dict(INC, incident_id="1", assigned_user_mail="Sergii@modern-expo.com"), dict(INC, incident_id="2", assigned_user_mail=None),
+                dict(INC, incident_id="3", assigned_user_mail="other@modern-expo.com")]
+    monkeypatch.setattr(cb, "cortex_incidents", fake)
+    monkeypatch.setattr(cb, "db_safe", lambda *a, **k: [])
+    c = cfg(cortexbot_cortex_mail_map={"chat@x.y": "sergii@modern-expo.com"})
+    cards, title = cb.case_list_card(c, 0, "chat@x.y", "mine")
+    assert seen["args"] == (None, ("new", "under_investigation")) and "— 1" in title
+    assert [b["onClick"]["action"]["parameters"][0]["value"] for b in all_buttons(cards) if b["text"] == "Деталі"] == ["1"]
+    cards, title = cb.case_list_card(cfg(), 0, "nobody@x.y", "mine")
+    assert "— 0" in title

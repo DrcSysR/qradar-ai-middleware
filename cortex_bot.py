@@ -73,6 +73,7 @@ DEFAULTS = {
     "cortexbot_write_enabled": False,         # kill-switch: close buttons only work when true
     "cortexbot_audit_db": os.path.join(BASE_DIR, "cortex_bot_audit.db"),
     "cortexbot_ai_model": "",
+    "cortexbot_cortex_mail_map": {},          # Chat email -> assignee mail in Cortex, when they differ
     "cortexbot_qradar_user_map": {},          # Chat email -> QRadar username, when the emails differ                 # empty = vertex_deep from config.json
 }
 
@@ -199,14 +200,16 @@ def cortex_host(cfg: dict) -> str:
     return fqdn if fqdn.startswith("api-") else f"api-{fqdn}"
 
 
-def cortex_incidents(cfg: dict, hours: float):
-    since = int((time.time() - hours * 3600) * 1000)
+def cortex_incidents(cfg: dict, hours: float | None, statuses: tuple = ("new",)):
+    """Cases in the given statuses; hours=None = no age limit."""
+    filters = [{"field": "status", "operator": "in", "value": list(statuses)}]
+    if hours is not None:
+        filters.append({"field": "creation_time", "operator": "gte", "value": int((time.time() - hours * 3600) * 1000)})
     out, frm = [], 0
     while frm < 1000:
         r = requests.post(f"https://{cortex_host(cfg)}/public_api/v1/incidents/get_incidents", headers=cortex_headers(cfg),
                           timeout=60, json={"request_data": {
-                              "filters": [{"field": "status", "operator": "in", "value": ["new"]},
-                                          {"field": "creation_time", "operator": "gte", "value": since}],
+                              "filters": filters,
                               "search_from": frm, "search_to": frm + 100,
                               "sort": {"field": "creation_time", "keyword": "desc"}}})
         r.raise_for_status()
@@ -444,8 +447,21 @@ def cortex_case(cfg: dict, iid: str) -> dict:
             "files": (d.get("file_artifacts") or {}).get("data") or []}
 
 
-def case_list_card(cfg: dict, offset: int) -> tuple:
-    inc = cortex_incidents(cfg, float(cfg.get("cortexbot_review_hours")))
+def cortex_mail(cfg: dict, email: str) -> str:
+    email = (email or "").lower()
+    m = {str(k).lower(): str(v).lower() for k, v in (cfg.get("cortexbot_cortex_mail_map") or {}).items()}
+    return m.get(email, email)
+
+
+def case_list_card(cfg: dict, offset: int, email: str = "", scope: str = "mine") -> tuple:
+    mail = cortex_mail(cfg, email)
+    if scope == "mine":
+        # the API cannot filter by assignee, so take new + under_investigation (no age limit) and filter here
+        inc = [i for i in cortex_incidents(cfg, None, ("new", "under_investigation"))
+               if str(i.get("assigned_user_mail") or "").lower() == mail]
+    else:
+        inc = cortex_incidents(cfg, float(cfg.get("cortexbot_review_hours")))
+    fn = "r_review" if scope == "mine" else "r_review_all"
     ai = {str(r[0]): r for r in db_safe("SELECT incident_id, verdict, summary FROM cortex_incident_ai")}
     inc.sort(key=lambda i: (-SEV.get(str(i.get("severity") or "").lower(), 0), -int(i.get("creation_time") or 0)))
     page = int(cfg.get("cortexbot_list_page"))
@@ -467,15 +483,19 @@ def case_list_card(cfg: dict, offset: int) -> tuple:
         secs.append({"widgets": wid})
     nav = []
     if offset > 0:
-        nav.append(pbutton("◀ Назад", "r_review", {"offset": max(0, offset - page)}))
+        nav.append(pbutton("◀ Назад", fn, {"offset": max(0, offset - page)}))
     if offset + page < len(inc):
-        nav.append(pbutton(f"Ще ▶ ({len(inc) - offset - page})", "r_review", {"offset": offset + page}))
+        nav.append(pbutton(f"Ще ▶ ({len(inc) - offset - page})", fn, {"offset": offset + page}))
+    nav.append(pbutton("Усі нові" if scope == "mine" else "Мої", "r_review_all" if scope == "mine" else "r_review"))
     nav.append(pbutton("☰ Меню", "home"))
     secs.append({"widgets": [{"buttonList": {"buttons": nav}}]})
     if not inc:
-        secs.insert(0, {"widgets": [{"textParagraph": {"text": "Відкритих кейсів немає."}}]})
-    title = f"Cortex: кейси на перегляд — {len(inc)}"
-    sub = f"за {cfg.get('cortexbot_review_hours')} год · показано {offset + 1 if chunk else 0}–{offset + len(chunk)}"
+        secs.insert(0, {"widgets": [{"textParagraph": {"text": "Призначених на вас кейсів немає." if scope == "mine" else "Нових кейсів немає."}}]})
+    shown = f"показано {offset + 1 if chunk else 0}–{offset + len(chunk)}"
+    if scope == "mine":
+        title, sub = f"Cortex: призначені на мене — {len(inc)}", f"{mail} · new + under_investigation, без обмеження за віком · {shown}"
+    else:
+        title, sub = f"Cortex: усі нові кейси — {len(inc)}", f"за {cfg.get('cortexbot_review_hours')} год · {shown}"
     return card("cases", title, sub, secs), title
 
 
@@ -831,7 +851,8 @@ def home() -> dict:
                 "header": {"title": "Cortex XDR · QRadar", "subtitle": "списки з діями і звіти за запитом"},
                 "sections": [
                     {"header": "Cortex XDR", "widgets": [{"buttonList": {"buttons": [
-                        button("Кейси на перегляд", "r_review", "assignment", True),
+                        button("Мої кейси", "r_review", "assignment", True),
+                        button("Усі нові", "r_review_all", "list"),
                         button("Закрито автоматично", "r_closed", "task_alt"),
                         button("Видалені ендпоінти", "r_deleted", "delete")]}}]},
                     {"header": "QRadar", "widgets": [{"buttonList": {"buttons": [
@@ -868,10 +889,11 @@ async def run_action(cfg: dict, fn: str, params: dict, space: str, thread: str, 
     """Async handlers for list/detail/investigate/close buttons; each posts a card or text into the thread."""
     kind_id = params.get("id", "")
     try:
-        if not ID_RE.match(kind_id or "0") and fn not in ("r_review", "r_qr_open", "r_qr_all"):
+        if not ID_RE.match(kind_id or "0") and fn not in ("r_review", "r_review_all", "r_qr_open", "r_qr_all"):
             raise ValueError("bad id")
-        if fn == "r_review":
-            res = await asyncio.to_thread(case_list_card, cfg, max(0, int(params.get("offset", "0") or 0)))
+        if fn in ("r_review", "r_review_all"):
+            res = await asyncio.to_thread(case_list_card, cfg, max(0, int(params.get("offset", "0") or 0)), email,
+                                          "mine" if fn == "r_review" else "all")
         elif fn in ("r_qr_open", "r_qr_all"):
             res = await asyncio.to_thread(offense_list_card, cfg, max(0, int(params.get("offset", "0") or 0)), email,
                                           "mine" if fn == "r_qr_open" else "all")
@@ -903,7 +925,7 @@ async def run_action(cfg: dict, fn: str, params: dict, space: str, thread: str, 
         await asyncio.to_thread(chat_post, cfg, space, f"⚠️ Дія не вдалась ({type(e).__name__}) — деталі в журналі бота, дія #{aid}.", thread)
 
 
-ACTION_FNS = {"r_review": "кейси Cortex", "r_qr_open": "мої офенси QRadar", "r_qr_all": "усі відкриті офенси QRadar", "d_case": "деталі кейсу", "d_off": "деталі офенса",
+ACTION_FNS = {"r_review": "мої кейси Cortex", "r_review_all": "усі нові кейси Cortex", "r_qr_open": "мої офенси QRadar", "r_qr_all": "усі відкриті офенси QRadar", "d_case": "деталі кейсу", "d_off": "деталі офенса",
               "i_case": "дорозслідування кейсу", "i_off": "дорозслідування офенса", "x_case": "закриття кейсу", "x_off": "закриття офенса"}
 
 

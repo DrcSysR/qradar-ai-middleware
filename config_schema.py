@@ -149,6 +149,7 @@ SCHEMA = {
     "cortexbot_write_enabled":        (bool, False),
     "cortexbot_audit_db":             (str,  "/opt/qradar-middleware/cortex_bot_audit.db"),
     "cortexbot_ai_model":             (str,  ""),
+    "cortexbot_cortex_mail_map":      (dict, {}),
     "cortexbot_qradar_user_map":      (dict, {}),
 
     # Поріг РОЗБЛОКУВАННЯ (зняття IP із refset на FP-вердикті) — свідомо окремий і
