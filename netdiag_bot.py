@@ -582,7 +582,7 @@ async def chat(request: Request):
         return JSONResponse({"text": "⛔ У вас немає доступу до діагностики мережі. Зверніться до NOC."})
     if etype == "CARD_CLICKED":
         try:
-            return JSONResponse(await card_clicked(cfg, event, email))
+            return JSONResponse(await in_thread(cfg, event, await card_clicked(cfg, event, email)))
         except Exception as e:
             log.exception(f"card click failed: {e}")
             if event.get("isDialogEvent"):
@@ -661,6 +661,22 @@ def _ai_ctx(cfg: dict, prm: dict) -> dict:
         if str(prm.get(k, "")).isdigit():
             ctx[k] = str(int(prm[k]))
     return ctx
+
+
+async def in_thread(cfg: dict, event: dict, resp: dict) -> dict:
+    """Every non-dialog reply to a button click goes into the thread of the clicked (menu) message, not as a new
+    top-level message. Sync NEW_MESSAGE responses are re-posted through the Chat API into that thread; if that
+    fails (or there is no thread) the original sync response is returned unchanged."""
+    if (resp.get("actionResponse") or {}).get("type") != "NEW_MESSAGE":
+        return resp
+    space = (event.get("space") or {}).get("name", "")
+    thread = ((event.get("message") or {}).get("thread") or {}).get("name", "")
+    if not (space and thread and THREAD_RE.match(thread)):
+        return resp
+    body = {k: v for k, v in resp.items() if k != "actionResponse"}
+    if await asyncio.to_thread(chat_post, cfg, space, body, thread):
+        return {}
+    return resp
 
 
 async def card_clicked(cfg: dict, event: dict, email: str) -> dict:

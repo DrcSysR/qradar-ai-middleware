@@ -157,3 +157,14 @@ def test_my_cases_filtered_by_assignee_and_mapped(monkeypatch):
     assert [b["onClick"]["action"]["parameters"][0]["value"] for b in all_buttons(cards) if b["text"] == "Деталі"] == ["1"]
     cards, title = cb.case_list_card(cfg(), 0, "nobody@x.y", "mine")
     assert "— 0" in title
+
+
+def test_click_replies_go_into_thread(monkeypatch):
+    posted = []
+    monkeypatch.setattr(cb, "chat_post", lambda c, sp, text, th="", cards=None: posted.append((sp, th, text, bool(cards))) or True)
+    ev = {"type": "CARD_CLICKED", "common": {"invokedFunction": "c_case", "parameters": {"id": "613"}},
+          "space": {"name": "spaces/AAA"}, "message": {"thread": {"name": "spaces/AAA/threads/T1"}}}
+    r = asyncio.run(cb.handle_event(cfg(), ev, "u@x.y"))
+    assert r == {} and posted[0][:2] == ("spaces/AAA", "spaces/AAA/threads/T1") and posted[0][3]
+    monkeypatch.setattr(cb, "chat_post", lambda *a, **k: False)          # API failure -> sync fallback, nothing lost
+    assert "cardsV2" in asyncio.run(cb.handle_event(cfg(), ev, "u@x.y"))

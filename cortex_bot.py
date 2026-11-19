@@ -935,6 +935,23 @@ def click_fn(event: dict) -> str:
 
 
 async def handle_event(cfg: dict, event: dict, email: str) -> dict:
+    return await in_thread(cfg, event, await _handle_event(cfg, event, email))
+
+
+async def in_thread(cfg: dict, event: dict, resp: dict) -> dict:
+    """Replies to button clicks go into the thread of the clicked (menu) message: sync NEW_MESSAGE responses are
+    re-posted via the Chat API into that thread; on failure / no thread the sync response is returned unchanged."""
+    if event.get("type") != "CARD_CLICKED" or (resp.get("actionResponse") or {}).get("type") != "NEW_MESSAGE":
+        return resp
+    space = (event.get("space") or {}).get("name", "")
+    thread = ((event.get("message") or {}).get("thread") or {}).get("name", "")
+    if not (SPACE_RE.match(space) and THREAD_RE.match(thread)):
+        return resp
+    ok = await asyncio.to_thread(chat_post, cfg, space, resp.get("text") or "", thread, resp.get("cardsV2"))
+    return {} if ok else resp
+
+
+async def _handle_event(cfg: dict, event: dict, email: str) -> dict:
     etype = event.get("type")
     if etype == "ADDED_TO_SPACE":
         return home()
