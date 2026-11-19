@@ -8,10 +8,10 @@
 - Рядки ін'єкцій розмічено один раз (таблиця `LK` у `tools/dataset_label.py`), решта шаблонів — правилами по сирих подіях зі збереженого промпту (список подій у промпті обрізаний за бюджетом символів — парситься до останнього цілого рядка). Випадок = найгірший рядок (S > U > B; рядки-тригери правил N не голосують).
 - Схема в `claude_label`: `close|benign`, `close|insufficient_data` (U = діапазон 0.4–0.6 рубрики, авто-закриття), `review|suspicious` (лише **гіпотеза**, причина починається з `HYPOTHESIS`). `claude_reason` — рядки за класами + головна причина. `human_label` не чіпали. Запис — `UPDATE … WHERE claude_label IS NULL` під `qmiddleware`.
 
-## Результат (1166 з 1209 випадків QRadar; 43 без правила — NULL; 4 Cortex ще не розмічені)
+## Результат (1176 з 1209 випадків QRadar; 33 без правила — NULL; 4 Cortex розмічені вручну як insufficient_data)
 | мітка | випадків |
 |---|---|
-| close\|benign | 665 |
+| close\|benign | 675 |
 | close\|insufficient_data | 484 |
 | close\|malicious (реальна, але зупинена зовнішня атака, «mitigated» у причині) | 4 |
 | review\|suspicious (гіпотези) | 13 |
@@ -33,4 +33,4 @@
 - У коміті b7d56b7 (перша версія `tools/dataset_label.py`) були імена користувачів у ключах шляхів Opera-інсталятора; тут вони замінені шаблоном `<u>`, але в історії лишились (історію не переписували).
 
 ## Наступні партії
-`python3 tools/dataset_label.py <знімок> labels.json` розмічає лише рядки з `claude_label IS NULL`. Cortex-випадки (4) — окремо, по збереженому промпту.
+`python3 tools/dataset_label.py <знімок> labels.json` розмічає лише рядки з `claude_label IS NULL`. Cortex-випадки (4) розмічено вручну (усі PAN NGFW «prevented», напрямок і хост у збереженому доказі відсутні).

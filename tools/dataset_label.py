@@ -1689,6 +1689,19 @@ def row_label(e,lens):
         en=str(d['eventname']).lower()
         if any(x in en for x in ('mimikatz','ransom','cobalt','turla','ioc')): return ('S','CRE event '+en[:40])
         if str(d.get('logsourcetype','')).lower()=='custom rule engine' or en.startswith(('process created a thread','excessive firewall denies','uc-0','local tcp scanner','irc connections','abnormal parent')): return ('N','rule-trigger context event (Custom Rule Engine)')
+        if en=='createremotethread':
+            raw=str(d.get('rawpayload',''))
+            a=re.search(r'SourceImage: (.*?) TargetProcessGuid',raw); b=re.search(r'TargetImage: (.*?) NewThreadId',raw)
+            if a and b:
+                sp,tp_=a.group(1),b.group(1)
+                key=(norm_value(sp.rsplit('\\',1)[-1]),)+tuple(scrub(x) for x in (norm_value(sp),norm_value(tp_),norm_value(tp_.rsplit('\\',1)[-1])))
+                if key in LK: return tuple(LK[key])
+                for kk,v in LK.items():
+                    if kk[:3]==key[:3] or (kk[0]==key[0] and kk[1]==key[1] and kk[3]==key[3]): return tuple(v)
+                spl=sp.lower(); tl=tp_.rsplit('\\',1)[-1].lower()
+                if tl in('cmd.exe','powershell.exe','wscript.exe','mshta.exe') : return ('U','raw Sysmon: %s -> %s, injector not in reviewed table'%(sp.rsplit('\\',1)[-1],tl))
+                if spl.startswith(('c:\\program files','c:\\windows')): return ('B','raw Sysmon: injector from install/system path (%s), target unresolved or own'%sp.rsplit('\\',1)[-1])
+                return ('U','raw Sysmon: injector from non-standard path, not in reviewed table')
         return ('X','non-CRE evidence row (raw payload not parsed)')
     return ('X','row shape not covered: '+','.join(sorted(k))[:60])
 def label_case(c):
