@@ -1658,12 +1658,12 @@ def row_label(e,lens):
         if 'successful' in ev or 'access accept' in ev or 'validated the credentials' in ev: return ('N','auth success context')
         if not isint(d.get('source_ip','')) and False: return ('B','')
         if fa>=100 and f(d.get('unique_source_ips'))>=5: return ('U','distributed failures (%d from %d sources), no success in row'%(fa,f(d.get('unique_source_ips'))))
-        if not isint(d.get('source_ip','')): return ('M','mitigated: external source, only failures (no success row)')
+        if not isint(d.get('source_ip','')) and fa>=20: return ('M','mitigated: external source, %d failures, no success row'%fa)
         return ('B','failed auth without success')
     if 'event_count' in k and 'event_name' in k:
         ev=str(d['event_name']).lower(); n=f(d['event_count'])
         if any(x in ev for x in('mimikatz','ransom','cobalt','ioc','turla','c2','malware')): return ('S','event name '+ev[:40])
-        if not isint(d.get('source_ip','')) and (lens.startswith(('UC-06-1','UC-ME Block','UC-ME Deny')) or 'bruteforce' in ev): return ('M','mitigated: external source, blocked/denied activity')
+        if not isint(d.get('source_ip','')) and lens.startswith('UC-ME Deny') and n>=20 and any(x in ev for x in('denied','closed','blocked','failed')): return ('M','mitigated: rogue external IP, %d denied/closed events (rogue-IP lens)'%n)
         return ('B','repetitive network/audit event')
     if 'unique_targets' in k:
         ut=f(d['unique_targets']); up=f(d['unique_ports']); sip=str(d.get('src_ip','')); dip=str(d.get('dst_ip',''))
@@ -1699,11 +1699,19 @@ def row_label(e,lens):
                 for kk,v in LK.items():
                     if kk[:3]==key[:3] or (kk[0]==key[0] and kk[1]==key[1] and kk[3]==key[3]): return tuple(v)
                 spl=sp.lower(); tl=tp_.rsplit('\\',1)[-1].lower()
+                if tl in('lsass.exe','winlogon.exe','csrss.exe','services.exe','smss.exe','wininit.exe'): return ('S','raw Sysmon: %s -> %s (sensitive system target), injector not in reviewed table'%(sp.rsplit('\\',1)[-1],tl))
                 if tl in('cmd.exe','powershell.exe','wscript.exe','mshta.exe') : return ('U','raw Sysmon: %s -> %s, injector not in reviewed table'%(sp.rsplit('\\',1)[-1],tl))
-                if spl.startswith(('c:\\program files','c:\\windows')): return ('B','raw Sysmon: injector from install/system path (%s), target unresolved or own'%sp.rsplit('\\',1)[-1])
-                return ('U','raw Sysmon: injector from non-standard path, not in reviewed table')
+                own=tp_.lower()==sp.lower() or 'unknown process' in tp_.lower()
+                if own and spl.startswith(('c:\\windows\\system32','c:\\windows\\syswow64','c:\\program files')): return ('B','raw Sysmon: injector from system/install path (%s), target unresolved or own'%sp.rsplit('\\',1)[-1])
         return ('X','non-CRE evidence row (raw payload not parsed)')
     return ('X','row shape not covered: '+','.join(sorted(k))[:60])
+def kind(e):
+    d=lo(e); k=set(d)
+    if 'injector_path' in k or 'injector' in k or str(d.get('eventname','')).lower()=='createremotethread': return 'inj'
+    if 'beacon_count' in k: return 'beacon'
+    if 'activity' in k: return 'act'
+    return 'other'
+NEED={'Process Created a Thread':'inj','File Decode':'act','UC-ME Network C2':'beacon'}
 def label_case(c):
     rows=c['ev']
     if not rows: return None
@@ -1712,6 +1720,9 @@ def label_case(c):
         l,r=row_label(e,c['lens']); cnt[l]+=1
         if l!='X' and (RANK[l]>RANK[worst[0]] or (l==worst[0] and l in('S','U','M') and not worst[1])): worst=(l,r)
     if cnt.get('X') and worst[0]!='S': return None
+    need=next((v for k,v in NEED.items() if c['lens'].startswith(k)),None)
+    if worst[0]=='B' and need and not any(kind(e)==need and row_label(e,c['lens'])[0]=='B' for e in rows):
+        return ('U','benign only from non-primary rows; the lens own evidence (%s rows) is absent from the saved prompt'%need),dict(cnt)
     return worst,dict(cnt)
 
 def events_of(prompt):
