@@ -127,6 +127,7 @@ SCHEMA = {
     # Компактна відповідь локальної моделі (compact_verdict.py): лише score+verdict, пояснення будує мідлвар.
     # Типово ВИМКНЕНО — вмикати після офлайн-перевірки tools/compact_ab.py.
     "local_compact_output":           (bool, False),
+    "local_evidence_aggregate":       (bool, False),
     "local_compact_max_tokens":       (int,  64),
     # Суддя Vertex для унікальних випадків (ai_dataset_judge.py, раз на добу)
     "ai_dataset_judge_max_per_run":   (int,  60),

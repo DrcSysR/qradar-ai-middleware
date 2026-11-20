@@ -19,6 +19,7 @@ import config_schema
 import queue_db
 import ai_dataset
 import compact_verdict
+import evidence_agg
 import tracker
 
 VERTEX_KEY_PATH = "/opt/qradar-middleware/me-vertex-ai-studio-666353d9e1df.json"
@@ -1104,6 +1105,10 @@ async def process_one(payload: UniversalTrigger):
             else:
                 header = EVIDENCE_HEADER_FULL
                 max_chars = 2000000
+            if p == "openai" and APP_CONFIG.get("local_evidence_aggregate", False) and isinstance(events, list):
+                # Спершу згортаємо однакові/розгорнуті рядки (evidence_agg), і лише потім вкладаємо в бюджет —
+                # без цього 500 символів = 1–3 сирих рядки, а решта мовчки губиться.
+                return render(evidence_agg.render(events, max_chars), header)
             return render(str(events)[:max_chars], header)
 
 

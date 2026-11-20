@@ -347,6 +347,23 @@ def check_queue_db():
         fail(f"queue_db: виняток під час тесту — {type(e).__name__}: {e}")
 
 
+def check_evidence_agg():
+    """Агрегація доказів: 1400 сирих рядків розгортки згортаються й влазять у бюджет, хвіст — маркером."""
+    sys.path.insert(0, BASE)
+    try:
+        import evidence_agg
+        rows = [{"Time": f"t{i}", "sourceip": "10.0.0.1", "destinationip": f"8.8.{i % 50}.{i % 200}", "destinationport": 443,
+                 "RawPayload": f"<14>t{i} deny"} for i in range(1400)]
+        out = evidence_agg.render(rows, 3000)
+        if len(out) > 3000 or "distinct" not in out:
+            fail("evidence_agg: розгортка не згорнулась/не влізла в бюджет")
+        tail = evidence_agg.render([{f"f{i}": "x" * 100} for i in range(100)], 800)
+        if "_omitted" not in tail or len(tail) > 800:
+            fail("evidence_agg: непоміщені рядки не позначено _omitted")
+    except Exception as e:
+        fail(f"evidence_agg: {e}")
+
+
 def check_compiles():
     with tempfile.TemporaryDirectory() as tmp:
         for name in sorted(os.listdir(BASE)):
@@ -365,6 +382,7 @@ def main():
     check_orphan_prompts(used_md)
     check_config_registry()
     check_queue_db()
+    check_evidence_agg()
     check_compiles()
 
     for w in warnings:
