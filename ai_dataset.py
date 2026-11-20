@@ -28,6 +28,8 @@ import re
 import sqlite3
 import zlib
 
+import evidence_agg
+
 DDL_UNIQUE = """
 CREATE TABLE IF NOT EXISTS ai_unique (
     ukey TEXT PRIMARY KEY,
@@ -52,7 +54,8 @@ CREATE TABLE IF NOT EXISTS ai_unique (
     human_label TEXT,
     claude_label TEXT,
     claude_reason TEXT,
-    claude_ts DATETIME
+    claude_ts DATETIME,
+    evidence_z BLOB
 )
 """
 DDL_LOG = """
@@ -162,10 +165,25 @@ def _open(path):
     conn.execute(DDL_LOG)
     # Міграція: колонки для міток Claude (human_label лишається для людини). CREATE IF NOT EXISTS їх не додасть.
     have = {r[1] for r in conn.execute("PRAGMA table_info(ai_unique)")}
-    for col, typ in (("claude_label", "TEXT"), ("claude_reason", "TEXT"), ("claude_ts", "DATETIME")):
+    for col, typ in (("claude_label", "TEXT"), ("claude_reason", "TEXT"), ("claude_ts", "DATETIME"), ("evidence_z", "BLOB")):
         if col not in have:
             conn.execute(f"ALTER TABLE ai_unique ADD COLUMN {col} {typ}")
     return conn
+
+
+EVIDENCE_CHARS = 8000
+
+
+def _evidence_blob(events, max_chars):
+    """Агрегований блок доказів для тренування/розмітки (evidence_agg), zlib. Збій → None, запис не ламаємо.
+    Окремо від example_prompt_z: той містить рівно те, що бачила модель tier-1 (≈500 символів подій),
+    а це — картина з УСІХ подій випадку (до max_chars), формат навчання обирається при складанні датасету."""
+    try:
+        if not isinstance(events, list) or not events or max_chars <= 0:
+            return None
+        return zlib.compress(evidence_agg.render(events, max_chars).encode("utf-8"), 6)
+    except Exception:
+        return None
 
 
 def _fix_perms(path):
@@ -188,7 +206,7 @@ def _fix_perms(path):
 
 
 def _record(path, config, *, source, lens, ref, mode, prompt, t1, escalated, final_score,
-            final_verdict, sig):
+            final_verdict, sig, evidence_z=None):
     """t1 = (provider, model, score, verdict). sig = (ukey, rows, n_events, hosts)."""
     if not config.get("ai_dataset_enabled", True):
         return None
@@ -200,12 +218,12 @@ def _record(path, config, *, source, lens, ref, mode, prompt, t1, escalated, fin
         if row is None:
             conn.execute(
                 "INSERT INTO ai_unique (ukey, source, lens, n_events, hosts_json, n_hosts, signature_json,"
-                " example_ref, example_prompt_z, t1_verdict, t1_score, final_verdict, final_score)"
-                " VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)",
+                " example_ref, example_prompt_z, t1_verdict, t1_score, final_verdict, final_score, evidence_z)"
+                " VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
                 (ukey, source, lens, n_events, json.dumps(sorted(hosts)[:50]), len(hosts),
                  json.dumps(_fit(rows), ensure_ascii=False), str(ref),
                  zlib.compress((prompt or "").encode("utf-8"), 6),
-                 t1[3], t1[2], final_verdict, final_score))
+                 t1[3], t1[2], final_verdict, final_score, evidence_z))
         else:
             try:
                 known = set(json.loads(row[0] or "[]"))
@@ -214,9 +232,10 @@ def _record(path, config, *, source, lens, ref, mode, prompt, t1, escalated, fin
             known |= hosts
             conn.execute(
                 "UPDATE ai_unique SET n_seen=n_seen+1, n_events=n_events+?, last_seen=CURRENT_TIMESTAMP,"
-                " hosts_json=?, n_hosts=?, t1_verdict=?, t1_score=?, final_verdict=?, final_score=? WHERE ukey=?",
+                " hosts_json=?, n_hosts=?, t1_verdict=?, t1_score=?, final_verdict=?, final_score=?,"
+                " evidence_z=COALESCE(evidence_z, ?) WHERE ukey=?",
                 (n_events, json.dumps(sorted(known)[:50]), len(known), t1[3], t1[2],
-                 final_verdict, final_score, ukey))
+                 final_verdict, final_score, evidence_z, ukey))
         c = conn.execute(
             "INSERT INTO ai_log (source, ref, ukey, mode, prompt_chars, t1_provider, t1_model, t1_score,"
             " t1_verdict, escalated, final_score, final_verdict) VALUES (?,?,?,?,?,?,?,?,?,?,?,?)",
@@ -233,7 +252,8 @@ def log_example(path, config, *, offense_id, lens, mode, events, prompt, t1, esc
     """QRadar-офенс. t1 = (provider, model, score, verdict, explanation, mitigated)."""
     sig = signature_qradar(lens, events)
     return _record(path, config, source="qradar", lens=lens, ref=offense_id, mode=mode, prompt=prompt,
-                   t1=t1, escalated=escalated, final_score=final_score, final_verdict=final_verdict, sig=sig)
+                   t1=t1, escalated=escalated, final_score=final_score, final_verdict=final_verdict, sig=sig,
+                   evidence_z=_evidence_blob(events, int(config.get("ai_dataset_evidence_chars", EVIDENCE_CHARS))))
 
 
 def log_cortex(path, config, *, incident, alerts, prompt, model, verdict, score=None):

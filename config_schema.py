@@ -123,6 +123,7 @@ SCHEMA = {
     # --- журнал навчальних прикладів (ai_dataset.py → ai_dataset.db) ---
     "ai_dataset_enabled":             (bool, True),
     "ai_dataset_max_rows":            (int,  300000),
+    "ai_dataset_evidence_chars":      (int,  8000),
 
     # Компактна відповідь локальної моделі (compact_verdict.py): лише score+verdict, пояснення будує мідлвар.
     # Типово ВИМКНЕНО — вмикати після офлайн-перевірки tools/compact_ab.py.
